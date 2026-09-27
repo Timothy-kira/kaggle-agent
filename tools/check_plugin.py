@@ -1360,6 +1360,17 @@ PUBLISH_SECRET_PATTERNS = SECRET_PATTERNS + [
 
 TEXT_SUFFIXES = {".py", ".md", ".json", ".sh", ".cmd", ".txt", ".yml", ".yaml", ".cfg", ".ini"}
 
+# A published package is read on someone else's machine. An absolute path into this
+# author's home directory is therefore not a style problem, it is a broken package:
+# the MCP server had `~/.minimax/plugins/kaggle-agent/mcp` baked into its launch args,
+# so the config validated perfectly and then pointed every importer's server at a
+# directory on their disk that does not exist. Plugin-relative paths and ${PLUGIN_ROOT}
+# are the portable forms; this is how the hardcoding gets caught before publishing.
+MACHINE_PATH_PATTERNS = [
+    (re.compile(r"[A-Za-z]:[\\/]Users[\\/][^\\/\s\"']+"), "absolute Windows user path"),
+    (re.compile(r"/(?:Users|home)/[A-Za-z0-9._-]+/"), "absolute POSIX user path"),
+]
+
 
 def _git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
@@ -1439,6 +1450,26 @@ def check_publishable():
                     hits += 1
         if hits == 0:
             ok(f"no credential literal in any of the {len(publishable)} publishable files")
+
+    # (5) The package is read on someone else's machine, so no publishable file may name
+    #     an absolute path into this author's home directory.
+    machine_hits = 0
+    for rel in publishable:
+        p = ROOT / rel
+        if not p.is_file() or p.suffix.lower() not in TEXT_SUFFIXES:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for rx, label in MACHINE_PATH_PATTERNS:
+            found = rx.search(text)
+            if found:
+                bad(f"{label} in {rel}: {found.group(0)!r} — this package is installed "
+                    f"on other machines, use a plugin-relative path or ${{PLUGIN_ROOT}}")
+                machine_hits += 1
+    if machine_hits == 0:
+        ok("no publishable file hardcodes an absolute path into the author's home")
 
 
 def main() -> int:

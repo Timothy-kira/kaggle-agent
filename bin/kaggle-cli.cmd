@@ -24,10 +24,10 @@ set "MCP_DIR=%~dp0..\mcp"
 
 REM Pick an interpreter that can actually import kaggle. Each candidate is probed, so this
 REM works whether the CLI lives in a venv, in the user's Python, or in the system Python.
-REM The sandbox venv is listed first because that is where the CLI was installed here, but a
-REM different user with a normal "pip install kaggle" will match on the system Python instead.
+REM Every candidate is guarded by "if exist" and is either derived from the environment or
+REM from a common install location: this package is installed on other people's machines, so
+REM no path into one particular user's profile may appear here.
 set "PY="
-if exist "C:\Users\Akira\.minimax\agents\arc26\venv\Scripts\python.exe" call :try "C:\Users\Akira\.minimax\agents\arc26\venv\Scripts\python.exe"
 if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" call :try "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
 if not defined PY for /f "usebackq delims=" %%p in (`where python 2^>nul`) do call :try "%%p"
 if not defined PY (

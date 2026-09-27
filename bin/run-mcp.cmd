@@ -17,10 +17,11 @@ setlocal DisableDelayedExpansion
 set "MCP_DIR=%~dp0..\mcp"
 
 REM The MCP server runs the kaggle CLI in-process, so it needs an interpreter that can
-REM import kaggle. Probe candidates and keep the first that can; the sandbox venv is listed
-REM first because that is where the CLI was installed here.
+REM import kaggle. Probe candidates and keep the first that can. Each candidate is guarded
+REM by "if exist" and is either derived from the environment or from a common install
+REM location: this package is installed on other people's machines, so no path into one
+REM particular user's profile may appear here.
 set "PY="
-if exist "C:\Users\Akira\.minimax\agents\arc26\venv\Scripts\python.exe" call :try "C:\Users\Akira\.minimax\agents\arc26\venv\Scripts\python.exe"
 if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" call :try "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
 if not defined PY for /f "usebackq delims=" %%p in (`where python 2^>nul`) do call :try "%%p"
 if not defined PY (

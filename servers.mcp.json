@@ -7,7 +7,7 @@
       "args": [
         "-B",
         "-c",
-        "import runpy,sys,os;sys.path.insert(0,os.path.expanduser('~/.minimax/plugins/kaggle-agent/mcp'));runpy.run_path(os.path.expanduser('~/.minimax/plugins/kaggle-agent/mcp/agent_server.py'),run_name='__main__')"
+        "import os,runpy,sys;_c=os.environ.get('PLUGIN_ROOT','');_r=[_c] if _c and '${' not in _c else [];_r+=[os.getcwd(),os.path.expanduser('~/.minimax/plugins/kaggle-agent')];_n='mcp/agent_server.py';_p=next((os.path.join(x,_n) for x in _r if os.path.isfile(os.path.join(x,_n))),None);_p is None and sys.exit('kaggle-agent: cannot locate '+_n+'; tried '+', '.join(_r));sys.path.insert(0,os.path.dirname(_p));runpy.run_path(_p,run_name='__main__')"
       ],
       "env": {},
       "description": "Kaggle notebooks, competitions, accounts and accelerator quota as local tools. Sign in once with 'kaggle-cli.cmd login'; credentials resolve from KAGGLE_API_TOKEN, ~/.kaggle-cli/, or KAGGLE_KEY.",
