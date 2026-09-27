@@ -1,6 +1,6 @@
 ---
 name: "kaggle-competition-research"
-description: "Use when researching a Kaggle competition before committing to an approach - what the rules and data actually are, what competitors are doing in Kaggle Code, what the discussion forum says, and what the wider field knows in GitHub, Hugging Face and the papers. Wave 1 launches four Kaggle-native subagents in a single response. Wave 2 then runs sequentially in the main thread: the general browser search through the deep-research skill over multiple rounds, with a hard requirement that GitHub, Hugging Face and arXiv are genuinely opened and parsed rather than quoted from a search snippet, followed by the reusable competition-browser agent for source-specific forensics on the URLs that search surfaced. Reads sources in full rather than skimming titles, and reports coverage limits honestly."
+description: "Use when researching a Kaggle competition before committing to an approach - what the rules and data actually are, what competitors are doing in Kaggle Code, what the discussion forum says, and what the wider field knows in GitHub, Hugging Face and the papers. Starts with a preflight - handoff_status and the experiment tree - and when work already exists it combines the new research with what is already recorded instead of re-deriving it, or skipping the sweep. Only then: wave 1 launches four Kaggle-native subagents in a single response. Wave 2 then runs sequentially in the main thread: the general browser search through the deep-research skill over multiple rounds, with a hard requirement that GitHub, Hugging Face and arXiv are genuinely read rather than quoted from a search snippet, followed by the reusable competition-browser agent for source-specific forensics on the URLs that search surfaced. The in-app browser is for discovery; reading a known URL is done with web_fetch. Competition data is profiled in a Kaggle CPU notebook and is never downloaded to this machine. Reads sources in full rather than skimming titles, and reports coverage limits honestly."
 ---
 
 # Researching a Kaggle competition
@@ -9,6 +9,65 @@ Research exists to produce a **plan**, and a plan is only as good as the evidenc
 skill is organised around that: gather from every source that is *inside* Kaggle first,
 because that is where the rules, the data and the actual competitive code live, and only then
 go outside, using the vocabulary the first wave produced.
+
+## Preflight — is this already being worked on?
+
+**Run this before wave 1. Every time. Research is the expensive path, and re-running it over work
+that already exists is the single most wasteful thing this skill can do** — four subagents, a
+multi-round browser sweep, and a forensics pass, all to rediscover what is on disk.
+
+```
+handoff_status competition="<slug>"        # local handoff? where? base node? sync capability?
+kaggle_experiment_tree action="read" competition="<slug>"   # the other place work lives
+```
+
+`handoff_status` makes no network call and costs nothing. It answers four things at once: whether
+a handoff document exists for this competition, where it would be written, what the current base
+node and experiment count are, and whether this machine can sync to a remote repo at all.
+
+Then follow the branch you land in. **Existing work is an input to the research, not a reason to
+skip it and not a reason to throw it away** — the wave still runs, and it runs *better*, because
+it knows what has already been tried and what the base node cost.
+
+| Preflight says | Do |
+|---|---|
+| A handoff or a tree with nodes exists | **`handoff_read` it, then run the wave informed by it.** See "Combining with what already exists" below. |
+| Nothing local, and this machine cannot sync | Say so in one line, then run the wave. |
+| Nothing local, and sync *is* available | **Ask whether there is a handoff in the cloud** before researching — see below. |
+
+### Combining with what already exists
+
+Reading the handoff is not the same as obeying it. The point is that a second research pass on
+top of a first is worth far more than a first pass alone:
+
+- **Read it, then `record` nothing new until wave 1 has reported.** Say what the base node is and
+  what it cost, so the new evidence is measured against a number that already exists.
+- **Spend the wave on what is still open.** The handoff's open questions and its refuted list are
+  the search agenda: those are the things a generic sweep would waste its rounds rediscovering.
+- **Keep the vocabulary.** Query wave 2 with the terms the handoff already uses and the approach
+  it already tried, not with the competition's generic name. That is the same discipline wave 2
+  already follows when it queries off wave 1's results.
+- **Never overwrite the base node.** A fresh plan is added to the tree as the next node. If the
+  new evidence contradicts something the handoff asserts, that is a `record` with an explicit
+  verdict and a reason — not an edit of the history.
+
+If you decide a re-run is not worth it, say that and say why. That is a legitimate outcome; a
+silent full re-derivation is not.
+
+**The cloud question is a question, not an inference.** Someone else, or you in an earlier
+session, may have pushed the work to a repo. `github_auth action="status"` reports the transport
+and the configured repo **without a network call**; if a token or repo is missing it says so, which
+is exactly the information the user needs to decide. So ask, with the answer attached:
+
+> 本机没有这个比赛的 handoff，但这台机器能同步到远端（transport: git / token 未配置 / repo 未配置）。要不要先拉一份云端的？
+
+Under `presence-mode` this is a **tier-1 decision**: cheap, reversible, changes nothing external,
+and getting it wrong costs a full research pass. Ask it when the user is present. When they are
+away, record the decision and continue — but say plainly in the report that you assumed no cloud
+handoff existed, so an audit can see it.
+
+Never silently overwrite or re-derive a base node the tree already holds. If a handoff exists and
+you still want fresh research, say why you are re-running it before you spend the wave.
 
 ## The shape: two waves, main agent decides the second
 

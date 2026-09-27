@@ -1626,6 +1626,56 @@ def check_browser_is_search_only():
               "the competition-browser doc states the browser does not choose pages")
 
 
+# ---------------------------------------------------------------- research preflight
+# Research is the expensive path in this plugin: four subagents, a multi-round sweep and a
+# forensics pass. Re-running it over work that already exists is the most wasteful thing the
+# skill can do, and the skill had no preflight at all — handoff appeared once, at the end, as
+# something to *offer*. The user's rule: check the local workspace first, and ask about a cloud
+# handoff rather than assuming there is none.
+def check_research_preflight():
+    print("research preflight")
+    if not check(RESEARCH_SKILL.is_file(), "the research skill is present"):
+        return
+    text = RESEARCH_SKILL.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    # Form, not name. A document this size keeps the word "handoff_status" alive in prose long
+    # after the call itself is gone, and keeps the word "ask" and "cloud" alive after the
+    # question is deleted — so each assertion below pins the exact instruction, not a token.
+    check('handoff_status competition=' in text,
+          "the preflight shows the handoff_status CALL, not just the name")
+    check('kaggle_experiment_tree action="read"' in text,
+          "the preflight shows the experiment-tree read call")
+    check("github_auth action=\"status\"" in text or 'github_auth action="status"' in text,
+          "the preflight reports GitHub transport without a network call")
+
+    # Ordering is the whole point: a preflight written after wave 1 is a paragraph, not a gate.
+    wave_idx = lowered.find("## the shape: two waves")
+    pre_idx = lowered.find("## preflight")
+    if check(pre_idx != -1, "the skill has a preflight section"):
+        check(wave_idx != -1 and pre_idx < wave_idx,
+              "the preflight comes BEFORE the wave section, not after it")
+
+    check("ask whether there is a handoff in the cloud" in lowered,
+          "the preflight asks about a cloud handoff instead of assuming there is none")
+    check("combining with what already exists" in lowered,
+          "the skill says how to combine a new pass with existing work")
+    check("then run the wave informed by it" in lowered,
+          "the existing-work branch still runs the wave, informed by the handoff")
+    check("not a reason to\nskip it" in lowered or "not a reason to skip it" in lowered,
+          "existing work is an input to the research, not a reason to skip it")
+    check("never overwrite the base node" in lowered,
+          "the skill refuses to overwrite a base node the tree already holds")
+
+    # The description is what decides whether this skill loads at all, so the preflight
+    # has to be visible there or it will be skipped by an agent that never opens the body.
+    m = re.search(r"^description:\s*(.+)$", text, re.M)
+    if check(m is not None, "the research skill has a description"):
+        desc = m.group(1).strip().strip('"').lower()
+        check("preflight" in desc, "the description advertises the preflight")
+        check("handoff_status" in desc, "the description names the preflight call")
+
+
 def main() -> int:
     check_manifest()
     check_servers()
@@ -1655,6 +1705,7 @@ def main() -> int:
     check_version_sync()
     check_data_stays_on_kaggle()
     check_browser_is_search_only()
+    check_research_preflight()
     check_publishable()
     print()
     if failures:
