@@ -58,6 +58,65 @@ That is the whole loop, enforced rather than requested: once a node lands, the t
 so the next node cannot be planned from the version you remember. Planning the second experiment
 requires reading the tree again.
 
+## Every step consults the tree. Only worthwhile steps become nodes.
+
+Consulting the tree has to be cheap enough that you do it every time, not only before a run — and
+a node has to stay expensive enough that you do not make one of everything. `consider` is both at
+once:
+
+```
+kaggle_experiment_tree action="consider" competition="<slug>"
+  change="<the one thing you are about to do>"
+  hypothesis="<why you expect it to matter>"
+  operator="draft|improve|debug|crossover"     # if you already know
+  family="<method family>"                      # if you already know
+```
+
+| Verdict | What it means | What you do |
+|---|---|---|
+| `in_flight` | a run of this is already declared and has no result | settle it or wait. Do not declare it twice. |
+| `already_refuted` | this was tried and reverted, with the layer that broke | **do not run it.** Read the reason; it is the whole point of the tree. |
+| `already_known` | this is already in the kept chain | you are re-deriving a result the tree holds |
+| `worth_declaring` | nothing covers it, and it names one change, one operator, one family | declare it, then run it |
+| `judge_it` | nothing covers it, but it names no operator or family | your call: a node is worth it only if the result would change what you do next |
+| `not_worth_a_node` | nothing was stated | nothing to record |
+
+Run it at the start of any step that would spend quota, read a source, or change an approach — and
+also at the start of a step you think is trivial. The cheap case is exactly the one worth checking,
+because "this is obviously fine" is how a refuted branch gets re-run.
+
+**The tool matches; you judge.** `consider` is mechanical — it compares what you said against the
+refuted list, the kept chain and the open declarations, and hands you the evidence. Whether a
+finding matters enough to become a node is judgement, and that is deliberately left to you. What
+the tool removes is the excuse: after `already_refuted`, running it anyway is no longer an
+oversight, it is a decision you made against a record.
+
+## Useless collected material can be pruned. Nothing else can.
+
+A research node is a note that something was read. When it turns out to be worthless, keeping it
+makes the refuted list and the board harder to read, and a tree padded with dead notes stops being
+a signal. So:
+
+```
+kaggle_experiment_tree action="prune" competition="<slug>" node="r7"
+  reason="<why this is not worth keeping>"  read_revision=<current>
+```
+
+It is scoped hard on purpose:
+
+- **Only `research` nodes.** An experiment is evidence that quota was spent. If it was wrong,
+  record a `revert` — do not delete it. Declarations are the same.
+- **Nothing points at it.** A research node with children has an open question under it; prune the
+  branch, not the root.
+- **Not the base**, and not inside an archived round — deleting it there would make a replay score
+  unreproducible. Nor the held-out anchor.
+- **A real reason**, and a current read, same as every other write.
+- **`undo` restores it**, because the deleted node travels back in the journal entry. A prune you
+  cannot undo is just a loss.
+
+A vague reason is refused. "This is useless" says nothing; "the API it documents is deprecated" is
+a finding the next agent can use.
+
 ## Every node records which operator produced it
 
 Four atomic operators, from OpenMLE (arXiv 2607.28568): `draft` · `improve` · `debug` ·

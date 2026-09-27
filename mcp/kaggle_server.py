@@ -753,16 +753,20 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["read", "declare", "settle", "record", "plan", "status", "select",
-                             "board", "replay", "compare", "policy", "round_close", "anchor",
-                             "undo", "analyze", "review"],
+                    "enum": ["read", "consider", "declare", "settle", "prune", "record", "plan",
+                             "status", "select", "board", "replay", "compare", "policy",
+                             "round_close", "anchor", "undo", "analyze", "review"],
                     "default": "read",
                     "description": (
                         "read = the tree plus the readRevision that authorises one write "
-                        "(call this before EVERY node); declare = announce an experiment before "
-                        "running it (change, hypothesis, parent, operator, family, reason - no "
-                        "metric yet); settle = record the result of a declaration, as a new node "
-                        "parented by it; record = add one node; plan = the kept / "
+                        "(call this before EVERY node); consider = ask, at any step, whether what "
+                        "you are about to do is already refuted, already known, or already in "
+                        "flight, and whether it earns a node at all; declare = announce an "
+                        "experiment before running it (change, hypothesis, parent, operator, "
+                        "family, reason - no metric yet); settle = record the result of a "
+                        "declaration, as a new node parented by it; prune = delete one USELESS "
+                        "research node, and only that (an experiment is evidence and is never "
+                        "deleted); record = add one node; plan = the kept / "
                         "refuted / in-flight / research summary to plan from; status = counts and "
                         "whether the tree is currently sound; select = non-greedy three-factor parent "
                         "selection returning a BATCH (quality + progress + novelty, visit "
@@ -773,8 +777,20 @@ TOOLS: list[dict[str, Any]] = [
                         "deployed one; policy = create/use/deploy/list exploration policies; "
                         "round_close = archive the current round into the replay pool; anchor = "
                         "declare/query the held-out evaluation set; undo = step back the last "
-                        "state change."
+                        "state change, including restoring a pruned node."
                     ),
+                },
+                "change": {
+                    "type": "string",
+                    "description": "For action='consider': the one thing you are about to do.",
+                },
+                "hypothesis": {
+                    "type": "string",
+                    "description": "For action='consider': why you expect it to matter.",
+                },
+                "node": {
+                    "type": "string",
+                    "description": "For action='prune': the id of the research node to delete.",
                 },
                 "declared": {
                     "type": "string",
@@ -984,7 +1000,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.13.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.14.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -1092,7 +1108,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         # The guarantee. A run may only happen against a declared experiment, so no result can
         # exist only in a chat transcript. This is the one place in the plugin that refuses to do
-        # the user's work, and it refuses loudly rather than proceeding with a warning 鈥?a soft
+        # the user's work, and it refuses loudly rather than proceeding with a warning 閳?a soft
         # gate is a gate nobody has to walk through.
         _comp = str(args.get("competition") or "").strip() or str(
             (_read_metadata(folder) or {}).get("id") or "").strip()
@@ -2305,6 +2321,67 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 f"{res['note']}"
             )
             return text_response("kaggle_experiment_tree record", 0, body, "")
+
+        if action == "consider":
+            change = str(args.get("change") or "")
+            if not change:
+                return text_response(
+                    "kaggle_experiment_tree consider", 2, "",
+                    "action='consider' needs change (what you are about to do, in one line)",
+                )
+            res = experiment_tree.consider(
+                comp, change,
+                hypothesis=str(args.get("hypothesis") or ""),
+                operator=str(args.get("operator") or ""),
+                family=str(args.get("family") or ""),
+            )
+            if not res.get("ok"):
+                return text_response(
+                    f"kaggle_experiment_tree consider ({res.get('code')})", 3, "",
+                    f"{res.get('message')}",
+                )
+            lines = [
+                f"verdict: {res['verdict']}   (worth a node: {res['worthANode']})",
+                f"base: {res.get('base') or '(none)'}   in flight: "
+                f"{', '.join(res.get('inFlight') or []) or '(none)'}",
+                "",
+                res["why"],
+            ]
+            m = res.get("match")
+            if m:
+                lines += [
+                    "",
+                    f"matched {m['id']} (score {m['score']}, {m.get('kind')}, "
+                    f"verdict {m.get('verdict') or 'pending'})",
+                    f"  change: {m.get('change')}",
+                    f"  reason: {m.get('reason')}",
+                ]
+            others = [x for x in (res.get("matches") or []) if not m or x["id"] != m["id"]]
+            if others:
+                lines += ["", "other nodes that overlap: "
+                              + ", ".join(f"{x['id']} ({x['score']})" for x in others)]
+            return text_response("kaggle_experiment_tree consider", 0, "\n".join(lines), "")
+
+        if action == "prune":
+            res = experiment_tree.prune(
+                comp, str(args.get("node") or ""), str(args.get("reason") or ""),
+                read_revision=(int(args["read_revision"])
+                               if args.get("read_revision") is not None else None),
+            )
+            if not res.get("ok"):
+                detail = ""
+                if res.get("problems"):
+                    detail = "\n" + "\n".join(f"  - {p}" for p in res["problems"])
+                return text_response(
+                    f"kaggle_experiment_tree prune ({res.get('code')})", 3, "",
+                    f"{res.get('message')}{detail}",
+                )
+            return text_response(
+                "kaggle_experiment_tree prune", 0,
+                f"pruned {res['pruned']}\nreason: {res['reason']}\n"
+                f"revision: {res['revision']}\nundo restores it",
+                "",
+            )
 
         if action in ("declare", "settle"):
             node = args.get("node")

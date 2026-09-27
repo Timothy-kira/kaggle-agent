@@ -111,8 +111,12 @@ VERDICTS = ("keep", "revert", "inconclusive", "superseded")
 # research node cannot quietly name a source nothing can open.
 RESEARCH_TARGETS = ("forum", "code", "web", "paper", "model", "dataset", "rules", "leaderboard")
 
-# Fields every node carries regardless of kind.
-COMMON_REQUIRED = ("kind", "parent", "reason")
+# Fields every node carries regardless of kind. `parent` is deliberately absent from this list:
+# a null parent is not a missing field, it is the way a node says "this is a brand-new direction,
+# not a continuation of anything above" — and an explicit null does not survive the MCP transport
+# anyway, so the field arrives absent whatever the caller spells. Its VALUE is still checked below:
+# if it is set, it must name a node that exists.
+COMMON_REQUIRED = ("kind", "reason")
 
 EXPERIMENT_REQUIRED = ("change", "hypothesis", "metric", "verdict")
 RESEARCH_REQUIRED = ("question", "targets", "verdict", "opens")
@@ -778,6 +782,180 @@ def settle(competition: str, declared: str, node: dict[str, Any],
     prepared.setdefault("kind", "experiment")
     prepared.setdefault("parent", declared)
     return record(competition, prepared, read_revision)
+
+
+def _tokens(*values: Any) -> set[str]:
+    words: set[str] = set()
+    for v in values:
+        for tok in re.findall(r"[a-z0-9]+", str(v or "").lower()):
+            if len(tok) > 2:
+                words.add(tok)
+    return words
+
+
+def _overlap(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / min(len(a), len(b))
+
+
+def consider(competition: str, change: str, hypothesis: str = "",
+             operator: str = "", family: str = "") -> dict[str, Any]:
+    """Ask the tree whether a proposed step is worth a node — at every step, not only before a run.
+
+    The point is that consulting the tree must be cheap enough to do every time. A node costs a
+    read, a write and a validation pass, and a tree padded with "I looked at the docs" nodes is
+    worse than no tree: the refuted list stops being a signal. So the tool does the mechanical
+    part — matching what you are about to do against what the tree already knows — and returns a
+    verdict. The judgement of whether it matters is left to the agent, because that is judgement
+    and not lookup.
+    """
+    tree = read(competition)
+    if tree.get("problems"):
+        return {"ok": False, "code": "tree_has_problems", "tree": tree}
+    inner = _current(tree)
+    nodes = inner.get("nodes") or {}
+    proposed = _tokens(change, hypothesis)
+    base_id = (inner.get("base") or {}).get("id")
+    inflight_ids = {p["id"] for p in pending_declarations(tree)}
+
+    matches: list[dict[str, Any]] = []
+    for nid, n in sorted(nodes.items()):
+        if not isinstance(n, dict):
+            continue
+        score = _overlap(proposed, _tokens(n.get("change"), n.get("hypothesis")))
+        if score < 0.34:
+            continue
+        matches.append({
+            "id": nid, "kind": n.get("kind"), "score": round(score, 3),
+            "verdict": n.get("verdict"), "change": n.get("change"),
+            "failureLayer": n.get("failureLayer"), "reason": n.get("reason"),
+            "family": n.get("family"), "operator": n.get("operator"),
+            "inFlight": nid in inflight_ids,
+        })
+    matches.sort(key=lambda m: -m["score"])
+
+    def _pick(pred):
+        return next((m for m in matches if pred(m)), None)
+
+    refuted_hit = _pick(lambda m: m["verdict"] == "revert")
+    inflight_hit = _pick(lambda m: m["inFlight"])
+    kept_hit = _pick(lambda m: m["verdict"] == "keep" and m["id"] != base_id)
+
+    if inflight_hit:
+        verdict, why, node = "in_flight", (
+            f"{inflight_hit['id']} already declares this and has no result yet. Settle it or "
+            f"wait; do not declare it twice."), inflight_hit
+    elif refuted_hit:
+        verdict, why, node = "already_refuted", (
+            f"{refuted_hit['id']} was reverted{f' at layer {refuted_hit['failureLayer']}' if refuted_hit.get('failureLayer') else ''}. "
+            f"Its reason: {refuted_hit['reason']!r}. Re-running it is the exact waste the tree "
+            f"exists to prevent."), refuted_hit
+    elif kept_hit:
+        verdict, why, node = "already_known", (
+            f"{kept_hit['id']} already kept this. You are re-deriving a result the tree holds; "
+            f"if you think it no longer holds, that is a node with a reason, not a repeat."), kept_hit
+    elif not change:
+        verdict, why, node = "not_worth_a_node", (
+            "no change was stated, so there is nothing to record."), None
+    elif operator and family:
+        verdict, why, node = "worth_declaring", (
+            "nothing in the tree covers this, and it names one change, one operator and one "
+            "family — that is what an experiment node is for. Declare it before you run it."), None
+    else:
+        verdict, why, node = "judge_it", (
+            "nothing in the tree covers this, but it does not name an operator and a family, so "
+            "the tree cannot score or attribute it. A node is worth it only when the result "
+            "would change what you do next."), None
+
+    return {
+        "ok": True, "verdict": verdict, "why": why, "match": node,
+        "matches": matches[:5],
+        "worthANode": verdict == "worth_declaring",
+        "base": base_id,
+        "inFlight": sorted(inflight_ids),
+        "revision": tree["revision"],
+    }
+
+
+def prune(competition: str, node_id: str, reason: str,
+          read_revision: Optional[int] = None) -> dict[str, Any]:
+    """Delete one research node — the collected material — and nothing else.
+
+    Scoped deliberately narrow. A research node is a note that something was read; if it turned
+    out to be useless, keeping it only makes the refuted list and the board harder to read. An
+    experiment node is evidence that quota was spent, and evidence is not deleted. So this refuses
+    anything that is not a research node, refuses a node anything still points at, and records the
+    deletion in the journal so `undo` can put it back.
+    """
+    if read_revision is None:
+        return {"ok": False, "code": "read_required",
+                "message": f"read the tree before pruning, so you see what you are deleting. Call "
+                           f"kaggle_experiment_tree action=\"read\" for {competition!r}."}
+    tree = load(competition)
+    if int(read_revision) != int(tree["revision"]):
+        return {"ok": False, "code": "stale_read",
+                "message": f"the tree changed since you read it (you read revision "
+                           f"{read_revision}, it is now {tree['revision']}). Read it again."}
+    if not _norm_reason(reason) or _norm_reason(reason) in EMPTY_REASONS:
+        return {"ok": False, "code": "empty_reason",
+                "message": "say why this research node is not worth keeping — 'it is useless' is "
+                           "not a reason, 'the API it documents is deprecated' is."}
+
+    inner = _current(tree)
+    nodes = inner.get("nodes") or {}
+    nid = str(node_id or "").strip()
+    if nid not in nodes:
+        return {"ok": False, "code": "unknown_node",
+                "message": f"no node {nid!r} in the tree for {competition!r}"}
+    node = nodes[nid]
+
+    if node.get("kind") != "research":
+        return {"ok": False, "code": "not_prunable",
+                "message": f"{nid!r} is a {node.get('kind')!r} node, and only collected research "
+                           f"material can be pruned. An experiment is evidence that quota was "
+                           f"spent; if it was wrong, record a revert rather than deleting it."}
+    if nid == (inner.get("base") or {}).get("id"):
+        return {"ok": False, "code": "not_prunable",
+                "message": f"{nid!r} is the current base. Promote another node with "
+                           f"record(new_base=...) first."}
+    children = [k for k, v in nodes.items() if isinstance(v, dict) and v.get("parent") == nid]
+    if children:
+        return {"ok": False, "code": "still_referenced",
+                "message": f"{nid!r} still has children ({', '.join(sorted(children))}), so its "
+                           f"question is not settled yet. Prune the branch, not the root."}
+    for rnd in tree.get("rounds") or []:
+        archived = ((rnd.get("tree") or {}).get("nodes") or {})
+        if nid in archived:
+            return {"ok": False, "code": "archived",
+                    "message": f"{nid!r} is inside an archived round, which is the replay pool. "
+                               f"Deleting it would make a replay score unreproducible."}
+    if nid in (tree.get("anchor") or {}).get("nodes", []) or nid == (tree.get("anchor") or {}).get("heldOut"):
+        return {"ok": False, "code": "protected",
+                "message": f"{nid!r} is part of the held-out anchor."}
+
+    before_nodes = dict(nodes)
+    del before_nodes[nid]
+    candidate = dict(tree)
+    inner_candidate = dict(inner)
+    inner_candidate["nodes"] = before_nodes
+    candidate["tree"] = inner_candidate
+    problems = validate(candidate)
+    if problems:
+        return {"ok": False, "code": "would_break_tree",
+                "message": "deleting this node would leave the tree invalid",
+                "problems": problems}
+
+    inner_candidate["nodes"] = before_nodes
+    tree["tree"] = inner_candidate
+    tree.setdefault("journal", []).append({
+        "op": "prune", "nodeId": nid, "reason": str(reason)[:400],
+        "undoable": True, "before": {"node": node},
+    })
+    tree["revision"] = int(tree["revision"]) + 1
+    save(competition, tree)
+    return {"ok": True, "pruned": nid, "reason": str(reason)[:400],
+            "revision": tree["revision"], "path": tree.get("path")}
 
 
 def record(competition: str, node: dict[str, Any], read_revision: Optional[int],
@@ -1806,6 +1984,13 @@ def undo(competition: str) -> dict[str, Any]:
         tree["rounds"].pop()
         tree["tree"] = before.get("tree") or tree["tree"]
         tree["currentRound"] = before.get("currentRound", tree["currentRound"])
+    elif op == "prune":
+        # Deleting collected material is reversible by construction: the node travels back in the
+        # journal entry. A prune you cannot undo is just a loss.
+        restored = before.get("node")
+        if isinstance(restored, dict) and entry.get("nodeId"):
+            inner_now = _current(tree)
+            inner_now.setdefault("nodes", {})[entry["nodeId"]] = restored
     tree["revision"] = int(tree["revision"]) + 1
     save(competition, tree)
     return {"ok": True, "undone": op, "entry": entry, "revision": tree["revision"]}

@@ -1799,13 +1799,127 @@ def check_launch_gate():
     launch_skill = ROOT / "skills" / "experiment-launch" / "SKILL.md"
     for path, tokens in (
         (tree_skill, ('action="declare"', 'action="settle"', 'declares="', "IN FLIGHT",
-                      "parent: null", "new_base")),
+                      "parent: null", "new_base", 'action="consider"', 'action="prune"',
+                      "already_refuted", "worth_declaring", "Only `research` nodes",
+                      "undo` restores it")),
         (launch_skill, ('action="declare"', 'action="settle"', "declares         =", "REQUIRED")),
     ):
         if path.is_file():
             body = path.read_text(encoding="utf-8")
             for token in tokens:
                 check(token in body, f"{path.name} documents {token!r}")
+
+
+# ---------------------------------------------------------------- consider and prune
+# Two things the tree needed. `consider` makes consulting it cheap enough to do at EVERY step,
+# not only before a run, while still refusing to pad the tree with "I looked at the docs" nodes.
+# `prune` deletes collected research material that turned out to be useless — and only that:
+# an experiment is evidence that quota was spent, and evidence is not deleted.
+def check_consider_and_prune():
+    print("consider and prune")
+    import shutil as _shutil
+
+    spec = importlib.util.spec_from_file_location("_ks_cp", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the server module loads for the consider/prune test: {exc}")
+        return
+    et = sys.modules.get("experiment_tree") or ks.experiment_tree
+
+    comp = "zz-check-consider-prune"
+    tree_file = Path(et.tree_path(comp))
+    if tree_file.exists():
+        tree_file.unlink()
+    try:
+        def _rev():
+            return et.read(comp)["revision"]
+
+        def _exp(nid, change, verdict, **kw):
+            n = {"id": nid, "kind": "experiment", "change": change, "hypothesis": "h",
+                 "parent": None, "operator": "draft", "family": "sampling",
+                 "reason": "because", "evidence": "local-only", "verdict": verdict,
+                 "metric": {"name": "s", "parent": None, "result": 0.5, "delta": 0.1,
+                            "rank": 1, "rankSource": "lb"}}
+            n.update(kw)
+            return et.record(comp, n, read_revision=_rev())
+
+        def _res(nid, question, parent=None):
+            return et.record(comp, {"id": nid, "kind": "research", "question": question,
+                                    "targets": ["forum"], "verdict": "keep",
+                                    "opens": "an idea", "parent": parent,
+                                    "reason": "the forum said so"}, read_revision=_rev())
+
+        check(_exp("e1", "warm-start the encoder from a checkpoint", "revert",
+                   failureLayer="metric").get("ok"), "seed: a reverted experiment")
+        check(_exp("e2", "cache the retriever index to disk", "keep").get("ok"),
+              "seed: a kept experiment")
+        check(_res("r1", "which prompt format do competitors use").get("ok"),
+              "seed: a research node")
+
+        c = et.consider(comp, "warm-start the encoder from a checkpoint", "faster",
+                        operator="draft", family="sampling")
+        check(c["verdict"] == "already_refuted",
+              f"consider spots a step that was already refuted: {c['verdict']}")
+        check(c["worthANode"] is False, "a refuted step is not worth a node")
+        check((c.get("match") or {}).get("failureLayer") == "metric",
+              "and it carries the layer that broke")
+        c = et.consider(comp, "cache the retriever index to disk", "avoid refetching",
+                        operator="draft", family="sampling")
+        check(c["verdict"] == "already_known",
+              f"consider spots a step already kept: {c['verdict']}")
+        c = et.consider(comp, "shrink the context window to 4k", "cheaper",
+                        operator="improve", family="context")
+        check(c["verdict"] == "worth_declaring" and c["worthANode"] is True,
+              f"a genuinely new step earns a node: {c['verdict']}")
+        check(et.consider(comp, "", "")["verdict"] == "not_worth_a_node",
+              "an empty change is not worth a node")
+        c = et.consider(comp, "read the library release notes", "to know what changed")
+        check(c["verdict"] == "judge_it" and c["worthANode"] is False,
+              f"an unnamed change with no operator or family goes to judgement: {c['verdict']}")
+        check(et.declare(comp, {"id": "p1", "change": "quantise the weights to int8",
+                                "hypothesis": "half the memory", "parent": "e2",
+                                "operator": "debug", "family": "memory",
+                                "reason": "the next cost"}, read_revision=_rev()).get("ok"),
+              "seed: a declaration")
+        c = et.consider(comp, "quantise the weights to int8", "half the memory",
+                        operator="debug", family="memory")
+        check(c["verdict"] == "in_flight" and c["inFlight"] == ["p1"],
+              f"consider spots a step already declared: {c['verdict']}")
+
+        r = et.prune(comp, "r1", "the leaderboard answered it", read_revision=_rev())
+        check(r.get("ok"), f"a useless research node is prunable: {r.get('message')}")
+        check("r1" not in et._current(et.load(comp))["nodes"], "and it is gone")
+        u = et.undo(comp)
+        check(u.get("ok") == True and "r1" in et._current(et.load(comp))["nodes"],
+              f"undo restores a pruned node (undid {u.get('undone')})")
+
+        check(et.prune(comp, "e2", "it is clutter now", read_revision=_rev()).get("code")
+              == "not_prunable", "an experiment node is NOT prunable")
+        check("quota was spent" in (et.prune(comp, "e2", "clutter",
+                                             read_revision=_rev()).get("message") or ""),
+              "and the refusal says why: evidence is not deleted")
+        check(et.prune(comp, "e2", "clutter", read_revision=None).get("code") == "read_required",
+              "pruning without a read is refused")
+        check(et.prune(comp, "e2", "clutter", read_revision=999).get("code") == "stale_read",
+              "pruning on a stale read is refused")
+        check(et.prune(comp, "e2", "clutter", read_revision=_rev()).get("code")
+              == "not_prunable", "a real reason still does not make an experiment prunable")
+        check(et.prune(comp, "p1", "silly idea", read_revision=_rev()).get("code")
+              == "not_prunable", "a declaration is NOT prunable")
+        _res("r2", "which seeds are worth trying", parent="r1")
+        check(et.prune(comp, "r1", "no longer interesting", read_revision=_rev()).get("code")
+              == "still_referenced", "a research node with children is NOT prunable")
+        check(et.prune(comp, "nope", "x", read_revision=_rev()).get("code") == "unknown_node",
+              "pruning a node that does not exist is refused")
+        check(et.prune(comp, "r1", "better", read_revision=None).get("code") == "read_required",
+              "prune needs a read before it deletes anything")
+    finally:
+        if tree_file.exists():
+            tree_file.unlink()
+        _shutil.rmtree(ROOT / "mcp" / "__pycache__", ignore_errors=True)
 
 
 def main() -> int:
@@ -1839,6 +1953,7 @@ def main() -> int:
     check_browser_is_search_only()
     check_research_preflight()
     check_launch_gate()
+    check_consider_and_prune()
     check_publishable()
     print()
     if failures:
