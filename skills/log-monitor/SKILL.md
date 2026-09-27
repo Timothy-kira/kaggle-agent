@@ -1,6 +1,6 @@
 ---
 name: log-monitor
-description: Use when an experiment or notebook run is producing logs that need watching - on Kaggle or locally - and the user wants a subagent to track it instead of the main agent. Covers delegating log fetching to a subagent, re-reading the fetch interval every cycle so a GUI change applies live, and the only three conditions that justify interrupting the main agent - an error in the log, the run reaching a terminal state, or a decision that needs the user. Also covers when NOT to set up monitoring at all.
+description: "Use when an experiment or notebook run is producing logs that need watching - on Kaggle or locally - and the user wants it tracked instead of the main agent polling. Uses MiniMax Code's built-in scheduled task (定时任务 / cron self) as the heartbeat, because a subagent is one turn and cannot wait: it reports and returns. Covers the tick body, re-reading the fetch interval every tick so a GUI change applies live, and the only three conditions that justify interrupting the main agent - an error in the log, the run reaching a terminal state, or a decision that needs the user - plus the rule that the cron deletes itself on any of them. Also covers when NOT to set up monitoring at all, and the sleep-the-machine caveat."
 ---
 
 # Watching a run's log without spamming anyone
@@ -10,9 +10,13 @@ either of the two dull ones: the main agent polls in a tight loop, burns its own
 repetitive "still running" updates, and misses the one line that mattered; or nobody
 watches, and a run that died at 00:04 is not noticed until morning.
 
-So the fetching is delegated, and the reporting is filtered. Delegation is not a
-micro-optimisation - a subagent with its own context can watch a log for hours without
-competing with the main agent for attention, and it can be given one narrow job.
+So the fetching is delegated, and the reporting is filtered. The mechanism is **MiniMax Code's own
+scheduled tasks (定时任务)**, not something this plugin reinvents: each tick is a fresh turn and
+the runtime's scheduler holds the loop, so nothing has to stay awake. Load the built-in `mavis`
+skill and read its cron reference for the contract — `cron self` for a periodic external-state
+re-check, `cron once` for a single future turn, `cron create` for recurrence the user asked for.
+**This skill does not restate that contract**, because a second copy of an official document is a
+second copy that goes stale. What follows is only what is specific to watching a Kaggle log.
 
 ## This workflow is complete without any widget
 
@@ -29,7 +33,17 @@ for a 90-second job is more machinery than the job.
 Start one when the run is long enough that silence is ambiguous: a multi-hour training run,
 a queued job waiting on a GPU, or anything where "no news" could mean "died quietly".
 
-## Step 1: register what to watch
+## Step 1: the target is already registered
+
+**Both launchers register the run themselves**, so there is usually nothing to do here:
+
+| Engine | What the launcher attached |
+|---|---|
+| `kaggle_kernel_launch` | the kernel ref it just pushed |
+| `kaggle_local_launch` | the log file it is capturing the run's output into |
+
+Confirm with `kaggle_log_monitor action="get"`. Call `action="target"` yourself only for a log
+something else is writing - a second machine, a process you did not start through a launcher:
 
 ```
 kaggle_log_monitor action="target" kind="kaggle" ref="<owner/slug>"
@@ -37,7 +51,7 @@ kaggle_log_monitor action="target" kind="local"  path="<path/to/log>"
 ```
 
 Register both when a run has a cloud notebook and a local log - they are watched by the same
-subagent, and a failure in either is worth reporting. Re-registering the same ref replaces
+loop, and a failure in either is worth reporting. Re-registering the same ref replaces
 the existing entry, so re-registering after a re-push does not cause a double fetch.
 
 ## Step 2: settle the fetch interval — render the control
@@ -78,39 +92,72 @@ kaggle_log_monitor action="set" interval_seconds=120
 The value is clamped to 15-900s and snapped to 15s steps; the tool reports the applied value,
 so tell the user what actually took effect rather than what was requested.
 
-## Step 3: delegate the fetching to a subagent
+## Step 3: give the loop a heartbeat — the built-in scheduled task
 
-The subagent does the polling. The main agent does not poll, and must not interleave its own
-`kaggle_kernels_logs` calls into the loop - two pollers on one run produce duplicate reads
-and doubled API spend.
+**A subagent is one turn.** It can check once, report, and return. It cannot wait for a log to
+change, because nothing wakes it. Measured on this machine: a watcher subagent ran 6.6 minutes,
+reported, and ended `succeeded` — it was not killed, it finished. Nothing in the brief changes
+that, because the primitive has no heartbeat. (For the record: there is also no time-based abort —
+of 33 subagent tasks the longest that succeeded ran 18.3 minutes, and the ones that ended
+`aborted` were explicitly cancelled, not cut off.)
 
-Launch an `explore` subagent in the background with a self-contained brief. It must contain,
-in its own words and not by reference to this conversation:
+**Use the built-in scheduled task.** Load the `mavis` skill and follow its cron reference; the
+call shape is `mavis({ command: "cron self", args: { cron_name, every, prompt } })`, and
+`cron self` is the one meant for external state with no completion signal — which is exactly what a
+notebook run is. The runtime owns the loop, every tick is a new turn, and `quiet_on_skip` keeps a
+tick with nothing to say from messaging anyone.
+
+This skill only supplies the tick body, because that part is specific to a Kaggle log:
+
+```
+Check the run registered in kaggle_log_monitor (action="get"), then read its log.
+Still running, nothing wrong → exit quietly; say nothing.
+Log shows an error      → report it, and delete this cron.
+Run reached a terminal state → report the outcome, settle the experiment node, delete this cron.
+Log unreadable         → say so once, keep this cron for two more ticks, then delete it.
+Never poll between ticks, and never report progress that is only progress.
+```
+
+Why each piece is there:
+
+- **`every`** — the tick interval. Pick it from the run's horizon: a 3-minute notebook check is
+  reasonable, a 6-hour training run does not need 3-minute ticks. `kaggle_log_monitor
+  action="get"` still returns the user's `intervalSeconds`; use it as the *read* cadence inside a
+  tick, and change it with `action="set"` or the slider.
+- **`action="get"` at the top of every tick** — it re-reads the interval from disk each call,
+  which is what makes a slider change take effect. Report the revision you last saw, so "did my
+  change take effect" is answerable from evidence.
+- **silent ticks** — a tick with nothing to say writes a progress block and exits without
+  messaging. That is the behaviour you want.
+- **delete the cron** — on an error, a terminal state, or after two unreadable ticks. A loop
+  with no exit condition is a leak that bills API calls forever. Manage it with `cron list` /
+  `cron get` / `cron delete`; `cron trigger` runs one immediately if the user asks.
+
+**Also say this to the user:** scheduled tasks depend on the desktop app running, and a machine
+that sleeps or shuts down may miss a tick. For a run that matters, that is worth saying out loud
+rather than discovering at hour six.
+
+### A subagent is still the right tool for one thing
+
+If the watch is short and the whole answer fits in a couple of minutes — confirming a run
+actually started, catching an immediate crash — a short `explore` subagent is lighter than
+scheduling anything. Launch it with a self-contained brief, in its own words and not by reference
+to this conversation:
 
 - the ref or path to watch, and whether it is Kaggle or local;
-- that it calls `kaggle_log_monitor action="get"` **at the start of every cycle** and sleeps
-  the returned `intervalSeconds` between fetches;
+- that it calls `kaggle_log_monitor action="get"` at the start of every cycle and sleeps the
+  returned `intervalSeconds` between fetches;
 - that it must never cache the interval from its first read;
 - the three reporting conditions below, verbatim;
 - what to do when it cannot read the log at all.
 
-The subagent has no parent context. A brief that says "watch the run we discussed" produces
-a subagent that watches nothing.
-
-### Why the re-read is not optional
-
-`kaggle_log_monitor action="get"` reads the interval from disk on every call. That is the
-mechanism that makes a GUI change take effect on a subagent that is already running. If the
-subagent captures the interval once at launch - even as a local variable it reuses - the
-user's slider moves and nothing happens for the rest of the run.
-
-So the sleep must be computed from a fresh `get` each time, and the subagent should mention
-the revision it last saw when it finally reports, so "did my change take effect" is
-answerable from evidence.
+The subagent has no parent context. A brief that says "watch the run we discussed" produces a
+subagent that watches nothing. **And it will return when it has nothing left to report** — that is
+the design, not a fault, so scope it to a bounded wait.
 
 ## Step 4: report only on the three conditions
 
-The subagent stays silent otherwise. Not quiet in the chat - absent. Progress that is
+A tick stays silent otherwise. Not quiet in the chat - absent. Progress that is
 merely progress is not news.
 
 **Report when:**
@@ -120,7 +167,7 @@ merely progress is not news.
    context to locate it, not the whole log.
 2. **The run reached a terminal state** - stopped, ended, or completed. Report the state,
    the elapsed time, and where the output landed. This is the end of monitoring; tell the
-   main agent to stop the subagent.
+   main agent to delete the cron.
 3. **A decision is needed that the user must make** - a budget question, an ambiguous
    failure with two plausible causes, a point where the next step depends on intent. Say
    the question and what the options are. Do not decide unilaterally and do not ask the user
@@ -129,7 +176,7 @@ merely progress is not news.
 **Do not report:** a successful step, a metric that looks normal, a changed ETA with no
 decision attached, a repeat of a line already reported, or "still running" on its own.
 
-Silence is the default state, and a subagent that reports nothing for an hour has behaved
+Silence is the default state, and a watch that reports nothing for an hour has behaved
 correctly.
 
 ### Reporting a log error
@@ -150,20 +197,20 @@ the identical failure every 15s has become noise.
 
 ## Step 5: the main agent's side
 
-When the subagent reports, act on the condition:
+When a tick reports, act on the condition:
 
 - **Error** - read the logs yourself to confirm, then decide: fix and re-push, reduce the
   offending memory or batch dimension, or stop and record the node as refuted on the
   experiment tree. If the run must be killed, `kaggle_kernel_retire` backs it up first.
 - **Terminal** - pull the output (`kaggle_kernels_output` for Kaggle, read the file for
-  local), record the result on the experiment tree, and stop the subagent if it has not
-  already exited.
+  local), record the result on the experiment tree, and **delete the cron** if the tick did not
+  already.
 - **Decision** - put the question to the user, with the options and a recommendation. This
   is the only condition where the user is interrupted by a question, so it has to be worth
   answering.
 
-After any of the three, the run is over or paused: stop the subagent rather than leaving it
-polling a dead ref.
+After any of the three, the run is over or paused: **delete the cron** rather than leaving it
+polling a dead ref. `cron list` shows what is still watching, and `cron delete` stops it.
 
 ### When the user is not watching
 
@@ -212,8 +259,8 @@ act on it without asking.
 
 ## Do not
 
-- Do not poll in the main agent while a subagent is also polling.
-- Do not restart a subagent just to change the interval; write the config and let the next
+- Do not poll in the main agent while the cron is also polling.
+- Do not restart the loop just to change the interval; write the config and let the next
   cycle pick it up.
 - Do not keep a monitor alive after a terminal state; it becomes an API cost with no purpose.
 - Do not report a metric or a milestone unless a decision depends on it. Progress is not an

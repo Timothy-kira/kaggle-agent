@@ -2137,6 +2137,38 @@ def check_local_run_is_monitored():
         _shutil.rmtree(work, ignore_errors=True)
 
 
+def check_monitor_uses_the_builtin_cron():
+    print("monitor heartbeat")
+    skill = ROOT / "skills" / "log-monitor" / "SKILL.md"
+    if not check(skill.is_file(), "the log-monitor skill is present"):
+        return
+    body = skill.read_text(encoding="utf-8")
+    low = body.lower()
+
+    # It must REFERENCE the built-in surface, not fork it. A second copy of an official
+    # document is a second copy that goes stale, and the whole point of this project is
+    # that prose rots. So: name the mechanism, point at the reference, and keep only the
+    # tick body that is specific to a Kaggle log.
+    check("cron self" in low, "the skill names the built-in scheduled-task mechanism")
+    check("mavis" in low, "it points at the built-in mavis skill rather than restating it")
+    check("cron reference" in low or "cron.md" in low,
+          "it tells the agent to read the official cron reference")
+    check("定时任务" in body, "and it names the user-facing feature the UI shows")
+    check("delete this cron" in low, "the tick body deletes the cron on a terminal state")
+    check("quiet_on_skip" in low or "exit quietly" in low,
+          "the tick body is silent when there is nothing to say")
+    check("sleep" in low, "it warns that a sleeping machine can miss a tick")
+
+    # The stale claim that made this whole question necessary: a subagent is ONE turn, so it
+    # cannot watch. Assert the corrected understanding is present and the wrong one is gone.
+    check("a subagent is one turn" in low,
+          "the skill states that a subagent cannot hold a loop open")
+    check("stop the subagent" not in low and "stop a subagent" not in low,
+          "no instruction survives that still tells you to stop a subagent as the exit")
+    check("watch a log for hours" not in low,
+          "the old claim that a subagent can watch a log for hours is gone")
+
+
 def main() -> int:
     check_manifest()
     check_servers()
@@ -2170,6 +2202,7 @@ def main() -> int:
     check_launch_gate()
     check_launch_attaches_monitoring()
     check_local_run_is_monitored()
+    check_monitor_uses_the_builtin_cron()
     check_consider_and_prune()
     check_publishable()
     print()

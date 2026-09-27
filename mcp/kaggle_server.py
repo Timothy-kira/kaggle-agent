@@ -636,7 +636,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "kaggle_local_launch",
         "description": (
-            "Start a LOCAL run, capture its output to a log, and attach that log to the monitor 鈥?"
+            "Start a LOCAL run, capture its output to a log, and attach that log to the monitor 閳?"
             "the symmetric counterpart of kaggle_kernel_launch. A local run costs no quota and "
             "has full logs, which makes it the right engine for a short or CPU-bound run; this "
             "exists so choosing it does not also mean choosing to go unwatched. REFUSES to start "
@@ -670,7 +670,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "timeout_seconds": {
                     "type": "integer",
-                    "description": "Recorded for the report; not enforced 鈥?kill the pid to stop.",
+                    "description": "Recorded for the report; not enforced 閳?kill the pid to stop.",
                 },
                 "monitor": {
                     "type": "boolean",
@@ -1054,7 +1054,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.15.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.16.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -1162,7 +1162,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         # The guarantee. A run may only happen against a declared experiment, so no result can
         # exist only in a chat transcript. This is the one place in the plugin that refuses to do
-        # the user's work, and it refuses loudly rather than proceeding with a warning 闁?a soft
+        # the user's work, and it refuses loudly rather than proceeding with a warning 闂?a soft
         # gate is a gate nobody has to walk through.
         _comp = str(args.get("competition") or "").strip() or str(
             (_read_metadata(folder) or {}).get("id") or "").strip()
@@ -2523,7 +2523,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "kaggle_local_launch":
         # A local run used to have no entry point at all: the agent composed a shell command and
         # ran it, so there was nowhere for monitoring to attach itself. This is the symmetric
-        # counterpart to kaggle_kernel_launch 鈥?same declaration gate, same automatic log target 鈥?        # so "nothing is watching this run" stops being a consequence of which engine you chose.
+        # counterpart to kaggle_kernel_launch 閳?same declaration gate, same automatic log target 閳?        # so "nothing is watching this run" stops being a consequence of which engine you chose.
         command = args.get("command")
         if isinstance(command, str):
             parts = command.split()
@@ -2591,7 +2591,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         notes_l: list[str] = []
         if args.get("timeout_seconds") is not None:
             notes_l.append(f"timeout: {int(args['timeout_seconds'])}s (reported, not enforced "
-                           f"here 鈥?kill the pid if it overruns)")
+                           f"here 閳?kill the pid if it overruns)")
 
         handle = None
         try:
