@@ -276,6 +276,13 @@ TOOLS: list[dict[str, Any]] = [
                         "action=\"declare\". Required."
                     ),
                 },
+                "monitor": {
+                    "type": "boolean",
+                    "description": (
+                        "Set false to skip attaching log monitoring to this run. Default true: a "
+                        "run that nothing watches is a run you learn about hours late."
+                    ),
+                },
             },
             "required": ["folder", "declares"],
         },
@@ -624,6 +631,53 @@ TOOLS: list[dict[str, Any]] = [
                 "scope": {"type": "string", "description": "Device-flow scope. Defaults to repo."},
             },
             "required": ["action"],
+        },
+    },
+    {
+        "name": "kaggle_local_launch",
+        "description": (
+            "Start a LOCAL run, capture its output to a log, and attach that log to the monitor 鈥?"
+            "the symmetric counterpart of kaggle_kernel_launch. A local run costs no quota and "
+            "has full logs, which makes it the right engine for a short or CPU-bound run; this "
+            "exists so choosing it does not also mean choosing to go unwatched. REFUSES to start "
+            "unless the run was declared first: pass declares=<node id> from "
+            "kaggle_experiment_tree action=\"declare\". Pass monitor=false to opt out of the "
+            "log target."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "argv tokens, e.g. [\"python\",\"train.py\",\"--epochs\",\"3\"]",
+                },
+                "cwd": {"type": "string", "description": "Working directory. Defaults to the cwd."},
+                "log_path": {
+                    "type": "string",
+                    "description": (
+                        "Where to capture stdout+stderr. Defaults to "
+                        "~/.kaggle-agent/local-runs/<competition>/<competition>-<timestamp>.log"
+                    ),
+                },
+                "competition": {
+                    "type": "string",
+                    "description": "Competition slug, so the result has somewhere to land. Required.",
+                },
+                "declares": {
+                    "type": "string",
+                    "description": "Node id of an unsettled declaration. Required.",
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Recorded for the report; not enforced 鈥?kill the pid to stop.",
+                },
+                "monitor": {
+                    "type": "boolean",
+                    "description": "Set false to skip attaching the log to the monitor.",
+                },
+            },
+            "required": ["command", "competition", "declares"],
         },
     },
     {
@@ -1000,7 +1054,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.14.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.15.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -1108,7 +1162,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         # The guarantee. A run may only happen against a declared experiment, so no result can
         # exist only in a chat transcript. This is the one place in the plugin that refuses to do
-        # the user's work, and it refuses loudly rather than proceeding with a warning 閳?a soft
+        # the user's work, and it refuses loudly rather than proceeding with a warning 闁?a soft
         # gate is a gate nobody has to walk through.
         _comp = str(args.get("competition") or "").strip() or str(
             (_read_metadata(folder) or {}).get("id") or "").strip()
@@ -1172,6 +1226,34 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         result = text_response(" ".join(cmd), *run_kaggle(cmd))
         if notes:
             result["content"][0]["text"] += "\nnotes: " + "; ".join(notes)
+        # Monitoring is attached here, not left to the caller to remember. A run that nothing is
+        # watching is a run whose failure you learn about hours later, and "set up the log monitor
+        # after launching" is exactly the instruction a long turn forgets. Targeting is local,
+        # reversible and free; only dispatching a watcher is a decision, and that stays the agent's.
+        if not result.get("isError") and args.get("monitor") is not False:
+            _ref = ""
+            try:
+                _ref = str((_read_metadata(folder) or {}).get("id") or "").strip()
+            except Exception:
+                _ref = ""
+            if not _ref:
+                _m = re.search(r"kaggle\.com/code/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)",
+                               result["content"][0]["text"])
+                if _m:
+                    _ref = f"{_m.group(1)}/{_m.group(2)}"
+            if _ref:
+                try:
+                    logmonitor.set_target("kaggle", ref=_ref)
+                    result["content"][0]["text"] += (
+                        f"\nmonitoring: this run is now a log-monitor target ({_ref}). "
+                        f"kaggle_log_monitor action=\"get\" reports it; clear it with "
+                        f"action=\"clear\" when the run ends."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    result["content"][0]["text"] += (
+                        f"\nmonitoring: could not attach the target automatically ({exc}). "
+                        f"Call kaggle_log_monitor action=\"target\" ref=\"{_ref}\"."
+                    )
         return result
 
     if name == "kaggle_kernel_verify":
@@ -2437,6 +2519,116 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             "kaggle_experiment_tree", 2, "",
             f"unknown action: {action} (use read, declare, settle, record, plan or status)",
         )
+
+    if name == "kaggle_local_launch":
+        # A local run used to have no entry point at all: the agent composed a shell command and
+        # ran it, so there was nowhere for monitoring to attach itself. This is the symmetric
+        # counterpart to kaggle_kernel_launch 鈥?same declaration gate, same automatic log target 鈥?        # so "nothing is watching this run" stops being a consequence of which engine you chose.
+        command = args.get("command")
+        if isinstance(command, str):
+            parts = command.split()
+        elif isinstance(command, list) and command:
+            parts = [str(c) for c in command]
+        else:
+            return text_response(
+                "kaggle local launch", 2, "",
+                "command is required (a list of argv tokens, or one string)",
+            )
+        if not parts or not parts[0]:
+            return text_response("kaggle local launch", 2, "", "command is empty")
+
+        lcomp = str(args.get("competition") or "").strip()
+        ldecl = str(args.get("declares") or "").strip()
+        if not lcomp:
+            return text_response(
+                "kaggle local launch", 3, "",
+                'a local run must name the competition too, so its result has somewhere to land. '
+                'Pass competition="<slug>".',
+            )
+        lpending = experiment_tree.pending_declarations(lcomp)
+        if not ldecl:
+            _avail = ", ".join(p["id"] for p in lpending) or "(none declared yet)"
+            return text_response(
+                "kaggle local launch", 3, "",
+                f"no experiment was declared for {lcomp!r}, so this run's result would exist "
+                f"only in the conversation. Declare it first:\n"
+                f'  kaggle_experiment_tree action="declare" competition="{lcomp}" '
+                f"read_revision=<rev> node={{...}}\n"
+                f"  kaggle_local_launch ... declares=\"<node id>\"\n\n"
+                f"declarations already open: {_avail}",
+            )
+        lnodes = (experiment_tree._current(experiment_tree.load(lcomp)).get("nodes") or {})
+        lopen = {p["id"] for p in lpending}
+        if ldecl not in lopen:
+            _why = ("it does not exist" if ldecl not in lnodes
+                    else "it is not an unsettled declaration")
+            return text_response(
+                "kaggle local launch", 3, "",
+                f"declares={ldecl!r} was refused: {_why}.\nopen declarations: "
+                + (", ".join(sorted(lopen)) or "(none)"),
+            )
+
+        cwd = str(args.get("cwd") or "").strip() or os.getcwd()
+        if not os.path.isdir(cwd):
+            return text_response("kaggle local launch", 2, "",
+                                f"cwd does not exist: {cwd}")
+        log_path = str(args.get("log_path") or "").strip()
+        if not log_path:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            log_dir = os.path.join(
+                os.path.expanduser("~"), ".kaggle-agent", "local-runs", lcomp)
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+            except OSError as exc:
+                return text_response("kaggle local launch", 3, "",
+                                    f"could not create the log directory {log_dir}: {exc}")
+            log_path = os.path.join(log_dir, f"{lcomp}-{stamp}.log")
+        log_dir_of = os.path.dirname(os.path.abspath(log_path))
+        if log_dir_of and not os.path.isdir(log_dir_of):
+            return text_response("kaggle local launch", 2, "",
+                                f"the log directory does not exist: {log_dir_of}")
+
+        notes_l: list[str] = []
+        if args.get("timeout_seconds") is not None:
+            notes_l.append(f"timeout: {int(args['timeout_seconds'])}s (reported, not enforced "
+                           f"here 鈥?kill the pid if it overruns)")
+
+        handle = None
+        try:
+            handle = open(log_path, "ab", buffering=0)
+            proc = subprocess.Popen(  # noqa: S603
+                parts, cwd=cwd, stdout=handle, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, shell=False,
+            )
+        except (OSError, ValueError) as exc:
+            if handle is not None:
+                handle.close()
+            return text_response(" ".join(parts), 2, "", f"could not start: {exc}")
+
+        attached = ""
+        if args.get("monitor") is not False:
+            try:
+                logmonitor.set_target("local", path=log_path)
+                attached = (f"\nmonitoring: this run's log is now a monitor target "
+                            f"({log_path}). kaggle_log_monitor action=\"get\" reports it; "
+                            f"clear it with action=\"clear\" when the run ends.")
+            except Exception as exc:  # noqa: BLE001
+                attached = (f"\nmonitoring: could not attach automatically ({exc}). Call "
+                            f"kaggle_log_monitor action=\"target\" kind=\"local\" "
+                            f"path=\"{log_path}\".")
+        body = (
+            f"started pid {proc.pid}\n"
+            f"command: {' '.join(parts)}\n"
+            f"cwd: {cwd}\n"
+            f"log: {log_path}\n"
+            f"competition: {lcomp}   declaration: {ldecl}\n"
+            + ("; ".join(notes_l) + "\n" if notes_l else "")
+            + attached
+            + "\n\nkaggle_kernels_status is for Kaggle runs; poll this one with "
+              f"`kaggle_kernels_logs`-style reads of the log, and settle it with "
+              f'kaggle_experiment_tree action="settle".'
+        )
+        return text_response(" ".join(parts), 0, body, "")
 
     if name == "kaggle_search_engine":
         action = str(args.get("action") or "ask")

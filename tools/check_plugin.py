@@ -1922,6 +1922,221 @@ def check_consider_and_prune():
         _shutil.rmtree(ROOT / "mcp" / "__pycache__", ignore_errors=True)
 
 
+# ---------------------------------------------------------------- monitoring is attached
+# A run that nothing watches is a run whose failure you learn about hours later. "Set up the log
+# monitor after launching" was prose in the experiment-launch skill, which is exactly the kind of
+# instruction a long turn forgets — the same shape as the research preflight. So the launch attaches
+# its own ref. Only DISPATCHING a watcher stays the agent's decision, because that costs a session.
+def check_launch_attaches_monitoring():
+    print("launch monitoring")
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    spec = importlib.util.spec_from_file_location("_ks_mon", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the server module loads for the monitoring test: {exc}")
+        return
+    et = sys.modules.get("experiment_tree") or ks.experiment_tree
+    lm = sys.modules.get("logmonitor") or ks.logmonitor
+
+    comp = "zz-check-monitoring"
+    tree_file = Path(et.tree_path(comp))
+    if tree_file.exists():
+        tree_file.unlink()
+    cfg = Path(lm.config_path())
+    backup = cfg.read_bytes() if cfg.exists() else None
+    folders: list = []
+    real_run = ks.run_kaggle
+
+    def _targets():
+        return lm.describe().get("targets") or []
+
+    def _decl(nid):
+        return et.declare(comp, {"id": nid, "change": f"try {nid}", "hypothesis": "h",
+                                 "parent": None, "operator": "draft", "family": "sampling",
+                                 "reason": "because"}, read_revision=et.read(comp)["revision"])
+
+    try:
+        def _nb():
+            d = Path(_tempfile.mkdtemp(prefix="ka-mon-"))
+            folders.append(d)
+            (d / "notebook.ipynb").write_text("{}", encoding="utf-8")
+            (d / "kernel-metadata.json").write_text(
+                '{"id":"tester/nb-auto-monitor","title":"t"}', encoding="utf-8")
+            return str(d)
+
+        ks.run_kaggle = lambda cmd: (
+            0, "Kernel version 1 successfully pushed to "
+               "https://www.kaggle.com/code/tester/nb-auto-monitor", "")
+
+        lm.reset()
+        check(_decl("e1").get("ok"), "seed: a declaration")
+        r = ks.tool_call("kaggle_kernel_launch",
+                         {"folder": _nb(), "competition": comp, "declares": "e1"})
+        check("monitoring:" in json.dumps(r), "a launch reports that monitoring is attached")
+        check(any("nb-auto-monitor" in json.dumps(t) for t in _targets()),
+              f"the kernel just pushed is a monitor target: {_targets()}")
+
+        lm.reset()
+        _decl("e2")
+        r = ks.tool_call("kaggle_kernel_launch",
+                         {"folder": _nb(), "competition": comp, "declares": "e2",
+                          "monitor": False})
+        check("monitor:false says nothing about monitoring",
+              "monitoring:" not in json.dumps(r))
+        check(_targets() == [], f"monitor:false attaches nothing: {_targets()}")
+        lm.set_target("kaggle", ref="tester/nb-manual")
+        check(any("nb-manual" in json.dumps(t) for t in _targets()),
+              "a manual target still works after an opt-out")
+
+        lm.reset()
+        r = ks.tool_call("kaggle_kernel_launch", {"folder": _nb(), "competition": comp})
+        check("no experiment was declared" in json.dumps(r),
+              "a launch with nothing declared is still refused")
+        check(_targets() == [], f"and it attached no target: {_targets()}")
+
+        lm.reset()
+        ks.run_kaggle = lambda cmd: (1, "", "kaggle: notebook metadata is invalid")
+        _decl("e3")
+        r = ks.tool_call("kaggle_kernel_launch",
+                         {"folder": _nb(), "competition": comp, "declares": "e3"})
+        check("notebook metadata is invalid" in json.dumps(r),
+              "a failing push still reports the error")
+        check(_targets() == [], f"and attaches no target: {_targets()}")
+
+        tools = {t.get("name"): t for t in getattr(ks, "TOOLS", [])}
+        launch = tools.get("kaggle_kernel_launch") or {}
+        check("monitor" in ((launch.get("inputSchema") or {}).get("properties") or {}),
+              "kaggle_kernel_launch documents the monitor opt-out")
+
+        skill = (ROOT / "skills" / "experiment-launch" / "SKILL.md")
+        if skill.is_file():
+            body = skill.read_text(encoding="utf-8")
+            check("already attached" in body.lower(),
+                  "the launch skill says the target is attached automatically")
+            check('action=\\"target\\"' not in body and "you do not need to" in body.lower(),
+                  "and that the old first step is gone")
+    finally:
+        ks.run_kaggle = real_run
+        for f in folders:
+            _shutil.rmtree(f, ignore_errors=True)
+        if tree_file.exists():
+            tree_file.unlink()
+        if backup is not None:
+            cfg.write_bytes(backup)
+        elif cfg.exists():
+            cfg.unlink()
+
+
+# ---------------------------------------------------------------- local runs too
+# A Kaggle launch attaches its own kernel ref. A local run had no entry point at all — the agent
+# composed a shell command and ran it — so there was nowhere for monitoring to attach, and
+# "nothing is watching" was a consequence of which engine you picked. kaggle_local_launch makes the
+# two engines symmetric: same declaration gate, same automatic log target.
+def check_local_run_is_monitored():
+    print("local run monitoring")
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import time as _time
+
+    spec = importlib.util.spec_from_file_location("_ks_ll", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the server module loads for the local-run test: {exc}")
+        return
+    et = sys.modules.get("experiment_tree") or ks.experiment_tree
+    lm = sys.modules.get("logmonitor") or ks.logmonitor
+
+    tools = {t.get("name"): t for t in getattr(ks, "TOOLS", [])}
+    check("kaggle_local_launch" in tools, "kaggle_local_launch exists")
+    local = tools.get("kaggle_local_launch") or {}
+    req = (local.get("inputSchema") or {}).get("required") or []
+    check(all(x in req for x in ("command", "competition", "declares")),
+          f"a local run requires a command, a competition and a declaration: {req}")
+
+    comp = "zz-check-local-run"
+    tree_file = Path(et.tree_path(comp))
+    if tree_file.exists():
+        tree_file.unlink()
+    cfg = Path(lm.config_path())
+    backup = cfg.read_bytes() if cfg.exists() else None
+    work = Path(_tempfile.mkdtemp(prefix="ka-check-local-"))
+
+    def _targets():
+        return lm.describe().get("targets") or []
+
+    def _decl(nid):
+        return et.declare(comp, {"id": nid, "change": f"try {nid}", "hypothesis": "h",
+                                 "parent": None, "operator": "draft", "family": "sampling",
+                                 "reason": "because"}, read_revision=et.read(comp)["revision"])
+
+    try:
+        lm.reset()
+        r = ks.tool_call("kaggle_local_launch",
+                         {"command": [sys.executable, "-c", "print(1)"], "competition": comp})
+        check("no experiment was declared" in json.dumps(r),
+              "a local run with nothing declared is refused")
+        check(_targets() == [], f"and it attached no target: {_targets()}")
+        r = ks.tool_call("kaggle_local_launch",
+                         {"command": [sys.executable, "-c", "print(1)"], "declares": "e1"})
+        check("must name the competition" in json.dumps(r),
+              "a local run with no competition is refused")
+
+        lm.reset()
+        check(_decl("e1").get("ok"), "seed: a declaration")
+        logfile = work / "run1.log"
+        r = ks.tool_call("kaggle_local_launch",
+                         {"command": [sys.executable, "-c",
+                                      "print('hello-from-check')"],
+                          "cwd": str(work), "competition": comp, "declares": "e1",
+                          "log_path": str(logfile)})
+        t = json.dumps(r)
+        check("monitoring:" in t, "a local run reports that monitoring is attached")
+        check("started pid" in t, "and reports the pid")
+        check(any("run1.log" in json.dumps(x) for x in _targets()),
+              f"its log is a monitor target: {_targets()}")
+        check(any(x.get("kind") == "local" for x in _targets()),
+              "and the target is a LOCAL one, not a kaggle ref")
+        for _ in range(80):
+            if logfile.exists() and "hello-from-check" in logfile.read_text(errors="replace"):
+                break
+            _time.sleep(0.2)
+        check(logfile.exists() and "hello-from-check" in logfile.read_text(errors="replace"),
+              "the run's real output landed in the attached log")
+
+        lm.reset()
+        _decl("e2")
+        r = ks.tool_call("kaggle_local_launch",
+                         {"command": [sys.executable, "-c", "print(2)"], "cwd": str(work),
+                          "competition": comp, "declares": "e2", "monitor": False,
+                          "log_path": str(work / "run2.log")})
+        check(_targets() == [], f"monitor:false attaches nothing: {_targets()}")
+        check("run2.log" in json.dumps(r), "but the run still starts and reports its log")
+
+        lm.reset()
+        _decl("e3")
+        r = ks.tool_call("kaggle_local_launch",
+                         {"command": ["definitely-not-a-real-binary-xyz"], "cwd": str(work),
+                          "competition": comp, "declares": "e3"})
+        check("could not start" in json.dumps(r), "an unstartable command is reported")
+        check(_targets() == [], f"and attaches no target: {_targets()}")
+    finally:
+        if backup is not None:
+            cfg.write_bytes(backup)
+        elif cfg.exists():
+            cfg.unlink()
+        if tree_file.exists():
+            tree_file.unlink()
+        _shutil.rmtree(work, ignore_errors=True)
+
+
 def main() -> int:
     check_manifest()
     check_servers()
@@ -1953,6 +2168,8 @@ def main() -> int:
     check_browser_is_search_only()
     check_research_preflight()
     check_launch_gate()
+    check_launch_attaches_monitoring()
+    check_local_run_is_monitored()
     check_consider_and_prune()
     check_publishable()
     print()

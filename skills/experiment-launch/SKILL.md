@@ -157,6 +157,20 @@ for a kernel worth nothing - the backup is what makes a retired run reproducible
 
 A run that produces no output for an hour is indistinguishable from a hung run. Follow it.
 
+**The target is already attached — you do not need to register it.** Both launchers do it:
+
+| Engine | What the launcher attaches |
+|---|---|
+| `kaggle_kernel_launch` | the kernel ref it just pushed, read from `kernel-metadata.json` |
+| `kaggle_local_launch` | the log file it is capturing the run's output into |
+
+That is deliberate. "After launching, remember to set up the log monitor" is the instruction a long
+turn forgets, and a run that nothing watches is a run whose failure you learn about hours late.
+Pass `monitor: false` only when you have a reason, and say what it is.
+
+**What is still your decision is whether something is *watching*.** Attaching a target is free and
+local; dispatching an agent costs a session. So:
+
 **Do not poll in this turn.** Delegate the fetching to a subagent and let it report only on
 the three conditions that actually matter. The full procedure — the subagent brief, the live
 interval, and the reporting rules — is in the `log-monitor` skill; follow it rather than
@@ -164,16 +178,32 @@ re-deriving it.
 
 The short version:
 
-1. `kaggle_log_monitor action="target"` to register the run's kernel ref (and any local log).
-2. Settle the fetch interval with `kaggle_log_monitor action="set"`, or offer the slider GUI
+1. Settle the fetch interval with `kaggle_log_monitor action="set"`, or offer the slider GUI
    from the `log-monitor-visualizer` skill.
-3. Launch a background `explore` subagent that re-reads `kaggle_log_monitor action="get"` at
-   the top of every cycle and reports **only** on: an error in the log, a terminal state, or
-   a decision the user has to make.
-4. React to the report, and stop the subagent once the run is over.
+2. Launch a background `explore` subagent that re-reads `kaggle_log_monitor action="get"` at
+   the top of every cycle — it will see the run's own target — and reports **only** on: an
+   error in the log, a terminal state, or a decision the user has to make.
+3. React to the report, stop the subagent once the run is over, and `kaggle_log_monitor
+   action="clear"` when the targets are stale.
 
 Do not also poll from the main agent while that subagent is live — two pollers on one run
 means duplicate reads and doubled API spend.
+
+### Running locally
+
+```
+kaggle_local_launch
+  command        = ["python", "train.py", "--epochs", "3"]
+  cwd            = <working directory>
+  competition    = <slug>
+  declares       = <the declaration node id>
+  log_path       = optional; defaults to ~/.kaggle-agent/local-runs/<slug>/<slug>-<stamp>.log
+```
+
+It starts the process, captures stdout and stderr into that log, attaches the log as a monitor
+target, and returns the pid and the path. Same declaration gate as the Kaggle launcher: a local run
+is still a run, and its result still needs somewhere to land. `timeout_seconds` is recorded in the
+report but **not enforced** — kill the pid if it overruns.
 
 ## Resuming after a stop
 
