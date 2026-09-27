@@ -117,6 +117,46 @@ It is scoped hard on purpose:
 A vague reason is refused. "This is useless" says nothing; "the API it documents is deprecated" is
 a finding the next agent can use.
 
+## The loop closes: log → bottleneck → the next experiment must cite it
+
+Everything above knows **what you scored**. Nothing knew **what the run actually did**, so the
+improvement step was guesswork wearing a DAG. Two additions close it, and neither introduces a
+new vocabulary.
+
+```
+kaggle_experiment_tree action="diagnose" competition="<slug>"
+  ref="<owner/slug>"        # a Kaggle run
+  path="<file>"            # or a local log
+```
+
+It reads the log and returns a **ready-to-record research node** carrying `bottleneck`, the log it
+read (`logRef` / `logPath`), and — only when a failure signature appears — a `layer` drawn from the
+**existing** `FAILURE_LAYERS` vocabulary. A run that is merely *slow* is not a layer failure, so
+`layer` is optional and `bottleneck` stays free text. It also quotes the first error, the last
+line, and any timing it found, and it says when the log is **empty** rather than diagnosing nothing.
+
+Record that node, and then **every declaration must cite it**:
+
+```
+kaggle_experiment_tree action="declare" ... node={..., "diagnosis": "d3"}
+```
+
+| You cite | What happens |
+|---|---|
+| a node that does not exist | refused — `unknown_diagnosis` |
+| a research node with no `bottleneck` | refused — it is not a diagnosis of a run |
+| a real diagnosis | accepted |
+| `"none"` with a `diagnosisReason` | accepted — for a first run with nothing to learn from |
+| `"none"` without a reason | refused — "no reason" is not a reason |
+
+That is the whole mechanism: **you cannot start a run without saying what the last one taught you.**
+A research node that names a bottleneck must also name its log, or the finding cannot be re-checked
+and a vague bottleneck propagates into the next experiment.
+
+Specific failure signals beat the generic `Traceback` when classifying, because a bare traceback
+sits on the header line *above* the exception that actually names the failure. Scanning in file
+order would report "some layer broke" for every run.
+
 ## Every node records which operator produced it
 
 Four atomic operators, from OpenMLE (arXiv 2607.28568): `draft` · `improve` · `debug` ·

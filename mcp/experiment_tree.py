@@ -82,6 +82,118 @@ EFC_FLAGS = ("informative", "valid", "redundant", "retained")
 
 VALID_DIRECTIONS = ("higher", "lower")
 
+# ---------------------------------------------------------------- log diagnosis
+# The loop this closes: read the run's log, name the bottleneck, and make the NEXT experiment
+# cite that reading. Without it the tree knows what you scored and nothing about why a run was
+# slow or where it broke, so the improvement step is guesswork wearing a DAG.
+#
+# The vocabulary is reused, not extended. FAILURE_LAYERS already says which layer of the harness
+# broke, and a diagnosis uses exactly those. A run that is merely SLOW is not a layer failure,
+# so `layer` is required only when a failure signature actually appears; `bottleneck` is free text
+# because "70% of the wall time is data loading" is a finding, not a taxonomy entry.
+_DIAG_LAYER_SIGNALS = (
+    ("out of memory", "other"),
+    ("OutOfMemoryError", "other"),
+    ("CUDA error", "other"),
+    ("Killed", "other"),
+    ("JSONDecodeError", "output-contract"),
+    ("KeyError", "output-contract"),
+    ("TypeError", "output-contract"),
+    # A ValueError raised by the code's own validation is the output contract complaining,
+    # not a harness bug, so it belongs to that layer rather than to "other".
+    ("ValueError", "output-contract"),
+    ("ValidationError", "output-contract"),
+    ("assert", "output-contract"),
+    ("No such file", "artifact-persistence"),
+    ("FileNotFoundError", "artifact-persistence"),
+    ("PermissionError", "artifact-persistence"),
+    ("timed out", "state-continuity"),
+    ("timeout", "state-continuity"),
+    ("Connection reset", "tool-recovery"),
+    ("RateLimit", "tool-recovery"),
+    ("Traceback", "other"),
+)
+
+_DIAG_BOTTLENECK_SIGNALS = (
+    (r"(\d+(?:\.\d+)?)\s*%\s*of", "percent of the run reported in a single phase"),
+    (r"elapsed[^:\n]*:\s*(\d+(?:\.\d+)?)", "an elapsed time was reported"),
+    (r"took\s+(\d+(?:\.\d+)?)\s*s", "a phase duration was reported"),
+    (r"step\s+(\d+)\s*/\s*(\d+)", "progress is reported per step"),
+    (r"throughput[^:\n]*[:=]\s*(\S+)", "a throughput figure was reported"),
+)
+
+
+def diagnose_log(text: str, source: str = "", max_lines: int = 400) -> dict[str, Any]:
+    """Read a run's log and return what is checkable, not what it feels like.
+
+    This deliberately does NOT invent a performance taxonomy. It reports the failure layer when
+    one of the existing signatures appears, quotes the lines that support it, and otherwise says
+    what the log actually contained so a human or the agent can name the bottleneck. Returning
+    a confident "bottleneck" that nobody read off the log would be worse than returning none.
+    """
+    body = (text or "").replace("\r\n", "\n")
+    lines = body.split("\n")
+    tail = lines[-max_lines:] if len(lines) > max_lines else lines
+
+    layer: str | None = None
+    hits: list[str] = []
+    # Two passes, and the order matters. "Traceback" appears on the header line, above the
+    # exception that actually names the failure, so scanning in file order would report
+    # "some layer broke" for every run. A bare traceback says nothing about WHICH layer;
+    # the exception type does. So the specific signals win, and the generic one is a fallback.
+    specific = [s for s in _DIAG_LAYER_SIGNALS if s[0] != "Traceback"]
+    generic = [s for s in _DIAG_LAYER_SIGNALS if s[0] == "Traceback"]
+    for pass_signals in (specific, generic):
+        for ln in lines:
+            low = ln.lower()
+            for needle, mapped in pass_signals:
+                if needle.lower() in low:
+                    hits.append(ln.strip())
+                    if layer is None:
+                        layer = mapped
+                    break
+            if layer is not None:
+                break
+        if layer is not None:
+            break
+
+    # the first traceback and the last non-empty line are the two things worth quoting
+    traceback_at = None
+    for i, ln in enumerate(lines):
+        if ln.strip().startswith("Traceback (most recent call last)"):
+            traceback_at = i
+            break
+    first_error = None
+    if traceback_at is not None:
+        for ln in lines[traceback_at + 1:]:
+            s = ln.strip()
+            if s and not s.startswith("File ") and not s.startswith(" "):
+                first_error = s
+                break
+    last_line = next((ln.strip() for ln in reversed(lines) if ln.strip()), "")
+
+    notes: list[str] = []
+    for pattern, why in _DIAG_BOTTLENECK_SIGNALS:
+        m = re.search(pattern, body, re.IGNORECASE)
+        if m:
+            notes.append(f"{why}: {m.group(0).strip()[:80]}")
+
+    return {
+        "source": source,
+        "lines": len(lines),
+        "readLines": len(tail),
+        "layer": layer,
+        "evidence": hits[-3:],
+        "tracebackAt": traceback_at,
+        "firstError": first_error,
+        "lastLine": last_line[:300],
+        "timing": notes[:3],
+        "empty": not body.strip(),
+        # a node is only a diagnosis if it says what it is a diagnosis OF
+        "bottleneck": None,
+    }
+
+
 # Two node kinds, and the difference is the whole point of the second one.
 #
 # "experiment" changes one thing and measures it. "research" changes nothing and measures
@@ -815,6 +927,22 @@ def validate(tree: dict[str, Any]) -> list[str]:
                         )
             elif targets is not None:
                 problems.append(f"{where}: targets must be a list")
+            # A research node that read a run's log is a diagnosis, and then it must say which
+            # log. Without that it is an opinion wearing a citation, and the next experiment
+            # would be "informed" by something nobody can re-read.
+            if node.get("bottleneck") is not None:
+                if not (node.get("logRef") or node.get("logPath")):
+                    problems.append(
+                        f"{where}: a node that names a bottleneck must name the log it read "
+                        f"(logRef for a Kaggle kernel, logPath for a local run), or the "
+                        f"finding cannot be re-checked"
+                    )
+                dl = node.get("layer")
+                if dl is not None and dl not in FAILURE_LAYERS:
+                    problems.append(
+                        f"{where}: diagnosis layer must be one of "
+                        f"{', '.join(FAILURE_LAYERS)}, got {dl!r}"
+                    )
             opens = node.get("opens")
             if isinstance(opens, str) and not opens.strip():
                 problems.append(
@@ -906,9 +1034,71 @@ def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]
 
     This is the precondition kaggle_kernel_launch requires. It is two calls — read, then declare —
     and in exchange no experiment result can exist only in a transcript.
+
+    A declaration must also say what it is based on. Either a diagnosis — a research node in this
+    tree that actually read a run's log — or, when the tree has no completed run to learn from,
+    the literal "none" with a reason. That is the link which makes the loop a loop: without it the
+    tree holds scores and never holds what the runs taught.
     """
     if not isinstance(node, dict):
         return {"ok": False, "code": "bad_node", "message": "node must be an object"}
+
+    # The read-gate first, because it is the more basic failure: telling someone their diagnosis
+    # citation is wrong when they never read the tree would be a confusing way to say "you are out
+    # of date". record() enforces the same rule; checking it here keeps the ordering honest.
+    if read_revision is None:
+        return {"ok": False, "code": "read_required",
+                "message": f"read the tree before declaring. Call kaggle_experiment_tree "
+                           f"action=\"read\" for {competition!r}, look at the base, the kept chain "
+                           f"and the refuted list, then pass its readRevision back."}
+    if int(read_revision) != int(load(competition)["revision"]):
+        return {"ok": False, "code": "stale_read",
+                "message": f"the tree has changed since you read it (you read revision "
+                           f"{read_revision}). Read it again and re-plan from the current base "
+                           f"before declaring."}
+
+    tree = load(competition)
+    nodes = _current(tree).get("nodes") or {}
+    diagnosis = node.get("diagnosis")
+    settled = [
+        nid for nid, n in nodes.items()
+        if isinstance(n, dict) and n.get("kind") == "experiment" and not is_planned(n)
+    ]
+    if diagnosis is None:
+        return {
+            "ok": False, "code": "diagnosis_required",
+            "message": (
+                f"a declaration must say what it is based on. Cite a diagnosis - the id of a "
+                f"research node that read a run's log - or set diagnosis=\"none\" with "
+                f"diagnosisReason. This tree has {len(settled)} completed run(s), so \"none\" needs "
+                f"a real reason."
+            ),
+            "settled": settled[:12],
+        }
+    if isinstance(diagnosis, str) and diagnosis.strip().lower() == "none":
+        reason = node.get("diagnosisReason")
+        if not reason or _norm_reason(reason) in EMPTY_REASONS:
+            return {
+                "ok": False, "code": "diagnosis_reason_required",
+                "message": (
+                    "diagnosis=\"none\" needs diagnosisReason saying why there is nothing to "
+                    "learn from yet. 'no reason' is not a reason."
+                ),
+            }
+    elif isinstance(diagnosis, str) and diagnosis not in nodes:
+        return {
+            "ok": False, "code": "unknown_diagnosis",
+            "message": f"no node {diagnosis!r} in the tree for {competition!r}. "
+                       f"Run action=\"diagnose\" first, or cite a diagnosis that exists.",
+        }
+    elif isinstance(diagnosis, str) and not (nodes[diagnosis].get("bottleneck")):
+        return {
+            "ok": False, "code": "not_a_diagnosis",
+            "message": f"{diagnosis!r} is a research node but carries no bottleneck, so it is not a "
+                       f"diagnosis of a run. Cite one that read a log, or set "
+                       f"diagnosis=\"none\" with a reason.",
+        }
+
     prepared = dict(node)
     # A declaration is always an experiment. A research node changes nothing and runs nothing,
     # so it is never a precondition for a launch and is not what this action produces.

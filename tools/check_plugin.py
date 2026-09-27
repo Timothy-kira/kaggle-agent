@@ -1738,11 +1738,15 @@ def check_launch_gate():
         d = et.declare(comp, {"id": "e1", "change": "swap the sampler",
                               "hypothesis": "it is the bottleneck", "parent": None,
                               "operator": "draft", "family": "sampling",
-                              "reason": "the profile says so"}, read_revision=rev)
+                              "reason": "the profile says so",
+                      "diagnosis": "none",
+                      "diagnosisReason": "first run in this test tree"}, read_revision=rev)
         if not check(d.get("ok"), f"a declaration is accepted: {d.get('message')}"):
             return
         check(et.declare(comp, {"id": "e0", "change": "x", "hypothesis": "h", "parent": None,
-                                "operator": "draft", "family": "f", "reason": "r"},
+                                "operator": "draft", "family": "f", "reason": "r",
+                                "diagnosis": "none",
+                                "diagnosisReason": "probing the read gate"},
                          read_revision=None).get("code") == "read_required",
               "declare without a read is refused")
         open_ids = [p["id"] for p in et.pending_declarations(comp)]
@@ -1782,7 +1786,9 @@ def check_launch_gate():
                                 "hypothesis": "the baseline is wrong, not the method",
                                 "parent": None, "operator": "crossover",
                                 "family": "problem-framing",
-                                "reason": "the old base was refuted twice"},
+                                "reason": "the old base was refuted twice",
+                       "diagnosis": "none",
+                       "diagnosisReason": "new direction, nothing settled to learn from"},
                        read_revision=et.read(comp)["revision"]).get("ok"),
               "a completely new direction may start from a null parent")
         prompt = et.plan_prompt(comp)
@@ -1801,7 +1807,8 @@ def check_launch_gate():
         (tree_skill, ('action="declare"', 'action="settle"', 'declares="', "IN FLIGHT",
                       "parent: null", "new_base", 'action="consider"', 'action="prune"',
                       "already_refuted", "worth_declaring", "Only `research` nodes",
-                      "undo` restores it")),
+                      "undo` restores it", 'action="diagnose"', '"diagnosis"',
+                      "diagnosisReason", "FAILURE_LAYERS", "logRef", "logPath")),
         (launch_skill, ('action="declare"', 'action="settle"', "declares         =", "REQUIRED")),
     ):
         if path.is_file():
@@ -1882,7 +1889,9 @@ def check_consider_and_prune():
         check(et.declare(comp, {"id": "p1", "change": "quantise the weights to int8",
                                 "hypothesis": "half the memory", "parent": "e2",
                                 "operator": "debug", "family": "memory",
-                                "reason": "the next cost"}, read_revision=_rev()).get("ok"),
+                                "reason": "the next cost",
+                                "diagnosis": "none",
+                                "diagnosisReason": "first run in this test tree"}, read_revision=_rev()).get("ok"),
               "seed: a declaration")
         c = et.consider(comp, "quantise the weights to int8", "half the memory",
                         operator="debug", family="memory")
@@ -1958,7 +1967,9 @@ def check_launch_attaches_monitoring():
     def _decl(nid):
         return et.declare(comp, {"id": nid, "change": f"try {nid}", "hypothesis": "h",
                                  "parent": None, "operator": "draft", "family": "sampling",
-                                 "reason": "because"}, read_revision=et.read(comp)["revision"])
+                                 "reason": "because",
+                                 "diagnosis": "none",
+                                 "diagnosisReason": "first run in this test tree"}, read_revision=et.read(comp)["revision"])
 
     try:
         def _nb():
@@ -2075,7 +2086,9 @@ def check_local_run_is_monitored():
     def _decl(nid):
         return et.declare(comp, {"id": nid, "change": f"try {nid}", "hypothesis": "h",
                                  "parent": None, "operator": "draft", "family": "sampling",
-                                 "reason": "because"}, read_revision=et.read(comp)["revision"])
+                                 "reason": "because",
+                                 "diagnosis": "none",
+                                 "diagnosisReason": "first run in this test tree"}, read_revision=et.read(comp)["revision"])
 
     try:
         lm.reset()
@@ -2363,6 +2376,163 @@ def check_text_encoding():
               f"{rel}: the literal is not a mojibake lookalike")
 
 
+# ---------------------------------------------------------------- the loop: log -> bottleneck -> run
+# The RSI loop is only a loop if the next experiment is required to be based on what the last one
+# showed. Before this the tree held scores and never held what a run taught, so the improvement
+# step was guesswork wearing a DAG.
+#
+# diagnose_log reuses the EXISTING FAILURE_LAYERS vocabulary rather than adding a taxonomy: a run
+# that is merely slow is not a layer failure, so `layer` is required only when a failure signature
+# appears and `bottleneck` stays free text. Specific signals beat the generic "Traceback", because
+# a bare traceback sits on the header line ABOVE the exception that names the failure - scanning in
+# file order would report "some layer broke" for every run.
+def check_diagnosis_loop():
+    print("diagnosis loop")
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import pathlib as _pl
+
+    spec = importlib.util.spec_from_file_location("_ks_loop", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the server module loads for the loop test: {exc}")
+        return
+    et = sys.modules["experiment_tree"]
+
+    P: list[str] = []
+    Fl: list[str] = []
+
+    def check(cond, label, detail=""):
+        # (cond, label) on purpose. The swapped form check("label", cond) always passes,
+        # because a non-empty label is truthy - which has happened seven times in this project.
+        (P if cond else Fl).append(label)
+        print(f"  {'ok  ' if cond else 'FAIL'} {label}"
+              f"{('  ' + str(detail)[:96]) if detail else ''}")
+
+    comp = "zz-check-loop"
+    COMP = comp          # the embedded body was written against a module constant
+    home = _tempfile.mkdtemp(prefix="ka-check-loop-")
+    os.environ["KAGGLE_AGENT_HOME"] = home
+    work = _pl.Path(_tempfile.mkdtemp(prefix="ka-check-loop-log-"))
+    log = work / "run.log"
+    log.write_text(
+        "loading data...\n"
+        "step 1200/1200\n"
+        "elapsed: 41.50\n"
+        "Traceback (most recent call last):\n"
+        '  File "train.py", line 88, in <module>\n'
+        "    raise ValueError('submission must have exactly 2 columns')\n"
+        "ValueError: submission must have exactly 2 columns\n",
+        encoding="utf-8")
+    try:
+        print("=== 1. diagnose reads the log and names the layer ===")
+        r = ks.tool_call("kaggle_experiment_tree",
+                         {"action": "diagnose", "competition": COMP, "path": str(log)})
+        t = json.dumps(r, ensure_ascii=False)
+        check("failure layer: output-contract" in t, "it classifies the layer",
+              "output-contract" in t)
+        check("it quotes the first error" in t or "ValueError" in t, "and quotes the first error line")
+        check("timing   :" in t, "and surfaces the timing it found")
+        check("bottleneck" in t and "logPath" in t,
+              "and a node carrying logPath + bottleneck")
+
+        print()
+        print("=== 2. declaring without a diagnosis is refused ===")
+        d = et.declare(COMP, {"id": "e0", "change": "x", "hypothesis": "h", "parent": None,
+                              "operator": "draft", "family": "f", "reason": "r"},
+                       read_revision=et.read(COMP)["revision"])
+        check(not d.get("ok") and d.get("code") == "diagnosis_required",
+              f"a declaration with no basis is refused: {d.get('code')}")
+
+        print()
+        print("=== 3. the diagnosis records, and can then be cited ===")
+        reading = et.diagnose_log(log.read_text(encoding="utf-8"), source=str(log))
+        check(reading["empty"] is False, "the reader says the log is not empty")
+        node = {"id": "d1", "kind": "research",
+                "question": "why did the run fail?", "targets": ["code"], "verdict": "keep",
+                "opens": "fix the submission writer", "parent": None,
+                "reason": "the log said so", "evidence": "local-only",
+                "bottleneck": "submission writer emits one column, the evaluator wants two",
+                "logPath": str(log), "layer": reading["layer"]}
+        rec = et.record(COMP, node, read_revision=et.read(COMP)["revision"])
+        check(rec.get("ok"), f"the diagnosis is recorded: {rec.get('message')}")
+
+        d = et.declare(COMP, {"id": "e1", "change": "write both columns", "hypothesis": "it then passes",
+                              "parent": None, "operator": "debug", "family": "submission",
+                              "reason": "the diagnosis named it", "diagnosis": "d1"},
+                       read_revision=et.read(COMP)["revision"])
+        check(d.get("ok"), f"a declaration citing the diagnosis is accepted: {d.get('message')}")
+
+        print()
+        print("=== 4. the citation is checked, not trusted ===")
+        d2 = et.declare(COMP, {"id": "e2", "change": "c", "hypothesis": "h", "parent": None,
+                               "operator": "draft", "family": "f", "reason": "r",
+                               "diagnosis": "no-such-node"},
+                        read_revision=et.read(COMP)["revision"])
+        check(d2.get("code") == "unknown_diagnosis",
+              f"citing a node that does not exist is refused: {d2.get('code')}")
+        et.record(COMP, {"id": "r9", "kind": "research", "question": "q", "targets": ["code"],
+                         "verdict": "keep", "opens": "o", "parent": None, "reason": "r"},
+                  read_revision=et.read(COMP)["revision"])
+        d3 = et.declare(COMP, {"id": "e3", "change": "c", "hypothesis": "h", "parent": None,
+                               "operator": "draft", "family": "f", "reason": "r",
+                               "diagnosis": "r9"},
+                        read_revision=et.read(COMP)["revision"])
+        check(d3.get("code") == "not_a_diagnosis",
+              f"citing a research node with no bottleneck is refused: {d3.get('code')}")
+
+        print()
+        print("=== 5. the escape hatch still needs a reason ===")
+        comp2 = "zz-loop-first"
+        d4 = et.declare(comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
+                                "parent": None, "operator": "draft", "family": "f", "reason": "r",
+                                "diagnosis": "none"},
+                         read_revision=et.read(comp2)["revision"])
+        check(not d4.get("ok") and d4.get("code") == "diagnosis_reason_required",
+              f"diagnosis=none without a reason is refused: {d4.get('code')}")
+        d5 = et.declare(comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
+                                "parent": None, "operator": "draft", "family": "f", "reason": "r",
+                                "diagnosis": "none",
+                                "diagnosisReason": "first run of this competition, nothing to learn from yet"},
+                         read_revision=et.read(comp2)["revision"])
+        check(d5.get("ok"), f"diagnosis=none with a real reason is accepted: {d5.get('message')}")
+
+        print()
+        print("=== 6. a bottleneck with no log behind it is rejected ===")
+        bad = et.record(COMP, {"id": "d2", "kind": "research", "question": "q", "targets": ["code"],
+                               "verdict": "keep", "opens": "o", "parent": None, "reason": "r",
+                               "bottleneck": "it felt slow"},
+                        read_revision=et.read(COMP)["revision"])
+        check(not bad.get("ok"), "a bottleneck citing no log is refused")
+        check(any("logRef" in p or "logPath" in p for p in (bad.get("problems") or [])),
+              f"and the complaint names the log: {(bad.get('problems') or [])[:1]}")
+        bad2 = et.record(COMP, {"id": "d3", "kind": "research", "question": "q", "targets": ["code"],
+                                "verdict": "keep", "opens": "o", "parent": None, "reason": "r",
+                                "logPath": str(log), "bottleneck": "x", "layer": "not-a-layer"},
+                         read_revision=et.read(COMP)["revision"])
+        check(not bad2.get("ok"), "an invented failure layer is refused")
+
+        print()
+        print("=== 7. an empty log cannot be diagnosed ===")
+        empty = work / "empty.log"
+        empty.write_text("", encoding="utf-8")
+        r2 = ks.tool_call("kaggle_experiment_tree",
+                          {"action": "diagnose", "competition": COMP, "path": str(empty)})
+        check("is empty" in json.dumps(r2), "diagnosing an empty log is refused")
+        r3 = ks.tool_call("kaggle_experiment_tree", {"action": "diagnose", "competition": COMP})
+        check("needs ref=" in json.dumps(r3), "diagnose with no source is refused")
+    finally:
+        os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+        _shutil.rmtree(work, ignore_errors=True)
+
+    for x in Fl:
+        bad(f"diagnosis loop: {x}")
+
+
 def main() -> int:
     check_manifest()
     check_servers()
@@ -2399,6 +2569,7 @@ def main() -> int:
     check_monitor_uses_the_builtin_cron()
     check_consider_and_prune()
     check_competition_isolation()
+    check_diagnosis_loop()
     check_text_encoding()
     check_publishable()
     print()

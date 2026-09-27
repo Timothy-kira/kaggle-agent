@@ -1065,7 +1065,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.17.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.18.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -2493,6 +2493,93 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 f"revision: {res['revision']}\nundo restores it",
                 "",
             )
+
+        if action == "diagnose":
+            # The loop's missing link. Everything else in this tool knows scores; this reads the
+            # run's own log so the next experiment can be based on what the run actually did.
+            ref = str(args.get("ref") or "").strip()
+            path = str(args.get("path") or "").strip()
+            if not ref and not path:
+                return text_response(
+                    "kaggle_experiment_tree diagnose", 2, "",
+                    "diagnose needs ref=<owner/slug> for a Kaggle run, or path=<file> for a local "
+                    "one. kaggle_log_monitor action=\"get\" lists what is currently watched.",
+                )
+            if path:
+                if not os.path.isfile(path):
+                    return text_response(
+                        "kaggle_experiment_tree diagnose", 2, "",
+                        f"log file does not exist: {path}",
+                    )
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                        log_text = fh.read()
+                except OSError as exc:
+                    return text_response(
+                        "kaggle_experiment_tree diagnose", 2, "", f"could not read {path}: {exc}")
+                source = path
+            else:
+                code, out, err = run_kaggle(["kernels", "logs", ref, "--page-size", "200"])
+                if code != 0:
+                    return text_response(
+                        f"kaggle kernels logs {ref}", 2, "",
+                        err.strip() or out.strip() or f"exit {code}",
+                    )
+                log_text = out
+                source = f"kaggle:{ref}"
+
+            reading = experiment_tree.diagnose_log(log_text, source=source)
+            rev = experiment_tree.read(comp)["revision"]
+            if reading["empty"]:
+                return text_response(
+                    "kaggle_experiment_tree diagnose", 3, "",
+                    f"the log at {source} is empty. A diagnosis of nothing is not a diagnosis - "
+                    f"check the run actually started before drawing a conclusion from it.",
+                )
+            node_id = str(args.get("id") or "").strip() or f"d{rev + 1}"
+            node = {
+                "id": node_id,
+                "kind": "research",
+                "question": str(args.get("question") or
+                                f"what did {source} actually show, and what is the bottleneck?"),
+                "targets": ["code", "paper"],
+                "verdict": "keep",
+                "opens": "the next experiment",
+                "parent": None,
+                "reason": "a settled run's log said so",
+                "evidence": "local-only",
+                "bottleneck": str(args.get("bottleneck") or "").strip() or
+                              reading["firstError"] or reading["lastLine"] or "see logRef",
+            }
+            if ref:
+                node["logRef"] = ref
+            else:
+                node["logPath"] = path
+            if reading.get("layer"):
+                node["layer"] = reading["layer"]
+
+            lines = [
+                f"source: {source}   lines: {reading['lines']}   read: {reading['readLines']}",
+                f"failure layer: {reading['layer'] or '(no failure signature)'}",
+            ]
+            if reading.get("firstError"):
+                lines.append(f"first error: {reading['firstError'][:200]}")
+            for ev in reading["evidence"]:
+                lines.append(f"  evidence: {ev[:180]}")
+            for t in reading["timing"]:
+                lines.append(f"  timing   : {t}")
+            if reading.get("lastLine"):
+                lines.append(f"last line : {reading['lastLine'][:200]}")
+            lines += [
+                "",
+                "Record it as a diagnosis, then cite it when you declare:",
+                f'kaggle_experiment_tree action="record" competition="{comp}" '
+                f"read_revision={rev} node={json.dumps(node, ensure_ascii=False)}",
+                "",
+                "If the log does not name a bottleneck, say so in the node's `bottleneck` field "
+                "in your own words — a vague bottleneck propagates into the next experiment.",
+            ]
+            return text_response("kaggle_experiment_tree diagnose", 0, "\n".join(lines), "")
 
         if action == "alias":
             alias = str(args.get("alias") or "").strip()
