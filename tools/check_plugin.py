@@ -1530,6 +1530,40 @@ def check_publishable():
         ok("no publishable file hardcodes an absolute path into the author's home")
 
 
+# ---------------------------------------------------------------- data locality
+# The user does not want competition data pulled onto this machine, ever. The skill said
+# "must run locally" and "write a local CPU notebook", which is an instruction to download the
+# dataset — on a competition where every listed file 403s anyway. Prose was not enough: the fix
+# has to be something a later edit cannot quietly undo, so the required wording is asserted here.
+RESEARCH_SKILL = ROOT / "skills" / "kaggle-competition-research" / "SKILL.md"
+
+
+def check_data_stays_on_kaggle():
+    print("data locality")
+    if not check(RESEARCH_SKILL.is_file(), "the research skill is present"):
+        return
+    text = RESEARCH_SKILL.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    # The two phrases that instructed a local run, in any casing.
+    for banned in ("must run locally", "local cpu notebook", "runs locally"):
+        check(banned not in lowered,
+              f"the research skill no longer says {banned!r} (it must profile on Kaggle)")
+
+    # The prohibition has to be stated, not implied by omission.
+    check("competitions download" in text and "datasets download" in text
+          and "must never" in lowered or "do not run" in lowered,
+          "the research skill states the ban on downloading competition data")
+
+    for tool in ("kaggle_kernel_launch", 'accelerator="none"', "kaggle_kernel_verify",
+                 'expected="none"', "kaggle_kernels_output"):
+        check(tool in text,
+              f"the research skill routes the profile through {tool}")
+
+    check("input directory" in lowered,
+          "the research skill tells the notebook to read Kaggle's mounted input directory")
+
+
 def main() -> int:
     check_manifest()
     check_servers()
@@ -1557,6 +1591,7 @@ def main() -> int:
     check_no_secrets()
     check_no_stale_names()
     check_version_sync()
+    check_data_stays_on_kaggle()
     check_publishable()
     print()
     if failures:

@@ -17,7 +17,7 @@ Wave 1 (4 subagents, launched in ONE response — see "Launch a wave" below)
   ├─ Kaggle Code       what competitors actually run
   ├─ Discussion forum  what participants are told and asking
   ├─ Overview + rules  the macro facts and the constraints
-  └─ CPU notebook      what the data actually is
+  └─ Kaggle CPU nb    what the data actually is  (the data never leaves Kaggle)
         │
         ▼   main agent synthesises, then DIRECTS wave 2
 Wave 2 (SEQUENTIAL, in the main thread — no parallel subagents)
@@ -146,17 +146,17 @@ notebook list. Treat a notebook list as a shortlist, then read the notebooks.
 
 1. Establish the ranked field first, so you know whose code is evidence:
    `kaggle_competitions_leaderboard` for the top N teams (default 10).
-2. Sweep the code space. `kaggle_kernels_list` has **no competition filter** in this plugin,
-   so build the shortlist from leaderboard author names and from method names the forum
-   surfaced:
+2. Sweep the code space. **Use the CLI, not the MCP tool, for this** — the `kaggle_kernels_list` MCP
+   tool really does have no competition filter, but the CLI does, and it is exact:
    ```
-   kaggle_kernels_list mine=false search="<method or harness name>"
-   kaggle_kernels_list mine=false search="<top team or author name>"
+   kaggle kernels list --competition <slug> --page-size 200
    ```
-   A bare `search` is a fuzzy substring match across all of Kaggle and **leaks notebooks from
-   other competitions and other years** — the ARC-AGI-2 and unrelated "duck" notebooks in the
-   results are exactly that. Filter the returned list down to what plausibly belongs to this
-   competition before reading anything, and say what you filtered.
+   That returns competition-scoped kernels only, with no fuzzy-search contamination. On
+   `arc-prize-2026-arc-agi-3` it returned 1,100 kernels where fuzzy `--search` returned
+   unrelated notebooks from other competitions and years. **Gotcha: the CLI prints a blank line per
+   record, so counting lines inflates the count roughly 2x — dedupe before counting.**
+   Only fall back to `kaggle_kernels_list search=...` (or `kaggle kernels list -s`) when you need
+   to hunt by author or method name across all of Kaggle, and say what you filtered out.
 3. **Read the keepers.** For each notebook that plausibly belongs to this competition and
    looks competitive, `kaggle_kernel_pull` it and read the source. Record: title, author,
    votes, last run, the model it calls, the prompt/observation format, the action-parsing
@@ -203,7 +203,9 @@ one, and say where it came from.
 **Message bodies are HTML.** Strip the tags, keep the links. A quoted rule often lives in a
 `<blockquote>`, and that is usually the exact text that matters.
 
-**`kaggle_kernels_list` has no competition filter.** Its `search` is a fuzzy substring match
+**`kaggle kernels list --competition <slug>` is exact and is the right way to sweep.** Only the
+MCP tool `kaggle_kernels_list` lacks a competition filter; the CLI has `--competition`, `--dataset`
+and `--user`. If you use the MCP tool's `search` instead, it is a fuzzy substring match
 across all of Kaggle, so it returns notebooks from other competitions and other years — a
 `duck` search comes back with text-classification notebooks from 2018. Filter the result down
 to what plausibly belongs here, and say what you filtered out.
@@ -212,12 +214,16 @@ to what plausibly belongs here, and say what you filtered out.
 you download it and read the file. That is the only way to see the prompt format and the action
 parsing, which is what actually decides whether a notebook is worth building on.
 
-**`competitions files` works and is the way to see the data.** Also paginated, and the listing
-includes `.git/` internals when a competition ships a repo — skip those, report the real files.
+**`competitions pages` works and is how you read the rules.** `kaggle competitions pages -c <slug>
+--content --page-name <name>` returns the full page text to an ordinary participant. Verified on
+`arc-prize-2026-arc-agi-3`, which yielded Rules, Evaluation, Code Requirements, Timeline, Prizes
+and data-description — every hard constraint of that competition, without opening a browser. Run
+`pages` with no page name first to list what is available. Only `competitions hosts` genuinely
+403s. This is the highest-value command in the whole sweep; do not skip it.
 
-**`competitions hosts` and `competitions pages` are host-only.** Both 403 for a participant.
-`pages` is the endpoint that would otherwise give you Overview and Rules text, and you cannot
-have it.
+**`competitions files` is paginated, and `--page-size 200` gets it in one call.** The default page
+size emits a `Next Page Token` even when everything fits on one page, and the listing includes
+`.git/` internals when a competition ships a repo — skip those, report the real files.
 
 **The browser is a fallback with a hard limit, not a substitute.** Kaggle's pages are a
 client-rendered SPA: an unauthenticated fetch returns an empty `<div id="root"></div>` and
@@ -257,12 +263,25 @@ The macro facts and the constraints. Be precise about which parts you can actual
   you have entered.
 - `competitions submission-limits -c <slug>` → your submission counts and daily allowance. A
   real participant-scoped endpoint; read it rather than assuming the limit.
-- `competitions files <slug>` → the data listing.
+- `competitions files -c <slug> --page-size 200` → the data listing. Skip the `.git/` internals.
+- `competitions pages -c <slug> --content --page-name <name>` → the **full text of the Overview,
+  Rules, Prizes, Evaluation, Code Requirements, Timeline and data-description pages**. This is
+  where the binding constraints actually are. List the page names with a bare `pages` call first.
 
-**Not reachable — the browser is the only route:** the Overview, Rules, Prizes, Evaluation and
-Data **page text**. `competitions pages` is host-only and 403s. Open those pages in the Browser
-and **first verify a signed-in session exists**, because an unauthenticated Kaggle SPA renders
-an empty shell and reporting that as "the Rules page is blank" is a false negative.
+**When a constraint still cannot be read, say so — never infer it from a leaderboard or a README.**
+The browser is the fallback for a page the CLI listing does not cover, and it only works if it
+already holds a signed-in Kaggle session; verify a signed-in marker first, because an
+unauthenticated Kaggle SPA renders an empty shell and reporting that as "the Rules page is blank" is
+a false negative.
+
+**`competitions download` may 403 even when `competitions files` lists the file.** On
+`arc-prize-2026-arc-agi-3` every listed file returned 403 on download while the listing was
+readable. That is a real outcome, not a credentials problem — and for **competition data** it is
+moot, because you must not download it at all: profile it from a notebook on Kaggle instead (see
+wave 1 subagent 4). For *documentation* that 403 applies, and then find the same content
+legitimately: the organiser often mirrors the starter repo publicly on GitHub
+(`arcprize/ARC-AGI-3-Kaggle-Starter` mirrored that competition's `ARC-AGI-3-Agents/`), and PyPI is
+an ungated route for the vendored wheels. Say which route you used.
 
 If you cannot authenticate, do not infer the rules from a leaderboard or a README. Report the
 limit, carry forward every rule the forum or a host post did state, and put the unreadable
@@ -272,24 +291,39 @@ hand.
 Where you do get a rule, **quote it** and name the page or topic it came from. A plan built on
 a misread limit is worthless.
 
-## Wave 1 subagent 4 — the data, analysed in a CPU notebook
+## Wave 1 subagent 4 — the data, analysed in a Kaggle CPU notebook
 
-Read the data, do not infer it from the Data page description. This subagent writes and runs a
-**CPU-only** notebook, because a data profile must not cost accelerator quota and must run
-locally.
+Read the data, do not infer it from the Data page description. This subagent writes a **CPU-only**
+notebook and runs it **on Kaggle**, because a data profile must not cost accelerator quota, and
+because **competition data must never be pulled onto this machine**.
+
+**The data stays on Kaggle. Do not run `competitions download` or `datasets download`.** Not for
+the profile, not for one sample, not "just to check a single file" — a listing is not a reason to
+copy bytes. The ban is not only policy: the download is frequently impossible anyway, because
+every listed file 403s on `arc-prize-2026-arc-agi-3` while the listing itself reads fine. Running
+the notebook on Kaggle is not a workaround for that 403, it is the ordinary path — the notebook
+already has the competition's input directory mounted, and it is the only place the data should
+ever be read.
 
 1. Get the file list with `competitions files <slug>` — paginated, and skip `.git/` internals.
-2. Write a local CPU notebook that, for every file, records shape, dtype, null count, and for
-   text/JSON fields the key structure and a real sample. Do not load anything that does not fit
-   in memory — profile a sample and say so.
-3. Report the problem in terms a plan can use: what one row *is*, what the target is, exactly
+   This is a *listing*, not a download, and it is allowed.
+2. Write a notebook that, for every file, records shape, dtype, null count, and for text/JSON
+   fields the key structure and a real sample. Read the paths Kaggle mounts into the notebook's
+   input directory; never fetch them. Do not load anything that does not fit in memory — profile
+   a sample and say so.
+3. Launch it on the free CPU tier — `kaggle_kernel_launch accelerator="none"` — then
+   `kaggle_kernel_verify expected="none"`. A launch that silently landed on an accelerator spends
+   quota nobody meant to spend, and the verify is the only thing that tells you it did.
+4. When the run completes, fetch **only the profile**: `kaggle_kernels_output` into a scratch
+   folder. That is the few kilobytes of JSON this notebook wrote, not the dataset.
+5. Report the problem in terms a plan can use: what one row *is*, what the target is, exactly
    what a submission must look like (filename, format, size), how the split is constituted, and
    any leakage or duplication you can see.
-4. Flag anything contradicting the Data page. That page is written for humans and goes stale;
+6. Flag anything contradicting the Data page. That page is written for humans and goes stale;
    the files do not.
 
 This is what lets the plan say "we must submit N files of format X" instead of guessing, and
-whether a local baseline is possible at all.
+whether a CPU-only baseline is feasible at all.
 
 ## Wave 2, step 1 — the general search, in the browser, on an engine the user chose
 
@@ -564,8 +598,9 @@ State what you could not reach. These are the ones actually observed, not hypoth
   endpoint;
 - forum `authorName` is empty, so authors come from message signatures or nowhere;
 - the forum is paginated, so any count of "how big is this forum" from one page is wrong;
-- `kernels list` has no competition filter, so notebook counts include other competitions and
-  years unless you filter them yourself;
+- notebook counts depend entirely on how you listed them: `kernels list --competition` is scoped,
+  but a fuzzy `--search` sweeps in other competitions and years, and the CLI's blank line per
+  record inflates any raw line count about 2x;
 - a guessed slug 403s and looks like a credentials problem;
 - a search that returns nothing is reported as nothing, never padded with adjacent results
   dressed up as relevant;
