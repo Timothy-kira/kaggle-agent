@@ -807,20 +807,23 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["read", "consider", "declare", "settle", "prune", "record", "plan",
-                             "status", "select", "board", "replay", "compare", "policy",
-                             "round_close", "anchor", "undo", "analyze", "review"],
+                    "enum": ["read", "consider", "declare", "settle", "prune", "alias",
+                             "record", "plan", "status", "select", "board", "replay", "compare",
+                             "policy", "round_close", "anchor", "undo", "analyze", "review"],
                     "default": "read",
                     "description": (
                         "read = the tree plus the readRevision that authorises one write "
-                        "(call this before EVERY node); consider = ask, at any step, whether what "
-                        "you are about to do is already refuted, already known, or already in "
-                        "flight, and whether it earns a node at all; declare = announce an "
+                        "(call this before EVERY node), and which competition the tree it "
+                        "returned actually belongs to; consider = ask, at any step, whether "
+                        "what you are about to do is already refuted, already known, or already "
+                        "in flight, and whether it earns a node at all; declare = announce an "
                         "experiment before running it (change, hypothesis, parent, operator, "
                         "family, reason - no metric yet); settle = record the result of a "
                         "declaration, as a new node parented by it; prune = delete one USELESS "
                         "research node, and only that (an experiment is evidence and is never "
-                        "deleted); record = add one node; plan = the kept / "
+                        "deleted); alias = point another name for the SAME competition at this "
+                        "tree, so one competition never ends up with two histories; "
+                        "record = add one node; plan = the kept / "
                         "refuted / in-flight / research summary to plan from; status = counts and "
                         "whether the tree is currently sound; select = non-greedy three-factor parent "
                         "selection returning a BATCH (quality + progress + novelty, visit "
@@ -832,6 +835,14 @@ TOOLS: list[dict[str, Any]] = [
                         "round_close = archive the current round into the replay pool; anchor = "
                         "declare/query the held-out evaluation set; undo = step back the last "
                         "state change, including restoring a pruned node."
+                    ),
+                },
+                "alias": {
+                    "type": "string",
+                    "description": (
+                        "For action='alias': another name for this competition — a short form, an "
+                        "older slug, a display name. Refused if that name already has a tree of "
+                        "its own, because two histories of one competition is what this prevents."
                     ),
                 },
                 "change": {
@@ -1054,7 +1065,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.16.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.17.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -1990,6 +2001,24 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             tree = experiment_tree.read(comp)
             problems = tree.get("problems") or []
             body = experiment_tree.plan_prompt(comp)
+            ident = experiment_tree.identity(comp)
+            # The identity line is not decoration. A tree is addressed by a slug derived from
+            # whatever string the caller passed, so a different name silently means a different
+            # tree. Showing which competition the file is actually for turns "I typed the wrong
+            # slug" from an invisible mistake into one line of output.
+            body += (f"\n\ncompetition: {ident.get('competition') or '(new tree)'}"
+                     f"   nodes: {ident.get('nodes')}"
+                     f"   keys: {', '.join(ident.get('keys') or []) or '(none)'}"
+                     f"\nfile: {ident.get('directory')}")
+            if ident.get("slug") and ident.get("competition") and \
+                    ident["slug"] != ident["competition"]:
+                body += (f"\nnote: you asked for {ident['slug']!r} and this tree belongs to "
+                         f"{ident['competition']!r}. If those are the same competition, register "
+                         f"the name with action=\"alias\" so both resolve here.")
+            for f in ident.get("forks") or []:
+                body += (f"\nFORK: {f.get('competition')} also claims {ident.get('slug')!r} "
+                         f"with {f.get('nodes')} nodes at {f.get('dir')}. Two histories of one "
+                         f"competition defeats the point of the tree — merge them or pick one.")
             if problems:
                 body += "\n\nSTRUCTURAL PROBLEMS (the tree is not trustworthy as it stands):\n" + \
                     "\n".join(f"  - {p}" for p in problems)
@@ -2462,6 +2491,27 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 "kaggle_experiment_tree prune", 0,
                 f"pruned {res['pruned']}\nreason: {res['reason']}\n"
                 f"revision: {res['revision']}\nundo restores it",
+                "",
+            )
+
+        if action == "alias":
+            alias = str(args.get("alias") or "").strip()
+            if not alias:
+                return text_response(
+                    "kaggle_experiment_tree alias", 2, "",
+                    "action='alias' needs alias (the other name this competition is known by)",
+                )
+            res = experiment_tree.register_alias(comp, alias)
+            if not res.get("ok"):
+                return text_response(
+                    f"kaggle_experiment_tree alias ({res.get('code')})", 3, "",
+                    f"{res.get('message')}",
+                )
+            return text_response(
+                "kaggle_experiment_tree alias", 0,
+                f"{alias!r} now resolves to the tree for {res['competition']}\n"
+                f"keys: {', '.join(res['keys'])}\n"
+                f"directory: {res['directory']}\nrevision: {res['revision']}",
                 "",
             )
 

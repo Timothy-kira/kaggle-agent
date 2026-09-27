@@ -1,4 +1,4 @@
-﻿# collab — 协作与交接
+# collab — 协作与交接
 
 **What this category answers:** how does this work outlive the current session, and when is a
 GUI actually the right response?

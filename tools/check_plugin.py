@@ -496,7 +496,7 @@ def check_no_secrets():
 # These are matched as whole words, not substrings. "kaggle_search_engine" is a *current*
 # tool name that happens to contain the retired agent's name, and a substring rule would
 # flag the tool that replaced it.
-RETIRED_NAMES = ("kaggle-search", "Kaggle 鎼滅储", "search-agent.png")
+RETIRED_NAMES = ("kaggle-search", "Kaggle 搜索", "search-agent.png")
 RETIRED_PATTERNS = [re.compile(r"\bkaggle_search\b"), re.compile(r"agent:kaggle-search")]
 
 
@@ -2169,6 +2169,200 @@ def check_monitor_uses_the_builtin_cron():
           "the old claim that a subagent can watch a log for hours is gone")
 
 
+# ---------------------------------------------------------------- competition isolation
+# A tree is addressed by a slug derived from whatever string the caller passed, so
+# "arc-prize-2026-arc-agi-3" and "arc-agi-3" sanitise to two different directories and
+# would be two silent histories of one competition - the exact waste the tree exists to
+# prevent. So a tree records the name it was created under plus every name later pointed
+# at it, a second name resolves to the same file, and aliasing onto a key that already has
+# a tree of its own is refused loudly rather than silently picking one.
+#
+# NOTE the check() signature used throughout this file: check(cond, msg). Writing it as
+# check("label", condition) makes every assertion pass, because a non-empty label is
+# always truthy. That has happened SEVEN times in this project's history, most recently
+# in the standalone test this function was generated from - which reported 28 passed with
+# the message printed as "True". The tell is in the output, not in the code.
+def check_competition_isolation():
+    print("competition isolation")
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import pathlib
+
+    spec = importlib.util.spec_from_file_location("_ks_iso", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the server module loads for the isolation test: {exc}")
+        return
+    et = sys.modules.get("experiment_tree")
+    json = __import__("json")
+
+    home = _tempfile.mkdtemp(prefix="ka-check-iso-")
+    os.environ["KAGGLE_AGENT_HOME"] = home
+    try:
+        def rec(competition, nid, change="do a thing"):
+            return et.record(competition, {"id": nid, "kind": "experiment", "change": change,
+                                            "hypothesis": "h", "parent": None, "operator": "draft",
+                                            "family": "f", "reason": "r", "evidence": "local-only",
+                                            "verdict": "keep",
+                                            "metric": {"name": "s", "parent": None, "result": 1.0,
+                                                       "delta": 0.1, "rank": 1, "rankSource": "lb"}},
+                             read_revision=et.read(competition)["revision"])
+
+
+        try:
+            check(rec("arc-prize-2026-arc-agi-3", "e1").get("ok"), "seed: a node under one name")
+            t = et.read("arc-prize-2026-arc-agi-3")
+            check(t.get("competition") == "arc-prize-2026-arc-agi-3",
+                  f"the tree records the name it was created under: {t.get('competition')}")
+            check("arc-prize-2026-arc-agi-3" in (t.get("competitionKeys") or []),
+                  f"and claims that key: {t.get('competitionKeys')}")
+
+            fresh = et.read("titanic")
+            check(fresh.get("competition") == "titanic",
+                  f"a brand new tree already says what it is for: {fresh.get('competition')!r}")
+            check(not ((fresh.get("tree") or {}).get("nodes") or {}), "and starts empty")
+            check(rec("titanic", "e1").get("ok"), "a same node id in another competition is fine")
+            check(et.read("arc-prize-2026-arc-agi-3")["tree"]["nodes"].get("e1") is not None,
+                  "and it did not touch the first tree")
+
+            a = et.register_alias("arc-prize-2026-arc-agi-3", "ARC-AGI-3")
+            check(a.get("ok"), f"registering an alias: {a.get('message')}")
+            check("arc-agi-3" in (a.get("keys") or []), f"the alias is in the key set: {a.get('keys')}")
+            t3 = et.read("ARC-AGI-3")
+            check(t3.get("competition") == "arc-prize-2026-arc-agi-3",
+                  f"the alias resolves to the SAME tree: {t3.get('competition')}")
+            check("e1" in ((t3.get("tree") or {}).get("nodes") or {}),
+                  "and sees the node recorded under the other name")
+            check(os.path.realpath(et.tree_path_resolved("ARC-AGI-3"))
+                  == os.path.realpath(et.tree_path_resolved("arc-prize-2026-arc-agi-3")),
+                  "both names resolve to one file on disk")
+
+            ident = et.identity("ARC-AGI-3")
+            check(ident.get("competition") == "arc-prize-2026-arc-agi-3",
+                  f"identity() says which competition the tree is for: {ident.get('competition')}")
+            check(ident.get("nodes") == 1, f"and how many nodes it holds: {ident.get('nodes')}")
+            check(ident.get("forks") == [], "and that nothing else claims the key")
+
+            check(rec("titanic2", "e9", "a different run").get("ok"), "seed: a second real tree")
+            a2 = et.register_alias("arc-prize-2026-arc-agi-3", "titanic2")
+            check(not a2.get("ok"), "aliasing onto a key that has its own tree is refused")
+            check(a2.get("code") == "alias_has_own_tree", f"with a specific code: {a2.get('code')}")
+            check("two histories" in (a2.get("message") or "").lower(),
+                  "and it explains why in the user's terms")
+            check(bool(et.read("titanic2")["tree"]["nodes"]), "and the other tree is untouched")
+            check(et.register_alias("arc-prize-2026-arc-agi-3", "   ").get("code") == "bad_alias",
+                  "a blank alias is refused")
+
+            on_disk = json.loads(pathlib.Path(et.tree_path("arc-prize-2026-arc-agi-3")).read_text())
+            for transient in ("identity", "forks", "path", "problems", "migrated"):
+                check(transient not in on_disk, f"'{transient}' is not written to tree.json")
+            check("competition" in on_disk and "competitionKeys" in on_disk,
+                  "the document carries its own identity")
+
+            rec("../../escape", "e1")
+            written = et.tree_path_resolved("../../escape")
+            check(os.path.realpath(written).startswith(
+                os.path.realpath(os.path.join(home, "handoff"))),
+                f"a traversal key stays under the handoff root: {os.path.basename(os.path.dirname(written))}")
+
+            # the read the agent actually sees must show the identity
+            r = ks.tool_call("kaggle_experiment_tree",
+                             {"action": "read", "competition": "ARC-AGI-3"})
+            text = json.dumps(r)
+            check("competition:" in text, "read reports which competition the tree is for")
+            check("arc-prize-2026-arc-agi-3" in text, "and names it")
+
+            r2 = ks.tool_call("kaggle_experiment_tree",
+                              {"action": "alias", "competition": "arc-prize-2026-arc-agi-3",
+                               "alias": "titanic2"})
+            check("alias_has_own_tree" in json.dumps(r2), "the tool surfaces the fork refusal too")
+
+            tools = {t.get("name"): t for t in getattr(ks, "TOOLS", [])}
+            enum = (((tools.get("kaggle_experiment_tree") or {}).get("inputSchema") or {})
+                    .get("properties", {}).get("action", {}).get("enum") or [])
+            check("alias" in enum, "the alias action is in the tool schema")
+        finally:
+            os.environ.pop("KAGGLE_AGENT_HOME", None)
+            shutil.rmtree(home, ignore_errors=True)
+    finally:
+        os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+
+
+# ---------------------------------------------------------------- text encoding
+# A UTF-8 file round-tripped through a Windows PowerShell pipeline comes back as DIFFERENT
+# characters, not as an error: Get-Content -Raw decodes with the system codepage (GBK here)
+# and the next write re-encodes the result, so every CJK string in the file silently becomes
+# other CJK strings of similar width. It reached the published repository across four commits
+# before it was found, in a single retired-agent name, and 1053 checks stayed green because
+# nothing looked at the bytes.
+#
+# The tell is a code point comparison, never a console rendering: the console will happily
+# display corrupted characters as if they were the intended ones.
+BOM = b"\xef\xbb\xbf"
+ENCODING_SUFFIXES = {".py", ".md", ".json", ".sh", ".cmd", ".txt", ".yml", ".yaml"}
+# Literals whose exact characters matter, compared by code point. A mojibake round trip
+# produces same-width wrong characters, so a length check cannot see it.
+EXACT_LITERALS = [
+    ("tools/check_plugin.py", "Kaggle \u641c\u7d22", "\u641c\u7d22"),
+    ("skills/competition-browser-agent.md", "\u641c\u7d22", "\u641c\u7d22"),
+]
+
+
+def _publishable_text_files() -> list[Path]:
+    out = []
+    for f in ROOT.rglob("*"):
+        if not f.is_file() or f.suffix.lower() not in ENCODING_SUFFIXES:
+            continue
+        parts = set(f.parts)
+        if ".git" in parts or "__pycache__" in parts:
+            continue
+        out.append(f)
+    return sorted(out)
+
+
+def check_text_encoding():
+    print("text encoding")
+    files = _publishable_text_files()
+    check(bool(files), f"there are text files to check ({len(files)})")
+
+    undecodable = []
+    bommed = []
+    for f in files:
+        b = f.read_bytes()
+        if b.startswith(BOM):
+            bommed.append(str(f.relative_to(ROOT)))
+        try:
+            b.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            undecodable.append(f"{f.relative_to(ROOT)}: {exc}")
+    for rel in bommed:
+        bad(f"{rel} starts with a UTF-8 BOM; the loader sees the BOM as content")
+    check(not bommed, f"no text file carries a BOM ({len(files)} files)")
+    for u in undecodable:
+        bad(f"{u} is not valid UTF-8")
+    check(not undecodable, "every text file decodes as strict UTF-8")
+
+    for rel, needle, expected in EXACT_LITERALS:
+        f = ROOT / rel
+        if not check(f.is_file(), f"{rel} exists for its literal check"):
+            continue
+        text = f.read_text(encoding="utf-8")
+        present = check(needle in text, f"{rel} contains {expected!r} exactly")
+        if not present:
+            # Already reported. Do not index into a string that is not there: the whole point of
+            # this check is to survive the file being wrong.
+            continue
+        # A same-width wrong string is the actual failure mode, so compare code points.
+        got = text[text.index(needle):text.index(needle) + len(needle)]
+        check("".join(f"{ord(c):04X}" for c in got) ==
+              "".join(f"{ord(c):04X}" for c in needle),
+              f"{rel}: the literal is not a mojibake lookalike")
+
+
 def main() -> int:
     check_manifest()
     check_servers()
@@ -2204,6 +2398,8 @@ def main() -> int:
     check_local_run_is_monitored()
     check_monitor_uses_the_builtin_cron()
     check_consider_and_prune()
+    check_competition_isolation()
+    check_text_encoding()
     check_publishable()
     print()
     if failures:

@@ -143,13 +143,133 @@ def _home() -> str:
     )
 
 
+def _slug(competition: str) -> str:
+    return re.sub(r"[^a-z0-9._-]+", "-", (competition or "").strip().lower()).strip("-._")
+
+
 def comp_dir(competition: str) -> str:
-    slug = re.sub(r"[^a-z0-9._-]+", "-", (competition or "").strip().lower()).strip("-._")
-    return os.path.join(_home(), "handoff", slug or "unnamed")
+    return os.path.join(_home(), "handoff", _slug(competition) or "unnamed")
 
 
 def tree_path(competition: str) -> str:
     return os.path.join(comp_dir(competition), "tree.json")
+
+
+def _read_doc(path: str) -> dict[str, Any] | None:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _sibling_trees() -> list[tuple[str, dict[str, Any]]]:
+    """Every tree on disk, as (directory, raw document). Never raises."""
+    root = os.path.join(_home(), "handoff")
+    out: list[tuple[str, dict[str, Any]]] = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return out
+    for name in names:
+        p = os.path.join(root, name, "tree.json")
+        if not os.path.isfile(p):
+            continue
+        doc = _read_doc(p)
+        if doc is not None:
+            out.append((os.path.join(root, name), doc))
+    return out
+
+
+def resolve_competition(competition: str) -> tuple[str, list[dict[str, Any]]]:
+    """Resolve a requested competition key to the ONE tree that owns it.
+
+    Returns (directory, forks). A tree is addressed by a slug derived from whatever string the
+    caller passed, so ``arc-prize-2026-arc-agi-3`` and ``arc-agi-3`` sanitise to two different
+    directories and would otherwise be two silent histories of one competition — the exact waste
+    the tree exists to prevent. A key already registered on another tree therefore resolves HERE,
+    and a key that has a tree of its own AND is claimed elsewhere is reported as a fork rather
+    than silently resolved to one of them.
+    """
+    slug = _slug(competition)
+    home = comp_dir(competition)
+    own = os.path.join(home, "tree.json")
+    if not os.path.isfile(own):
+        for directory, doc in _sibling_trees():
+            if slug in (doc.get("competitionKeys") or []):
+                return directory, []
+    if os.path.isfile(own):
+        mine = _read_doc(own) or {}
+        mine_keys = set(mine.get("competitionKeys") or [])
+        forks = []
+        for directory, doc in _sibling_trees():
+            if directory == home:
+                continue
+            if slug in (doc.get("competitionKeys") or []):
+                forks.append({
+                    "dir": directory,
+                    "competition": doc.get("competition") or "?",
+                    "nodes": len(((doc.get("tree") or {}).get("nodes") or {})),
+                })
+        return home, forks
+    return home, []
+
+
+def tree_path_resolved(competition: str) -> str:
+    return os.path.join(resolve_competition(competition)[0], "tree.json")
+
+
+def identity(competition: str) -> dict[str, Any]:
+    """Which tree a key resolves to, and who else claims it. Cheap, and makes forks visible."""
+    directory, forks = resolve_competition(competition)
+    doc = _read_doc(os.path.join(directory, "tree.json")) or {}
+    return {
+        "requested": competition,
+        "slug": _slug(competition),
+        "directory": directory,
+        "exists": bool(doc),
+        "competition": doc.get("competition") or "",
+        "keys": list(doc.get("competitionKeys") or []),
+        "nodes": len(((doc.get("tree") or {}).get("nodes") or {})),
+        "forks": forks,
+    }
+
+
+def register_alias(competition: str, alias: str) -> dict[str, Any]:
+    """Point another name at this tree, so one competition cannot fork into two histories."""
+    if not _slug(alias):
+        return {"ok": False, "code": "bad_alias",
+                "message": f"{alias!r} is not a usable competition key"}
+    directory, forks = resolve_competition(competition)
+    if forks:
+        return {"ok": False, "code": "forked",
+                "message": f"this key is claimed by more than one tree: "
+                           f"{forks}. Resolve that before adding another name."}
+    path = os.path.join(directory, "tree.json")
+    doc = _read_doc(path) or empty_tree()
+    if not doc.get("competition"):
+        doc["competition"] = _slug(competition)
+    keys = list(doc.get("competitionKeys") or [])
+    if _slug(competition) not in keys:
+        keys.append(_slug(competition))
+    if _slug(alias) not in keys:
+        keys.append(_slug(alias))
+    alias_dir = comp_dir(alias)
+    other = _read_doc(os.path.join(alias_dir, "tree.json"))
+    if alias_dir != directory and other is not None \
+            and ((other.get("tree") or {}).get("nodes") or {}):
+        return {"ok": False, "code": "alias_has_own_tree",
+                "message": f"{alias!r} already has a tree of its own with "
+                           f"{len((other.get('tree') or {}).get('nodes') or {})} nodes at "
+                           f"{alias_dir}. Two histories of one competition is exactly what this "
+                           f"prevents — move or delete that tree first, or pick the other name."}
+    doc["competitionKeys"] = keys
+    doc["revision"] = int(doc.get("revision") or 0) + 1
+    doc["updatedAt"] = _now()
+    save(competition, doc)
+    return {"ok": True, "directory": directory, "competition": doc["competition"], "keys": keys,
+            "revision": doc["revision"]}
 
 
 def _now() -> str:
@@ -168,6 +288,8 @@ def empty_tree() -> dict[str, Any]:
         "schemaVersion": 3,
         "currentRound": 1,
         "deployedPolicy": None,
+        "competition": "",
+        "competitionKeys": [],
         "anchor": {"declared": False, "heldOut": None, "rule": "", "declaredAt": None},
         "tree": {"base": {"id": "", "label": "", "parent": None}, "nodes": {}},
         "rounds": [],
@@ -198,14 +320,30 @@ def load(competition: str) -> dict[str, Any]:
 
     Migration is in memory only. A v2 file is not rewritten until something valid is written over
     it, so a tree that cannot be understood is never destroyed by the act of trying to read it.
+
+    The read is also where a competition claims its key, so a tree always records the name it
+    was first created under and every other name later pointed at it. A key that resolves to a
+    different directory than the caller asked for — or that another tree also claims — is
+    reported rather than resolved silently, because two histories of one competition is the
+    failure this whole structure exists to prevent.
     """
     data = empty_tree()
+    directory, forks = resolve_competition(competition)
+    path = os.path.join(directory, "tree.json")
     try:
-        with open(tree_path(competition), "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             stored = json.load(fh)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return data
+        stored = None
     if not isinstance(stored, dict):
+        # A tree that does not exist yet still knows what it is for. Leaving `competition` empty
+        # here meant a brand new tree could not be told apart from a tree whose identity was
+        # simply lost, which is exactly the ambiguity this is meant to remove.
+        data["competition"] = _slug(competition)
+        data["competitionKeys"] = [_slug(competition)]
+        data["path"] = path
+        data["identity"] = identity(competition)
+        data["forks"] = forks
         return data
 
     version = stored.get("schemaVersion")
@@ -213,14 +351,21 @@ def load(competition: str) -> dict[str, Any]:
         data = _migrate_v2(stored)
         data["migrated"] = True
         data["fromVersion"] = 2 if version is None else version
+        data["path"] = path
         return data
 
     for key in ("currentRound", "revision"):
         if isinstance(stored.get(key), int):
             data[key] = stored[key]
-    for key in ("deployedPolicy", "updatedAt"):
+    for key in ("deployedPolicy", "updatedAt", "competition"):
         if stored.get(key) is not None:
             data[key] = stored[key]
+    if isinstance(stored.get("competitionKeys"), list):
+        data["competitionKeys"] = [str(k) for k in stored["competitionKeys"] if isinstance(k, str)]
+    if not data.get("competition"):
+        data["competition"] = _slug(competition)
+    if _slug(competition) not in data["competitionKeys"]:
+        data["competitionKeys"].append(_slug(competition))
     if isinstance(stored.get("anchor"), dict):
         data["anchor"] = {**data["anchor"], **stored["anchor"]}
     if isinstance(stored.get("tree"), dict):
@@ -236,6 +381,9 @@ def load(competition: str) -> dict[str, Any]:
         data["policies"] = stored["policies"]
     if isinstance(stored.get("journal"), list):
         data["journal"] = [j for j in stored["journal"] if isinstance(j, dict)]
+    data["path"] = path
+    data["identity"] = identity(competition)
+    data["forks"] = forks
     return data
 
 
@@ -245,12 +393,22 @@ def save(competition: str, data: dict[str, Any]) -> str:
     Public because handoff.py delegates its tree writes here instead of keeping a second,
     unvalidated writer. tools/check_plugin.py asserts it is the only one.
     """
-    path = tree_path(competition)
+    path = tree_path_resolved(competition)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = {k: v for k, v in data.items() if not k.startswith("_")}
     payload["schemaVersion"] = 3
     payload.pop("migrated", None)
     payload.pop("fromVersion", None)
+    # These describe a read, not a document. Writing them would make the file claim a path and a
+    # fork report that are only true at the moment it was read.
+    for transient in ("identity", "forks", "path", "problems"):
+        payload.pop(transient, None)
+    if not payload.get("competition"):
+        payload["competition"] = _slug(competition)
+    keys = [str(k) for k in (payload.get("competitionKeys") or []) if isinstance(k, str)]
+    if _slug(competition) not in keys:
+        keys.append(_slug(competition))
+    payload["competitionKeys"] = keys
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, ensure_ascii=False)
