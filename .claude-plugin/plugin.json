@@ -1,0 +1,18 @@
+{
+  "name": "kaggle-agent",
+  "version": "1.12.3",
+  "description": "Kaggle as composable tools and workflows: multi-account identity, two-wave competition research, ablation experiment trees, 12h-capped notebook runs with verified-accelerator checks, log monitoring, presence mode and cross-agent handoff documents.",
+  "author": {
+    "name": "Akira",
+    "url": "https://github.com/Timothy-kira"
+  },
+  "homepage": "https://github.com/Timothy-kira/kaggle-agent",
+  "repository": "https://github.com/Timothy-kira/kaggle-agent",
+  "keywords": ["kaggle", "competition", "notebooks", "experiments", "research", "mcp"],
+  "mcpServers": {
+    "kaggle": {
+      "command": "python",
+      "args": ["-B", "${CLAUDE_PLUGIN_ROOT}/mcp/kaggle_server.py"]
+    }
+  }
+}

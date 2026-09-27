@@ -1,0 +1,23 @@
+{
+  "name": "kaggle-agent",
+  "owner": {
+    "name": "Akira",
+    "url": "https://github.com/Timothy-kira"
+  },
+  "metadata": {
+    "description": "Kaggle Agent: Kaggle as composable tools and workflows."
+  },
+  "plugins": [
+    {
+      "name": "kaggle-agent",
+      "source": "./",
+      "description": "Kaggle as composable tools and workflows: multi-account identity, two-wave competition research, ablation experiment trees, 12h-capped notebook runs with verified-accelerator checks, log monitoring, presence mode and cross-agent handoff documents.",
+      "version": "1.12.3",
+      "author": { "name": "Akira" },
+      "homepage": "https://github.com/Timothy-kira/kaggle-agent",
+      "repository": "https://github.com/Timothy-kira/kaggle-agent",
+      "category": "development",
+      "keywords": ["kaggle", "competition", "notebooks", "experiments", "research", "mcp"]
+    }
+  ]
+}
