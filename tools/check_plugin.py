@@ -106,6 +106,53 @@ def check_servers():
 
 
 # ---------------------------------------------------------------- frontmatter
+def _plain_scalar_is_safe(value: str) -> bool:
+    """Would this survive being parsed as a YAML plain (unquoted) scalar?
+
+    A plain scalar ends at the first ': ' or ' #', and may not open with a YAML
+    indicator character. Two of the sixteen skills carried a description containing
+    "the main thread: the general browser search" and "the optional environment:
+    plotting always works". Both parsed as a nested mapping, both were dropped by the
+    runtime without a word, and every check here still passed, because the frontmatter
+    was only ever matched with a regex. The regex saw a non-empty description; the
+    loader never saw a description at all.
+    """
+    v = value.strip()
+    if not v:
+        return False
+    if v[0] in "-?:,[]{}#&*!|>'\"%@`":
+        return False
+    if v.endswith(":"):
+        return False
+    return ": " not in v and " #" not in v
+
+
+def _frontmatter_line_is_valid(line: str) -> tuple[bool, str]:
+    """Validate one top-level `key: value` frontmatter line without a YAML dependency."""
+    m = re.match(r"^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$", line)
+    if not m:
+        return False, "not a `key: value` line"
+    key, value = m.group(1), m.group(2).strip()
+    if not value:
+        return False, f"'{key}' has an empty value"
+    if value.startswith('"'):
+        if not (value.endswith('"') and len(value) >= 2):
+            return False, f"'{key}' opens a double quote that is never closed"
+        if value.count('"') % 2:
+            return False, f"'{key}' has an unbalanced double quote"
+        return True, ""
+    if value.startswith("'"):
+        if not (value.endswith("'") and len(value) >= 2):
+            return False, f"'{key}' opens a single quote that is never closed"
+        return True, ""
+    if value[0] in "[{":
+        return True, ""  # flow collection: a real parser's job, not ours
+    if not _plain_scalar_is_safe(value):
+        return False, (f"'{key}' is an unquoted scalar containing ': ' or ' #', which YAML "
+                       f"reads as a nested mapping — quote the value")
+    return True, ""
+
+
 def check_skill_frontmatter():
     print("skill frontmatter")
     data, _ = parse_json(MANIFEST)
@@ -116,14 +163,25 @@ def check_skill_frontmatter():
         if not check(m is not None, f"{rel_path}: has YAML frontmatter"):
             continue
         fm = m.group(1)
+        # Every top-level line must survive a real YAML parse, not merely a regex match.
+        for line in fm.split("\n"):
+            if not line.strip():
+                continue
+            ok_line, why = _frontmatter_line_is_valid(line)
+            snippet = line if len(line) <= 70 else line[:67] + "..."
+            check(ok_line, f"{rel_path}: frontmatter parses as YAML -- {snippet}"
+                  + (f"  [{why}]" if why else ""))
         name_m = re.search(r"^name:\s*(\S+)\s*$", fm, re.M)
         desc_m = re.search(r"^description:\s*(.+)$", fm, re.M)
         dir_name = p.parent.name
         if check(name_m is not None, f"{rel_path}: frontmatter has 'name'"):
-            check(name_m.group(1) == dir_name,
+            # A quoted scalar is the correct way to write these, so the comparison
+            # must see the value rather than the quotes around it.
+            declared_name = name_m.group(1).strip("\"'")
+            check(declared_name == dir_name,
                   f"{rel_path}: frontmatter name == directory name ({dir_name})")
         if check(desc_m is not None, f"{rel_path}: frontmatter has 'description'"):
-            check(len(desc_m.group(1).strip()) > 20,
+            check(len(desc_m.group(1).strip().strip("\"'")) > 20,
                   f"{rel_path}: description is substantive")
 
 

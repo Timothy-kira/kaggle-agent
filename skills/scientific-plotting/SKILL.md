@@ -1,6 +1,6 @@
 ---
-name: scientific-plotting
-description: Use after a run has produced a result - plot it, because a number alone does not say whether the delta is real, which family the gain came from, or what the next experiment should be. Covers the six chart types the bundled engine draws, when each one answers a question a table cannot, how noise bands and Pareto frontiers change a reading, and the honest report of a figure that could not be drawn. Also covers the optional environment: plotting always works, and richer chart types are only installed if the user agrees.
+name: "scientific-plotting"
+description: "Use after a run has produced a result - plot it, because a number alone does not say whether the delta is real, which family the gain came from, or what the next experiment should be. Covers the six chart types the bundled engine draws, when each one answers a question a table cannot, how noise bands and Pareto frontiers change a reading, and the honest report of a figure that could not be drawn. Also covers the optional environment: plotting always works, and richer chart types are only installed if the user agrees."
 ---
 
 # Scientific plotting: the figure is the analysis

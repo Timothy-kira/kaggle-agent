@@ -27,6 +27,15 @@ credentials.json
 /plots/
 *.tmp
 
+# Agent Plugins 1.0 view of this package, written by the runtime at import time
+# (observed 2026-09-27): it generates a root plugin.json and mcp.json alongside the
+# MiniMax pair so a conformant client can read the same package. They are derived
+# output, not source, and the runtime recreates them on every import — so they are
+# deliberately not published. Ship them by hand if cross-client portability matters
+# more than a single canonical manifest.
+/plugin.json
+/mcp.json
+
 # OS and editor noise
 .DS_Store
 Thumbs.db

@@ -1,6 +1,6 @@
 ---
-name: kaggle-competition-research
-description: Use when researching a Kaggle competition before committing to an approach - what the rules and data actually are, what competitors are doing in Kaggle Code, what the discussion forum says, and what the wider field knows in GitHub, Hugging Face and the papers. Wave 1 launches four Kaggle-native subagents in a single response. Wave 2 then runs sequentially in the main thread: the general browser search through the deep-research skill over multiple rounds, with a hard requirement that GitHub, Hugging Face and arXiv are genuinely opened and parsed rather than quoted from a search snippet, followed by the reusable competition-browser agent for source-specific forensics on the URLs that search surfaced. Reads sources in full rather than skimming titles, and reports coverage limits honestly.
+name: "kaggle-competition-research"
+description: "Use when researching a Kaggle competition before committing to an approach - what the rules and data actually are, what competitors are doing in Kaggle Code, what the discussion forum says, and what the wider field knows in GitHub, Hugging Face and the papers. Wave 1 launches four Kaggle-native subagents in a single response. Wave 2 then runs sequentially in the main thread: the general browser search through the deep-research skill over multiple rounds, with a hard requirement that GitHub, Hugging Face and arXiv are genuinely opened and parsed rather than quoted from a search snippet, followed by the reusable competition-browser agent for source-specific forensics on the URLs that search surfaced. Reads sources in full rather than skimming titles, and reports coverage limits honestly."
 ---
 
 # Researching a Kaggle competition
