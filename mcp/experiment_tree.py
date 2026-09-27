@@ -91,6 +91,20 @@ VALID_DIRECTIONS = ("higher", "lower")
 # re-read of the forum" is more honest than pretending a question is an ablation.
 NODE_KINDS = ("experiment", "research")
 
+# A node with status "planned" is a declaration: an experiment that has been announced and may be
+# run, but has no result yet. It exists so kaggle_kernel_launch can refuse a run nobody declared —
+# the guarantee that no experiment result lives only in a chat transcript.
+#
+# The tree is append-only and ids are never reused or rewritten, so the result does NOT fill the
+# declaration in place. It lands as a NEW node whose parent is the declaration. A declaration is
+# therefore "settled" exactly when it has a child, which is derivable and needs no second writer.
+NODE_STATUSES = ("planned", "settled")
+
+
+def is_planned(node: Any) -> bool:
+    """True for a declaration: announced, runnable, and carrying no result yet."""
+    return isinstance(node, dict) and node.get("status") == "planned"
+
 VERDICTS = ("keep", "revert", "inconclusive", "superseded")
 
 # What a research node went back to. These are the sources the plugin can actually reach, so a
@@ -518,7 +532,11 @@ def validate(tree: dict[str, Any]) -> list[str]:
                 problems.append(f"{where}: parent is itself")
 
         if kind == "experiment":
-            for field in EXPERIMENT_REQUIRED:
+            # A declaration states what is about to be run, not what came back, so it owes no
+            # metric and no verdict. What it still owes is the same identity every experiment
+            # owes — a single change, a hypothesis, and an operator to attribute it to later.
+            required = ("change", "hypothesis") if is_planned(node) else EXPERIMENT_REQUIRED
+            for field in required:
                 if field not in node:
                     problems.append(f"{where}: experiment missing required field '{field}'")
             for field in SEARCH_REQUIRED:
@@ -698,6 +716,70 @@ def _suggest_id(tree: dict[str, Any]) -> str:
     return f"n{i}"
 
 
+def pending_declarations(competition_or_tree: Any) -> list[dict[str, Any]]:
+    """Declared-but-unsettled experiments, oldest first.
+
+    "Unsettled" is derived, not stored: a declaration is done the moment it has a child. That
+    keeps the tree append-only — nothing is ever rewritten in place to mark it finished.
+    """
+    tree = competition_or_tree
+    if isinstance(competition_or_tree, str):
+        tree = load(competition_or_tree)
+    if not isinstance(tree, dict):
+        return []
+    inner = _current(tree)
+    nodes = inner.get("nodes") or {}
+    parents = {v.get("parent") for v in nodes.values() if isinstance(v, dict)}
+    out = [
+        {"id": nid, "change": n.get("change"), "hypothesis": n.get("hypothesis"),
+         "parent": n.get("parent"), "operator": n.get("operator")}
+        for nid, n in nodes.items()
+        if is_planned(n) and nid not in parents
+    ]
+    return out
+
+
+def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]) -> dict[str, Any]:
+    """Announce an experiment before running it, so the run can be tied to a node.
+
+    This is the precondition kaggle_kernel_launch requires. It is two calls — read, then declare —
+    and in exchange no experiment result can exist only in a transcript.
+    """
+    if not isinstance(node, dict):
+        return {"ok": False, "code": "bad_node", "message": "node must be an object"}
+    prepared = dict(node)
+    # A declaration is always an experiment. A research node changes nothing and runs nothing,
+    # so it is never a precondition for a launch and is not what this action produces.
+    prepared.setdefault("kind", "experiment")
+    prepared["status"] = "planned"
+    prepared.pop("metric", None)
+    prepared.pop("verdict", None)
+    return record(competition, prepared, read_revision)
+
+
+def settle(competition: str, declared: str, node: dict[str, Any],
+           read_revision: Optional[int]) -> dict[str, Any]:
+    """Record the result of a declared experiment, as a new node parented by the declaration."""
+    tree = load(competition)
+    nodes = _current(tree).get("nodes") or {}
+    if declared not in nodes:
+        return {"ok": False, "code": "unknown_declaration",
+                "message": f"no declaration {declared!r} in the tree for {competition!r}"}
+    if not is_planned(nodes[declared]):
+        return {"ok": False, "code": "not_a_declaration",
+                "message": f"node {declared!r} is not a declaration"}
+    if any(isinstance(v, dict) and v.get("parent") == declared for v in nodes.values()):
+        return {"ok": False, "code": "already_settled",
+                "message": f"declaration {declared!r} already has a result node; declare a new "
+                           f"experiment rather than settling this one twice"}
+    if not isinstance(node, dict):
+        return {"ok": False, "code": "bad_node", "message": "node must be an object"}
+    prepared = dict(node)
+    prepared.setdefault("kind", "experiment")
+    prepared.setdefault("parent", declared)
+    return record(competition, prepared, read_revision)
+
+
 def record(competition: str, node: dict[str, Any], read_revision: Optional[int],
            new_base: Optional[str] = None) -> dict[str, Any]:
     """Add one node, refusing unless the tree was read at its current revision.
@@ -800,9 +882,15 @@ def plan_prompt(competition: str) -> str:
     nodes = _current(tree).get("nodes") or {}
     base_id = (_current(tree).get("base") or {}).get("id")
     kept, refuted_rows, research_rows = [], [], []
+    inflight = []
     for nid, n in nodes.items():
         if not isinstance(n, dict):
             continue
+        if is_planned(n):
+            settled = any(isinstance(v, dict) and v.get("parent") == nid for v in nodes.values())
+            if not settled:
+                inflight.append(f"{nid}: {n.get('change')} (declared, no result yet)")
+                continue
         if n.get("kind") == "research":
             research_rows.append(f"{nid}: {n.get('question')} -> opens: {n.get('opens')}")
         if n.get("verdict") == "revert":
@@ -820,6 +908,8 @@ def plan_prompt(competition: str) -> str:
         "KEPT (do not re-derive, and do not repeat):",
     ]
     lines += [f"  {k}" for k in kept] or ["  (none)"]
+    lines += ["", "IN FLIGHT (declared and run, but no result recorded yet — settle these):"]
+    lines += [f"  {i}" for i in inflight] or ["  (none)"]
     lines += ["", "REFUTED (never run again - this is the whole point of the tree):"]
     lines += [f"  {r}" for r in refuted_rows] or ["  (none)"]
     lines += ["", "RESEARCH NODES (a result said the current understanding was insufficient):"]

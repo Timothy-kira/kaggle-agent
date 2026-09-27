@@ -149,7 +149,7 @@ def _frontmatter_line_is_valid(line: str) -> tuple[bool, str]:
         return True, ""  # flow collection: a real parser's job, not ours
     if not _plain_scalar_is_safe(value):
         return False, (f"'{key}' is an unquoted scalar containing ': ' or ' #', which YAML "
-                       f"reads as a nested mapping — quote the value")
+                       f"reads as a nested mapping 鈥?quote the value")
     return True, ""
 
 
@@ -496,7 +496,7 @@ def check_no_secrets():
 # These are matched as whole words, not substrings. "kaggle_search_engine" is a *current*
 # tool name that happens to contain the retired agent's name, and a substring rule would
 # flag the tool that replaced it.
-RETIRED_NAMES = ("kaggle-search", "Kaggle 搜索", "search-agent.png")
+RETIRED_NAMES = ("kaggle-search", "Kaggle 鎼滅储", "search-agent.png")
 RETIRED_PATTERNS = [re.compile(r"\bkaggle_search\b"), re.compile(r"agent:kaggle-search")]
 
 
@@ -1387,7 +1387,7 @@ def check_version_sync():
 # ---------------------------------------------------------------- publishable
 # Everything above validates the working tree. That is the wrong tree. This package is
 # published as a git repository, and a file can be present on disk, declared in the
-# manifest, referenced by the relationship graph — and still be absent from the repo.
+# manifest, referenced by the relationship graph 鈥?and still be absent from the repo.
 #
 # It happened. `.gitignore` carried an unanchored `handoff/` to keep a runtime output
 # directory out of the tree; git reads a pattern with no leading slash as matching at
@@ -1504,7 +1504,7 @@ def check_publishable():
                 continue
             for rx, label in PUBLISH_SECRET_PATTERNS:
                 if rx.search(text):
-                    bad(f"possible {label} in {rel} — this repository is public")
+                    bad(f"possible {label} in {rel} 鈥?this repository is public")
                     hits += 1
         if hits == 0:
             ok(f"no credential literal in any of the {len(publishable)} publishable files")
@@ -1523,7 +1523,7 @@ def check_publishable():
         for rx, label in MACHINE_PATH_PATTERNS:
             found = rx.search(text)
             if found:
-                bad(f"{label} in {rel}: {found.group(0)!r} — this package is installed "
+                bad(f"{label} in {rel}: {found.group(0)!r} 鈥?this package is installed "
                     f"on other machines, use a plugin-relative path or ${{PLUGIN_ROOT}}")
                 machine_hits += 1
     if machine_hits == 0:
@@ -1533,7 +1533,7 @@ def check_publishable():
 # ---------------------------------------------------------------- data locality
 # The user does not want competition data pulled onto this machine, ever. The skill said
 # "must run locally" and "write a local CPU notebook", which is an instruction to download the
-# dataset — on a competition where every listed file 403s anyway. Prose was not enough: the fix
+# dataset 鈥?on a competition where every listed file 403s anyway. Prose was not enough: the fix
 # has to be something a later edit cannot quietly undo, so the required wording is asserted here.
 RESEARCH_SKILL = ROOT / "skills" / "kaggle-competition-research" / "SKILL.md"
 
@@ -1568,7 +1568,7 @@ def check_data_stays_on_kaggle():
 # The in-app browser is for *discovery*. Deciding which pages matter and reading them is not
 # delegated to it: a known URL is read with web_fetch. The skill used to say "Do it with the
 # in-app browser in this session, not with a search tool" for the coverage floor, while the
-# competition-browser agent doc already recorded that a detached subagent has only web_fetch —
+# competition-browser agent doc already recorded that a detached subagent has only web_fetch 鈥?
 # the two files contradicted each other and the browser was doing a job it is bad at.
 RESEARCH_SKILL = ROOT / "skills" / "kaggle-competition-research" / "SKILL.md"
 BROWSER_AGENT_DOC = ROOT / "skills" / "competition-browser-agent.md"
@@ -1590,7 +1590,7 @@ def check_browser_is_search_only():
               f"the research skill no longer says {banned[:46]!r}")
 
     # The boundary itself, stated positively. The floor names three specific sites, so each
-    # one gets a concrete web_fetch example on its own line — a whole-file containment test
+    # one gets a concrete web_fetch example on its own line 鈥?a whole-file containment test
     # would pass with two of the three examples deleted, because `web_fetch url=` and the
     # host strings both survive somewhere else in a 34 KB document.
     check("the floor is about the source, not the tool" in lowered,
@@ -1629,7 +1629,7 @@ def check_browser_is_search_only():
 # ---------------------------------------------------------------- research preflight
 # Research is the expensive path in this plugin: four subagents, a multi-round sweep and a
 # forensics pass. Re-running it over work that already exists is the most wasteful thing the
-# skill can do, and the skill had no preflight at all — handoff appeared once, at the end, as
+# skill can do, and the skill had no preflight at all 鈥?handoff appeared once, at the end, as
 # something to *offer*. The user's rule: check the local workspace first, and ask about a cloud
 # handoff rather than assuming there is none.
 def check_research_preflight():
@@ -1641,7 +1641,7 @@ def check_research_preflight():
 
     # Form, not name. A document this size keeps the word "handoff_status" alive in prose long
     # after the call itself is gone, and keeps the word "ask" and "cloud" alive after the
-    # question is deleted — so each assertion below pins the exact instruction, not a token.
+    # question is deleted 鈥?so each assertion below pins the exact instruction, not a token.
     check('handoff_status competition=' in text,
           "the preflight shows the handoff_status CALL, not just the name")
     check('kaggle_experiment_tree action="read"' in text,
@@ -1676,6 +1676,138 @@ def check_research_preflight():
         check("handoff_status" in desc, "the description names the preflight call")
 
 
+# ---------------------------------------------------------------- the launch gate
+# The guarantee: no experiment result lives only in a chat transcript. kaggle_kernel_launch
+# refuses a run nobody declared, and a declaration is only closeable by settling it. This is
+# the only place the plugin refuses to do the user's work, which is why it is tested by running
+# it rather than by reading the source.
+def check_launch_gate():
+    print("launch gate")
+    import json as _json
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    spec = importlib.util.spec_from_file_location("_ks_gate", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the server module loads for the gate test: {exc}")
+        return
+    et = sys.modules.get("experiment_tree") or ks.experiment_tree
+
+    tools = {t.get("name"): t for t in getattr(ks, "TOOLS", [])}
+    launch = tools.get("kaggle_kernel_launch") or {}
+    props = (launch.get("inputSchema") or {}).get("properties") or {}
+    required = (launch.get("inputSchema") or {}).get("required") or []
+    check("declares" in props and "declares" in required,
+          "kaggle_kernel_launch requires a declaration id in its schema")
+    check("competition" in props, "kaggle_kernel_launch can name the competition")
+
+    tree_schema = (tools.get("kaggle_experiment_tree") or {}).get("inputSchema") or {}
+    enum = ((tree_schema.get("properties") or {}).get("action") or {}).get("enum") or []
+    for action in ("declare", "settle"):
+        check(action in enum, f"kaggle_experiment_tree exposes action={action!r}")
+
+    comp = "zz-check-launch-gate"
+    tree_file = Path(et.tree_path(comp))
+    if tree_file.exists():
+        tree_file.unlink()
+    folder = Path(_tempfile.mkdtemp(prefix="ka-gate-"))
+    try:
+        (folder / "notebook.ipynb").write_text("{}", encoding="utf-8")
+        (folder / "kernel-metadata.json").write_text(
+            _json.dumps({"id": f"owner/{comp}", "title": "gate test"}), encoding="utf-8")
+        launch_args = {"folder": str(folder)}
+
+        def _launch(**kw):
+            a = dict(launch_args)
+            a.update(kw)
+            r = ks.tool_call("kaggle_kernel_launch", a)
+            return _json.dumps(r)
+
+        refused = _launch(competition=comp)
+        check("no experiment was declared" in refused,
+              "a run with nothing declared is refused")
+        # The refusal is returned as JSON, so its embedded quotes arrive escaped.
+        check('action=\\"declare\\"' in refused or 'action="declare"' in refused,
+              "the refusal names the call that unlocks it")
+
+        rev = et.read(comp)["revision"]
+        d = et.declare(comp, {"id": "e1", "change": "swap the sampler",
+                              "hypothesis": "it is the bottleneck", "parent": None,
+                              "operator": "draft", "family": "sampling",
+                              "reason": "the profile says so"}, read_revision=rev)
+        if not check(d.get("ok"), f"a declaration is accepted: {d.get('message')}"):
+            return
+        check(et.declare(comp, {"id": "e0", "change": "x", "hypothesis": "h", "parent": None,
+                                "operator": "draft", "family": "f", "reason": "r"},
+                         read_revision=None).get("code") == "read_required",
+              "declare without a read is refused")
+        open_ids = [p["id"] for p in et.pending_declarations(comp)]
+        check(open_ids == ["e1"],
+              f"an unsettled declaration is offered to the gate: {open_ids}")
+        passed = _launch(competition=comp, declares="e1")
+        check("no experiment was declared" not in passed and "was refused" not in passed,
+              "the declared run passes the gate")
+        check("was refused" in _launch(competition=comp, declares="nope"),
+              "a bogus declaration id is refused")
+
+        rev = et.read(comp)["revision"]
+        s = et.settle(comp, "e1", {"id": "e1-result", "change": "swap the sampler",
+                                    "hypothesis": "it is the bottleneck", "operator": "draft",
+                                    "family": "sampling", "reason": "profile",
+                                    "evidence": "local-only", "verdict": "keep",
+                                    "metric": {"name": "score", "parent": None, "result": 0.42,
+                                               "delta": 0.02, "rank": 7, "rankSource": "lb"}},
+                      read_revision=rev)
+        if not check(s.get("ok"), f"a result settles its declaration: {s.get('message')}"):
+            return
+        nodes = et._current(et.load(comp))["nodes"]
+        check(nodes.get("e1-result", {}).get("parent") == "e1",
+              "the result is a NEW node parented by the declaration, not a rewrite")
+        check(et.pending_declarations(comp) == [],
+              "a settled declaration is no longer open")
+        check("was refused" in _launch(competition=comp, declares="e1"),
+              "re-running a settled declaration is refused")
+        check(et.settle(comp, "e1", {"id": "again", "change": "c", "hypothesis": "h",
+                                     "operator": "draft", "family": "f", "reason": "r",
+                                     "evidence": "local-only", "verdict": "keep",
+                                     "metric": {"name": "s", "parent": None, "result": 1,
+                                                "delta": 0, "rank": 1, "rankSource": "x"}},
+                       read_revision=et.read(comp)["revision"]).get("code") == "already_settled",
+              "settling the same declaration twice is refused")
+        check(et.declare(comp, {"id": "p2", "change": "abandon the model entirely",
+                                "hypothesis": "the baseline is wrong, not the method",
+                                "parent": None, "operator": "crossover",
+                                "family": "problem-framing",
+                                "reason": "the old base was refuted twice"},
+                       read_revision=et.read(comp)["revision"]).get("ok"),
+              "a completely new direction may start from a null parent")
+        prompt = et.plan_prompt(comp)
+        check("IN FLIGHT" in prompt and "p2" in prompt,
+              "plan reports what is in flight")
+    finally:
+        _shutil.rmtree(folder, ignore_errors=True)
+        if tree_file.exists():
+            tree_file.unlink()
+
+
+    # The launch gate is only a guarantee if the skills describe the same three calls.
+    tree_skill = ROOT / "skills" / "rsi-experiment-tree" / "SKILL.md"
+    launch_skill = ROOT / "skills" / "experiment-launch" / "SKILL.md"
+    for path, tokens in (
+        (tree_skill, ('action="declare"', 'action="settle"', 'declares="', "IN FLIGHT",
+                      "parent: null", "new_base")),
+        (launch_skill, ('action="declare"', 'action="settle"', "declares         =", "REQUIRED")),
+    ):
+        if path.is_file():
+            body = path.read_text(encoding="utf-8")
+            for token in tokens:
+                check(token in body, f"{path.name} documents {token!r}")
+
+
 def main() -> int:
     check_manifest()
     check_servers()
@@ -1706,6 +1838,7 @@ def main() -> int:
     check_data_stays_on_kaggle()
     check_browser_is_search_only()
     check_research_preflight()
+    check_launch_gate()
     check_publishable()
     print()
     if failures:

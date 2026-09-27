@@ -62,13 +62,44 @@ anything irreversible. And if `action="record"` comes back `stopped: true`, stop
 
 ## Launching on Kaggle
 
+**A run must be declared first.** `kaggle_kernel_launch` refuses a launch that no experiment was
+declared for, so a result cannot end up existing only in this conversation. Two calls buy that:
+
+```
+kaggle_experiment_tree action="read"    competition="<slug>"      # gives the readRevision
+kaggle_experiment_tree action="declare" competition="<slug>"      # announces the experiment
+  read_revision = <that revision>
+  node = {"id":"e1","change":"<one thing>","hypothesis":"<why>","parent":<base id or null>,
+          "operator":"draft|improve|debug|crossover","family":"<method family>","reason":"<why>"}
+```
+
+Then:
+
 ```
 kaggle_kernel_launch
   folder           = <dir with notebook.ipynb and kernel-metadata.json>
   timeout_seconds  = <= 43200
   accelerator      = gpu | tpu | none
   account          = which saved account pays (default: the active one)
+  competition      = <slug>            # or "id" in kernel-metadata.json
+  declares         = <the node id>    # REQUIRED
 ```
+
+`parent` may be `null`. That is how a completely new direction starts when the old one has been
+refuted: declare against nothing, then promote it with `record(new_base=...)` once it earns it.
+
+When the run finishes, close the loop — the result lands as a **new** node parented by the
+declaration, because the tree is append-only and ids are never rewritten:
+
+```
+kaggle_experiment_tree action="settle" competition="<slug>" declared="e1"
+  read_revision = <current revision>
+  node = {"id":"e1-result", ...same change/hypothesis/operator/family...,
+          "metric":{...},"verdict":"keep|revert|inconclusive|superseded", "evidence":"local-only"}
+```
+
+A declaration can only be settled once, and a settled one cannot be re-run — so `plan` will list
+anything still **IN FLIGHT**, which is your queue of runs whose result was never recorded.
 
 `kaggle_kernel_launch` refuses a `timeout_seconds` above 43200 and reports the clamped value
 instead of silently accepting it. **12h is the platform maximum for one notebook run** - a longer

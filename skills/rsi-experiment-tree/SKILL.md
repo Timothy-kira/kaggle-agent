@@ -232,6 +232,48 @@ tool/recovery, **not** on the model being insufficient. Those are harness bugs. 
 that names its layer tells the next iteration whether to change the tool or the skill; one that
 does not only says "worse".
 
+## When the old direction is dead: change direction, do not keep digging
+
+A tree that has been refuted at the base is not a tree to keep improving. Three mechanisms let you
+move, and they are different things — picking the wrong one is how a dead direction survives two
+more weeks.
+
+| Situation | Do | What it does |
+|---|---|---|
+| This change was wrong, the direction is fine | `verdict: "revert"` with a `failureLayer` | stays in the same lineage; the refuted list stops it being retried |
+| This change is a different **approach** to the same goal | a new experiment whose `parent` is the current base | a new branch, still comparable |
+| **The goal itself was wrong** | a node with `parent: null` | a new lineage, not comparable to the old base |
+| The new direction has earned it | `record(new_base="<node id>")` | promotes it, and the kept chain and replay objective move with it |
+
+`parent: null` is legal and means exactly what it looks like: this node answers to nothing before
+it. The tree validates it, and `base.parent` may be `null` too, so a base can itself be the start
+of a lineage.
+
+**A `parent: null` node is the honest move when the old base was refuted on a layer like
+`metric` or `state-continuity`** — that is the runtime reporting the number was wrong, not the idea.
+And `metric.parent` may be `null` as well, with `delta` recorded as the first reading rather than a
+change, because there is nothing before it to be a delta from.
+
+Two things not to do: do not re-derive the old direction's numbers under a new node id, and do not
+edit history to make the pivot look continuous. The old lineage stays in the tree, refuted, and
+`plan` keeps showing it — that is the record of why you moved, and it is what stops the next agent
+from walking back into it.
+
+**Declare before you run.** A run is only allowed against a declared experiment:
+
+```
+kaggle_experiment_tree action="declare" competition="<slug>" read_revision=<rev>
+  node = {"id":"e2","change":"...","hypothesis":"...","parent":null,
+          "operator":"crossover","family":"...","reason":"..."}
+kaggle_kernel_launch ... declares="e2"
+kaggle_experiment_tree action="settle"  competition="<slug>" declared="e2" read_revision=<rev>
+  node = {"id":"e2-result", ... ,"metric":{...},"verdict":"...","evidence":"..."}
+```
+
+The result lands as a **new** node parented by the declaration, because the tree is append-only and
+ids are never reused. A declaration is settled the moment it has a child, so `plan`'s **IN FLIGHT**
+list is exactly the set of runs whose result was never recorded.
+
 ## The experience board
 
 ```

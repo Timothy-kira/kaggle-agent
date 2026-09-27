@@ -241,7 +241,10 @@ TOOLS: list[dict[str, Any]] = [
             "as passed to the CLI, because the CLI flag alone is not honoured. "
             "timeout_seconds is capped at 43200 (12h), the platform maximum. "
             "Re-pushing the same folder resumes the same notebook rather than starting a new one. "
-            "Returns the ref to poll with kaggle_kernels_status and to read with kaggle_kernels_logs."
+            "Returns the ref to poll with kaggle_kernels_status and to read with kaggle_kernels_logs. "
+            "REFUSES to launch unless the run was declared first: pass declares=<node id> from "
+            "kaggle_experiment_tree action=\"declare\", so the result has somewhere to land instead "
+            "of existing only in the conversation."
         ),
         "inputSchema": {
             "type": "object",
@@ -259,8 +262,22 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Which saved account's quota to charge. Defaults to the active account.",
                 },
+                "competition": {
+                    "type": "string",
+                    "description": (
+                        "Competition slug the run belongs to. Defaults to 'id' in "
+                        "kernel-metadata.json. Required: without it the result cannot be tied to a node."
+                    ),
+                },
+                "declares": {
+                    "type": "string",
+                    "description": (
+                        "Node id of an unsettled declaration from kaggle_experiment_tree "
+                        "action=\"declare\". Required."
+                    ),
+                },
             },
-            "required": ["folder"],
+            "required": ["folder", "declares"],
         },
     },
     {
@@ -725,6 +742,9 @@ TOOLS: list[dict[str, Any]] = [
             "over quality + progress + novelty with visit cooling, so the search is not "
             "starved by score-greedy expansion (arXiv 2607.28568 sec 5.2); action='board' shows "
             "method families, failures and which operators actually produced the gain. "
+            "action='declare' announces an experiment BEFORE it is run and action='settle' records "
+            "its result as a node parented by the declaration; kaggle_kernel_launch refuses any run "
+            "that was not declared, so no result can live only in the conversation. "
             "How to think - what to try, when to branch, when to stop - is deliberately left to "
             "the agent; only the record's shape and the order of records are constrained."
         ),
@@ -733,15 +753,18 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["read", "record", "plan", "status", "select", "board",
-                             "replay", "compare", "policy", "round_close", "anchor", "undo",
-                             "analyze", "review"],
+                    "enum": ["read", "declare", "settle", "record", "plan", "status", "select",
+                             "board", "replay", "compare", "policy", "round_close", "anchor",
+                             "undo", "analyze", "review"],
                     "default": "read",
                     "description": (
                         "read = the tree plus the readRevision that authorises one write "
-                        "(call this before EVERY node); record = add one node; plan = the kept / "
-                        "refuted / research summary to plan from; status = counts and whether the "
-                        "tree is currently sound; select = non-greedy three-factor parent "
+                        "(call this before EVERY node); declare = announce an experiment before "
+                        "running it (change, hypothesis, parent, operator, family, reason - no "
+                        "metric yet); settle = record the result of a declaration, as a new node "
+                        "parented by it; record = add one node; plan = the kept / "
+                        "refuted / in-flight / research summary to plan from; status = counts and "
+                        "whether the tree is currently sound; select = non-greedy three-factor parent "
                         "selection returning a BATCH (quality + progress + novelty, visit "
                         "cooling, plus per-criterion regression and effective cost); board = the "
                         "experience board: families, failures by layer, and per-criterion EFC. "
@@ -751,6 +774,13 @@ TOOLS: list[dict[str, Any]] = [
                         "round_close = archive the current round into the replay pool; anchor = "
                         "declare/query the held-out evaluation set; undo = step back the last "
                         "state change."
+                    ),
+                },
+                "declared": {
+                    "type": "string",
+                    "description": (
+                        "For action='settle': the node id of the declaration this result settles. "
+                        "A declaration can only be settled once."
                     ),
                 },
                 "policy": {
@@ -954,7 +984,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.12.6"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.13.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -1058,6 +1088,45 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             return text_response(
                 f"kaggle kernels push -p {folder}", 2, "",
                 f"folder does not exist: {folder}. It needs notebook.ipynb and kernel-metadata.json.",
+            )
+
+        # The guarantee. A run may only happen against a declared experiment, so no result can
+        # exist only in a chat transcript. This is the one place in the plugin that refuses to do
+        # the user's work, and it refuses loudly rather than proceeding with a warning 鈥?a soft
+        # gate is a gate nobody has to walk through.
+        _comp = str(args.get("competition") or "").strip() or str(
+            (_read_metadata(folder) or {}).get("id") or "").strip()
+        _declares = str(args.get("declares") or "").strip()
+        if not _comp:
+            return text_response(
+                f"kaggle kernels push -p {folder}", 3, "",
+                "a launch must name the competition, so its result has somewhere to land. Pass "
+                'competition="<slug>", or put "id" in kernel-metadata.json.',
+            )
+        _pending = experiment_tree.pending_declarations(_comp)
+        if not _declares:
+            _avail = ", ".join(p["id"] for p in _pending) or "(none declared yet)"
+            return text_response(
+                f"kaggle kernels push -p {folder}", 3, "",
+                f"no experiment was declared for {_comp!r}, so this run's result would exist "
+                f"only in the conversation.\n\ndeclare it first, then launch with its id:\n"
+                f"  1. kaggle_experiment_tree action=\"read\" competition=\"{_comp}\"\n"
+                f"  2. kaggle_experiment_tree action=\"declare\" competition=\"{_comp}\" "
+                f"read_revision=<that revision> node={{\"id\":\"e1\",\"change\":\"...\","
+                f"\"hypothesis\":\"...\",\"parent\":null,\"operator\":\"draft\","
+                f"\"family\":\"...\",\"reason\":\"...\"}}\n"
+                f"  3. kaggle_kernel_launch ... declares=\"<node id>\"\n\n"
+                f"declarations already open: {_avail}",
+            )
+        _nodes = (experiment_tree._current(experiment_tree.load(_comp)).get("nodes") or {})
+        _open = {p["id"] for p in _pending}
+        if _declares not in _open:
+            _why = ("it does not exist" if _declares not in _nodes
+                    else "it is not an unsettled declaration")
+            return text_response(
+                f"kaggle kernels push -p {folder}", 3, "",
+                f"declares={_declares!r} was refused: {_why}.\nopen declarations: "
+                + (", ".join(sorted(_open)) or "(none)"),
             )
         notes: list[str] = []
         # Which account pays. Done before the push so the run lands on the right quota.
@@ -2237,9 +2306,59 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             )
             return text_response("kaggle_experiment_tree record", 0, body, "")
 
+        if action in ("declare", "settle"):
+            node = args.get("node")
+            if not isinstance(node, dict):
+                return text_response(
+                    f"kaggle_experiment_tree {action}", 2, "",
+                    f"action={action!r} needs node (an object describing the node)",
+                )
+            rev = args.get("read_revision")
+            if action == "declare":
+                res = experiment_tree.declare(
+                    comp, node, read_revision=int(rev) if rev is not None else None)
+            else:
+                declared = str(args.get("declared") or "").strip()
+                if not declared:
+                    return text_response(
+                        "kaggle_experiment_tree settle", 2, "",
+                        "action='settle' needs declared (the id of the declaration this result "
+                        "settles)",
+                    )
+                res = experiment_tree.settle(
+                    comp, declared, node,
+                    read_revision=int(rev) if rev is not None else None)
+            if not res.get("ok"):
+                detail = ""
+                if res.get("problems"):
+                    detail = "\n" + "\n".join(f"  - {p}" for p in res["problems"])
+                return text_response(
+                    f"kaggle_experiment_tree {action} ({res.get('code')})", 3,
+                    "", f"{res.get('message')}{detail}",
+                )
+            verb = "declared" if action == "declare" else "settled"
+            extra = ""
+            if action == "declare":
+                extra = ("\nlaunch it with "
+                         f'kaggle_kernel_launch declares="{res["nodeId"]}"')
+            else:
+                pending = experiment_tree.pending_declarations(comp)
+                if pending:
+                    extra = ("\nstill awaiting a result: "
+                             + ", ".join(p["id"] for p in pending))
+                else:
+                    extra = "\nno declarations are awaiting a result."
+            body = (
+                f"{verb} {res['nodeId']}\n"
+                f"revision: {res['revision']}\n"
+                f"base: {res['base'] or '(unchanged)'}\n"
+                f"tree: {res['path']}\n{extra}\n\n{res['note']}"
+            )
+            return text_response(f"kaggle_experiment_tree {action}", 0, body, "")
+
         return text_response(
             "kaggle_experiment_tree", 2, "",
-            f"unknown action: {action} (use read, record, plan or status)",
+            f"unknown action: {action} (use read, declare, settle, record, plan or status)",
         )
 
     if name == "kaggle_search_engine":
