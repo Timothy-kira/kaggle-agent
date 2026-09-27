@@ -954,7 +954,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.12.4"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.12.5"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -2256,11 +2256,11 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             for key in sorted(searchengine.ENGINES):
                 spec = searchengine.ENGINES[key]
                 options.append(
-                    f"  - {key}: {spec['label']} 闁?{spec['note']}"
+                    f"  - {key}: {spec['label']} 闂?{spec['note']}"
                     + ("   (current)" if key == cur["engine"] else "")
                 )
             lines = [
-                "DISCOVERY SEARCH 闁?choose an engine before searching.",
+                "DISCOVERY SEARCH 闂?choose an engine before searching.",
                 "",
                 "Is this a discovery search (you do not have the URL yet)?",
                 "  yes  -> an engine is required: use this tool, then open the returned URL.",

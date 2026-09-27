@@ -36,28 +36,33 @@ Its persona enforces the failure modes that matter at this stage:
 | Re-doing the general search or wave 1 | "Execute the brief's scope, not your own" |
 | Writing files it is not meant to write | Returns `ROLE_MISMATCH` instead |
 
-## How it opens a source
+## How it reads a source
 
-The in-app browser is the primary method: load `browser-use:control-in-app-browser`, call
-`mcp_browser`, and read the repo page, the model card, the paper page.
+**`web_fetch`, first and normally.** Fetch the specific first-party URL from your brief and read
+the real page. For a public page this is the proper method, not a downgrade — it is still the
+source, and not a search engine.
+
+**The browser is not your tool, and page selection is not the browser's job.** The in-app browser
+exists in this plugin to *discover* candidate URLs, and the parent session has already done that:
+your brief carries the URLs it found. Deciding which of those pages matters, and then reading them,
+is the work you were dispatched to do. Handing the "go and look at this" step back to a browser
+search is the failure this agent exists to prevent.
 
 **The runtime constraint you must know.** The in-app browser is bound to the session that owns
 it, so a **detached background subagent does not have the browser tool in its tool list** — this
 was verified: a background subagent sees neither `mcp_browser` nor `web_search`, only
-`web_fetch`. Its fallback ladder is therefore, in order, never silently:
+`web_fetch`. Your ladder is therefore, in order, never silently:
 
-1. Fetch the specific first-party page directly with `web_fetch` and read the real page. For a
-   public page this is an acceptable substitute — it is still the source, not a search engine.
+1. Fetch the specific first-party page directly with `web_fetch` and read the real page.
 2. Otherwise report the source as **not reachable in this session** and name it.
 3. Never substitute a generic web search to fill the gap.
 
-**So when you are dispatched, expect to work at tier 1.** The parent session holds the browser and
-has already opened the three required sites to discharge its own `browses` edges; your brief
-carries the URLs it found. If the fields you need are not in the page you fetched, say so and ask
-the parent to open it in its browser — do not guess, and do not substitute a search engine.
+**So when you are dispatched, expect to work at tier 1, and that is the normal case.** If the
+fields you need are not in the page you fetched, say so and ask the parent to open it in its
+browser — do not guess, and do not substitute a search engine.
 
-Every source in the report is labeled with how it was read — `browser`, `fetch`, or
-`not reachable` — so the main agent can carry an honest coverage limit into the plan.
+Every source in the report is labeled with how it was read — `fetch` or `not reachable` — so the
+main agent can carry an honest coverage limit into the plan.
 
 ## How to dispatch it
 

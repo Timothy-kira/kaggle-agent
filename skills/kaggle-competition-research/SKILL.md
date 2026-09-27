@@ -42,7 +42,7 @@ and the main thread is that session; a detached subagent does not have it (verif
 subagent sees neither `mcp_browser` nor `web_search`). The general search is the part that must
 genuinely browse, so it belongs in the main thread. Note that `deep-research` itself prefers
 `web_search`/`web_fetch` and avoids browser automation on its own, so the three required sites are
-opened by the main agent directly — see the coverage floor.
+read by the main agent directly — see the coverage floor.
 
 **Wave 2's queries come from wave 1's results.** That is the whole reason for the split. The
 main agent reads the four reports, notices that everyone's Duck harness forks are converging
@@ -413,42 +413,48 @@ browser. Neither half is optional.
   collapse it into one search pass; the multi-round structure is what makes the result grounded
   rather than a first plausible hit.
 
-### The coverage floor: GitHub, Hugging Face and arXiv must be genuinely browsed
+### The coverage floor: GitHub, Hugging Face and arXiv must be genuinely read
 
 This is a hard requirement, and it is recorded in the graph as three `browses` edges from
 `kaggle-competition-research` to `github`, `huggingface` and `arxiv`. The research is **not
-complete** until the search has actually opened and parsed each of those three sites.
+complete** until the source's own page has actually been opened and parsed for each of those three
+sites.
 
-What satisfies the floor:
+**The floor is about the source, not the tool.** Read the real page — by whatever means actually
+reads it. The browser is the tool for *search*; it is not the tool that decides which pages matter,
+and page-reading is not delegated to it.
 
-- opening the source's own page and reading the rendered content — a GitHub repo or search page,
-  a Hugging Face model or dataset page, the arXiv listing and the paper page itself.
+| You need | Use |
+|---|---|
+| To **discover** candidate URLs — an open-ended sweep | the in-app browser, on the engine the user picked |
+| To **read a URL you already hold** — a repo, a model card, an abstract | `web_fetch` |
+| A page that genuinely needs JS rendering, or a signed-in session | the in-app browser, and say why you needed it |
 
-Do it with the **in-app browser in this session**, not with a search tool. These are direct
-navigations — you already have the URLs — so no engine question applies:
+So the default for the three required sites is a direct fetch, not a navigation:
 
 ```
-# 1. load the browser skill once, as the only tool call in that step
-skill(browser-use:control-in-app-browser)
-
-# 2. then open and read each required site
-mcp_browser action="open_tab" input={url: "https://github.com/topics/arc-prize"}
-mcp_browser action="query"  input={kind: "text", selector: "body"}
-mcp_browser action="open_tab" input={url: "https://huggingface.co/models?search=<task>"}
-mcp_browser action="open_tab" input={url: "https://arxiv.org/list/<category>/recent"}
+web_fetch url="https://github.com/topics/arc-prize"
+web_fetch url="https://huggingface.co/models?search=<task>"
+web_fetch url="https://arxiv.org/list/<category>/recent"
 ```
 
-Call `inspect` or `query(kind="text")` to read the page — whichever answers the question, and
-not both. The browser skill's own rule applies: after the first Browser action in a session, do
-not reload the skill again unless the runtime says the receipt is invalid. **If a page looks
-blank, `wait` and re-read before concluding anything** — that is a rendering delay, not an empty
-result.
+These are direct reads of a known URL, so no engine question applies and no browser is needed.
+`web_fetch` is the better tool here for three reasons: it returns the page as text, which is what
+you are extracting fields *from*; it needs no session-bound browser, so the same move works in a
+subagent; and it does not render, so it cannot hand you a blank first frame you mistake for an
+empty page.
 
-**Verified working on this machine**, which is what makes the floor achievable rather than
-aspirational: `mcp_browser` opened and rendered `arxiv.org/list/cs.AI/recent` (260 entries),
-`huggingface.co/models?sort=downloads` (3.1M models), and `github.com/topics/arc-prize`
-(10 public repos, with stars and update dates visible). All three rendered as real DOM, not as
-empty SPA shells.
+**Reach for the browser only when fetching is not enough**, and name the reason: a page that
+returns an empty shell without JavaScript, a listing that only populates client-side, or anything
+needing a signed-in session. Then load the skill once as the only tool call in that step, and follow
+its own rule — after the first Browser action, do not reload the skill unless the runtime says the
+receipt is invalid. **If a page looks blank, `wait` and re-read before concluding anything.**
+
+Both paths were exercised on this machine, which is what makes the floor achievable rather than
+aspirational: `web_fetch` returns real content from `github.com/topics/…`, `huggingface.co/models`
+and `arxiv.org/list/…`; and `mcp_browser` opened and rendered the same three (`arxiv.org/list/cs.AI/recent`
+with 260 entries, `huggingface.co/models?sort=downloads` with 3.1M models, `github.com/topics/arc-prize`
+with 10 public repos and their stars and update dates visible). Use whichever the page needs.
 
 What does **not** satisfy it:
 
@@ -458,12 +464,12 @@ What does **not** satisfy it:
 - "nothing relevant came up", which is a finding you may report *after* having genuinely looked.
 
 A site you could not reach is a legitimate outcome — but it has to be an honest one. If a page
-needs a signed-in session the browser does not hold, say that specific site was not reachable
-and why. Never present a snippet as if the page had been read; that is the one failure this
-floor exists to prevent.
+needs a signed-in session neither `web_fetch` nor the browser holds, say that specific site was not
+reachable and why. Never present a snippet as if the page had been read; that is the one failure
+this floor exists to prevent.
 
-Record per source which method actually read it — `browser`, `fetch`, or `not reachable` — and
-carry those labels into the plan's coverage-limits section, where an admitted gap belongs.
+Record per source how it was actually read — `fetch`, `browser`, or `not reachable` — and carry
+those labels into the plan's coverage-limits section, where an admitted gap belongs.
 
 ## Wave 2, step 2 — source forensics with the `competition-browser` agent
 

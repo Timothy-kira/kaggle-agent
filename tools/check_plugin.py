@@ -1564,6 +1564,68 @@ def check_data_stays_on_kaggle():
           "the research skill tells the notebook to read Kaggle's mounted input directory")
 
 
+# ---------------------------------------------------------------- browser boundary
+# The in-app browser is for *discovery*. Deciding which pages matter and reading them is not
+# delegated to it: a known URL is read with web_fetch. The skill used to say "Do it with the
+# in-app browser in this session, not with a search tool" for the coverage floor, while the
+# competition-browser agent doc already recorded that a detached subagent has only web_fetch —
+# the two files contradicted each other and the browser was doing a job it is bad at.
+RESEARCH_SKILL = ROOT / "skills" / "kaggle-competition-research" / "SKILL.md"
+BROWSER_AGENT_DOC = ROOT / "skills" / "competition-browser-agent.md"
+
+
+def check_browser_is_search_only():
+    print("browser boundary")
+    if not check(RESEARCH_SKILL.is_file(), "the research skill is present"):
+        return
+
+    research = RESEARCH_SKILL.read_text(encoding="utf-8")
+    lowered = research.lower()
+
+    # The old instruction that handed page-reading to the browser.
+    for banned in ("do it with the **in-app browser in this session**",
+                   "must be genuinely browsed",
+                   "opened and parsed each of those three sites"):
+        check(banned.lower() not in lowered,
+              f"the research skill no longer says {banned[:46]!r}")
+
+    # The boundary itself, stated positively. The floor names three specific sites, so each
+    # one gets a concrete web_fetch example on its own line — a whole-file containment test
+    # would pass with two of the three examples deleted, because `web_fetch url=` and the
+    # host strings both survive somewhere else in a 34 KB document.
+    check("the floor is about the source, not the tool" in lowered,
+          "the coverage floor is stated as tool-agnostic")
+    fetch_lines = [ln for ln in research.splitlines() if "web_fetch url=" in ln]
+    check(bool(fetch_lines), "the research skill shows a web_fetch example for a known URL")
+    for host in ("github.com", "huggingface.co", "arxiv.org"):
+        check(any(host in ln for ln in fetch_lines),
+              f"the coverage floor reads {host} with web_fetch on its own example line")
+    check("for *search*" in lowered or "browser is for search" in lowered,
+          "the research skill scopes the browser to search")
+    check("js rendering" in lowered or "needs js rendering" in lowered,
+          "the research skill names the cases that still require the browser")
+
+    # The edge contract in the graph has to carry the same boundary.
+    rel, _ = parse_json(REL)
+    if isinstance(rel, dict):
+        desc = str(rel.get("edgeTypes", {}).get("browses", "")) \
+            if isinstance(rel.get("edgeTypes"), dict) else ""
+        if not desc:
+            for key in ("edges", "edgeTypes"):
+                if isinstance(rel.get(key), dict) and "browses" in rel[key]:
+                    desc = str(rel[key]["browses"])
+        check("web_fetch" in desc,
+              "relationships.json scopes the browses edge to web_fetch for known URLs")
+
+    if BROWSER_AGENT_DOC.is_file():
+        agent_doc = BROWSER_AGENT_DOC.read_text(encoding="utf-8")
+        check("the in-app browser is the primary method" not in agent_doc.lower(),
+              "the competition-browser doc no longer makes the browser its primary method")
+        check("page selection is not the browser's job" in agent_doc.lower()
+              or "not the browser's job" in agent_doc.lower(),
+              "the competition-browser doc states the browser does not choose pages")
+
+
 def main() -> int:
     check_manifest()
     check_servers()
@@ -1592,6 +1654,7 @@ def main() -> int:
     check_no_stale_names()
     check_version_sync()
     check_data_stays_on_kaggle()
+    check_browser_is_search_only()
     check_publishable()
     print()
     if failures:

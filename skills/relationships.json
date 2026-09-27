@@ -1,5 +1,5 @@
 {
-  "version": "1.12.4",
+  "version": "1.12.5",
   "comment": "Single source of truth for how the skills, agents and required sources in this package relate, AND for the live state those relationships are gated on. The per-category 'Bound edges' tables in each INDEX.md are RENDERED from this file, and tools/check_plugin.py fails the build when they drift. Edit this file, then re-run the checker, or it will tell you exactly which table is stale.",
   "state": {
     "_comment": "Live state, declared here and read through its own tool. The graph does not store the values - it points at the readers - so it cannot drift from reality. Read it all with kaggle_presence action='status', which reports the graph state and the ask-or-auto answer together. Anything unreadable fails toward asking: the cost of a wrong 'ask' is a pause, the cost of a wrong 'auto' is an unattended irreversible action.",
@@ -105,7 +105,7 @@
     "produces": "This skill's output is the other's input. This is the hand-off edge, and it is what makes the reading order a graph rather than a list.",
     "widget": "The decision point in this skill is rendered by that visualizer. The business skill must emit the widget; the visualizer is the presentation, not the decision.",
     "gate": "This skill decides whether that one warrants a widget at all. It is the only thing allowed to say 'no widget here'.",
-    "browses": "This skill MUST actually open and parse this source's own pages before its research counts as complete. A search-engine snippet, a cached summary, or a search result listing about the source does NOT satisfy this edge. This is the coverage floor, and it is enforced, not aspirational.",
+    "browses": "This skill MUST actually open and parse this source's own pages before its research counts as complete. The floor is about the source, not the tool: reading a known URL is done with web_fetch, and the in-app browser is reserved for discovery and for pages that genuinely need rendering or a signed-in session. A search-engine snippet, a cached summary, or a search result listing about the source does NOT satisfy this edge. This is the coverage floor, and it is enforced, not aspirational.",
     "asks": "This skill decides whether the agent may auto-decide at the other skill's decision point, or must stop and ask the user. It is the only thing allowed to raise the ask threshold.",
     "enforces": "A tool, not a convention: the named skill's core discipline is validated in code and a malformed record is refused. Prose can be skipped; this cannot. The shape is the floor, never the ceiling - what to try next stays the agent's judgement.",
     "loops": "The cycle this edge describes is a read-then-decide cycle, and it is enforced by a gate rather than trusted to memory: a write is refused unless the reader saw the current state. Two records cannot happen back to back without an intervening read."
