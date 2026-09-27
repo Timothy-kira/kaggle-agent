@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "name": "kaggle-agent",
+  "displayName": "Kaggle Agent",
+  "version": "1.12.1",
+  "description": "Kaggle as composable tools and workflows, organised into four categories: identity and accounts, competition research, experiment execution, and collaboration. Multi-account quota named after Kaggle usernames; two-wave competition research where wave 1 launches four Kaggle-native subagents in one response and wave 2 runs sequentially in the main thread, the general browser search through the deep-research skill with a hard requirement that GitHub, Hugging Face and arXiv are genuinely opened and parsed, then a reusable competition-browser subagent for source forensics; ablation experiment trees; 12h-capped notebook runs with verified-accelerator checks and safe backup-before-retire; subagent-delegated log monitoring with a live-adjustable fetch interval; presence mode that asks often when the user is watching and advances unattended with recorded, reversible defaults when they are away; and a cross-session/cross-agent handoff document with optional zero-dependency GitHub sync. GenUI widgets are strictly bound to the business skill and decision point that owns them, and share one forked foundation plus one component library.",
+  "author": "Akira",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Code",
+  "exampleQueries": [
+    "Sign in to Kaggle with my access token",
+    "Switch my Kaggle account",
+    "Rename this Kaggle account",
+    "Research the ARC Prize 2026 competition",
+    "How much GPU quota do I have left?",
+    "Should I write this myself or fork the top public notebook?",
+    "Track my ablation experiments in a tree",
+    "Write a handoff so another agent can pick this up",
+    "Can this machine sync a handoff to GitHub?",
+    "Watch this run's log and tell me when it errors"
+  ],
+  "apps": [],
+  "mcpServers": [
+    "servers.mcp.json"
+  ],
+  "skills": [
+    "skills/ablation-design/SKILL.md",
+    "skills/account-rename-visualizer/SKILL.md",
+    "skills/approach-decision/SKILL.md",
+    "skills/evidence-sources/SKILL.md",
+    "skills/experiment-launch/SKILL.md",
+    "skills/genui-scenarios/SKILL.md",
+    "skills/github-auth/SKILL.md",
+    "skills/handoff/SKILL.md",
+    "skills/kaggle-account-switch/SKILL.md",
+    "skills/kaggle-cli/SKILL.md",
+    "skills/kaggle-competition-research/SKILL.md",
+    "skills/log-monitor-visualizer/SKILL.md",
+    "skills/log-monitor/SKILL.md",
+    "skills/presence-mode/SKILL.md",
+    "skills/rsi-experiment-tree/SKILL.md",
+    "skills/scientific-plotting/SKILL.md"
+  ]
+}

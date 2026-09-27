@@ -1,0 +1,64 @@
+{
+  "$comment": "Shape returned by kaggle_accounts action='list' / 'status'. The widget transforms this; it never fetches it and never sees a token.",
+  "type": "object",
+  "required": ["configured", "active", "accounts"],
+  "properties": {
+    "configured": {
+      "type": "boolean",
+      "description": "Whether any credential resolves. false means the panel must show an empty state instead of a rename control."
+    },
+    "active": {
+      "type": ["string", "null"],
+      "description": "Stored name of the active account, or null when none."
+    },
+    "accounts": {
+      "type": "array",
+      "description": "Every saved account. Never contains a token.",
+      "items": {
+        "type": "object",
+        "required": ["name", "username", "display", "active"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Stored name. This is the value every tool call uses, and the `from` of a rename.",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "example": "work"
+          },
+          "username": {
+            "type": "string",
+            "description": "Kaggle identity. Primary label, and the proposed new name.",
+            "example": "qwyi123"
+          },
+          "display": {
+            "type": "string",
+            "description": "Prefer this for the primary label: it is the username when known, else the name."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Exactly one account is active; the active pointer follows a rename."
+          },
+          "added": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the account was first stored. A rename does not change it."
+          },
+          "renamed_from": {
+            "type": ["string", "null"],
+            "description": "Previous name, as a chain like 'work -> qwyi123'. Null when never renamed. Shown once so a user can find a token filed under the old label."
+          }
+        }
+      }
+    }
+  },
+  "displayRules": {
+    "identityFirst": "Lead with username; show the stored name only when it differs, so a user-chosen alias stays visible without looking like the account.",
+    "activeMarker": "The active account is marked, not reordered away - position carries no meaning the user chose.",
+    "noToken": "No field in this shape is a credential. The widget must never display or send one.",
+    "sameNameIsNoOp": "When name == username, the panel states that renaming would change nothing and does not push the action.",
+    "emptyAccounts": "accounts.length === 0 is an explicit empty state naming kaggle_accounts action='add', not an error."
+  },
+  "validation": {
+    "nameRule": "1-64 characters, must start with a letter or digit, then letters, digits, dot, dash or underscore. Mirrors the tool's NAME_RE so feedback is instant; the tool still has the final say.",
+    "takenName": "A new name equal to another account's name is refused by the tool. The widget disables confirm and says so, rather than letting the user hit an error."
+  }
+}

@@ -1,0 +1,42 @@
+@echo off
+REM ---------------------------------------------------------------------------
+REM run-mcp.cmd - start the kaggle MCP server (stdio JSON-RPC 2.0).
+REM
+REM Referenced from servers.mcp.json as: cmd /c "${PLUGIN_ROOT}\bin\run-mcp.cmd"
+REM
+REM This batch file only locates a Python interpreter and starts
+REM mcp\kaggle_server.py. Credentials are NOT resolved here: the server resolves
+REM them itself through mcp\credentials.py (env var, then this user's store, then
+REM KAGGLE_KEY), which keeps the same package working for any user without a
+REM per-machine path baked into the package.
+REM
+REM stdout belongs to the MCP protocol from here on, so all diagnostics go to stderr.
+REM ---------------------------------------------------------------------------
+setlocal DisableDelayedExpansion
+
+set "MCP_DIR=%~dp0..\mcp"
+
+REM The MCP server runs the kaggle CLI in-process, so it needs an interpreter that can
+REM import kaggle. Probe candidates and keep the first that can; the sandbox venv is listed
+REM first because that is where the CLI was installed here.
+set "PY="
+if exist "C:\Users\Akira\.minimax\agents\arc26\venv\Scripts\python.exe" call :try "C:\Users\Akira\.minimax\agents\arc26\venv\Scripts\python.exe"
+if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" call :try "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+if not defined PY for /f "usebackq delims=" %%p in (`where python 2^>nul`) do call :try "%%p"
+if not defined PY (
+  >&2 echo [kaggle-cli] no Python with the kaggle CLI was found. Install it with:
+  >&2 echo   pip install kaggle
+  exit /b 127
+)
+
+REM -B keeps the package free of __pycache__ build artifacts: the plugin directory is
+REM read-only by contract, and stray .pyc files would otherwise accumulate in it.
+"%PY%" -B "%MCP_DIR%\kaggle_server.py"
+exit /b %ERRORLEVEL%
+
+:try
+if defined PY goto :eof
+if not exist "%~1" goto :eof
+"%~1" -c "import kaggle" >nul 2>&1 || goto :eof
+set "PY=%~1"
+goto :eof

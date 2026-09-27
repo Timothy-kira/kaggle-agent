@@ -1,0 +1,36 @@
+# Python bytecode: regenerated on every run, and machine-specific, so it must never be
+# published. The plugin package is meant to be readable and reproducible, not to carry
+# build residue from whoever last ran it.
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Runtime state must never be committed. The plugin's state lives outside the package
+# (~/.kaggle-agent and ~/.kaggle-cli), but a stray local run can still drop one here.
+#
+# Every pattern below is ANCHORED to the package root with a leading slash, and that is
+# load-bearing rather than cosmetic. A pattern with no internal separator — `handoff/`,
+# `sources/`, `plots/` — matches at *any* depth, so an unanchored `handoff/` silently
+# excluded `skills/handoff/SKILL.md`: a skill the manifest declares, the relationship
+# graph references, and the collab category links to. The package passed all 842 checks,
+# because every one of them reads the working tree and the file was sitting right there on
+# disk; only the repository was short a skill. A published package that fails to import is
+# exactly the failure this file is supposed to prevent, so the rules stay anchored and
+# `tools/check_plugin.py` asserts that no manifest path is gitignored.
+presence.json
+log-monitor.json
+search-engine.json
+config.json
+credentials.json
+/handoff/
+/sources/
+/plots/
+*.tmp
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+.vscode/

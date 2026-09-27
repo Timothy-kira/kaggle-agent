@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "mcpServers": {
+    "kaggle": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "-B",
+        "-c",
+        "import runpy,sys,os;sys.path.insert(0,os.path.expanduser('~/.minimax/plugins/kaggle-agent/mcp'));runpy.run_path(os.path.expanduser('~/.minimax/plugins/kaggle-agent/mcp/agent_server.py'),run_name='__main__')"
+      ],
+      "env": {},
+      "description": "Kaggle notebooks, competitions, accounts and accelerator quota as local tools. Sign in once with 'kaggle-cli.cmd login'; credentials resolve from KAGGLE_API_TOKEN, ~/.kaggle-cli/, or KAGGLE_KEY.",
+      "timeout": 900000
+    }
+  }
+}

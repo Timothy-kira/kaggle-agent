@@ -1,0 +1,61 @@
+{
+  "$comment": "Shape returned by kaggle_log_monitor action='status' / action='get'. The widget transforms this; it never fetches it.",
+  "type": "object",
+  "required": ["intervalSeconds", "revision", "minSeconds", "maxSeconds", "stepSeconds", "targets"],
+  "properties": {
+    "intervalSeconds": {
+      "type": "integer",
+      "unit": "seconds",
+      "description": "The interval currently in effect. This is what a monitoring subagent reads at the start of every cycle.",
+      "minimum": 15,
+      "maximum": 900,
+      "example": 120
+    },
+    "revision": {
+      "type": "integer",
+      "description": "Increments only when the applied interval actually changed. Equal revisions across two reads means no edit landed in between.",
+      "minimum": 0,
+      "example": 1
+    },
+    "updatedAt": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp of the last accepted change, or null when the file has never been written.",
+      "example": "2026-09-27T06:16:40+00:00"
+    },
+    "minSeconds": {"type": "integer", "const": 15},
+    "maxSeconds": {"type": "integer", "const": 900},
+    "stepSeconds": {"type": "integer", "const": 15},
+    "targets": {
+      "type": "array",
+      "description": "What is being watched. Empty means no monitor is registered, which the widget must state plainly.",
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {"type": "string", "enum": ["kaggle", "local"]},
+          "ref": {
+            "type": "string",
+            "description": "Kaggle kernel ref owner/slug. Present when kind='kaggle'.",
+            "example": "user/exp-n7"
+          },
+          "path": {
+            "type": "string",
+            "description": "Local log file path. Present when kind='local'. Display basename only; do not send an absolute path into prompt metadata.",
+            "example": "run.log"
+          }
+        }
+      }
+    },
+    "exists": {
+      "type": "boolean",
+      "description": "Whether the config file has been created. false means defaults are in effect and no edit has been persisted."
+    }
+  },
+  "displayRules": {
+    "pendingVersusApplied": "When the slider differs from intervalSeconds, the slider value is labelled pending and the applied value is shown separately. They are never merged into one number.",
+    "clampReporting": "If the tool reports clamped=true, the applied value is displayed, never the requested one.",
+    "rounding": "All seconds are whole numbers. No fractional display.",
+    "emptyTargets": "targets.length === 0 is an explicit state, not an error: say nothing is watched yet."
+  }
+}

@@ -1,0 +1,717 @@
+{
+  "version": "1.12.1",
+  "comment": "Single source of truth for how the skills, agents and required sources in this package relate, AND for the live state those relationships are gated on. The per-category 'Bound edges' tables in each INDEX.md are RENDERED from this file, and tools/check_plugin.py fails the build when they drift. Edit this file, then re-run the checker, or it will tell you exactly which table is stale.",
+  "state": {
+    "_comment": "Live state, declared here and read through its own tool. The graph does not store the values - it points at the readers - so it cannot drift from reality. Read it all with kaggle_presence action='status', which reports the graph state and the ask-or-auto answer together. Anything unreadable fails toward asking: the cost of a wrong 'ask' is a pause, the cost of a wrong 'auto' is an unattended irreversible action.",
+    "presence": {
+      "meaning": "whether the user is at the keyboard or has stepped away",
+      "values": [
+        "present",
+        "away"
+      ],
+      "default": "present",
+      "gates": [
+        "every 'asks' edge in this graph"
+      ],
+      "effect": {
+        "present": "ask early and often; a question is cheap here and a wrong assumption can waste a 12h run",
+        "away": "take conservative, reversible, recorded defaults; ask only for irreversible or externally visible actions"
+      },
+      "reader": "presence.describe",
+      "readTool": "kaggle_presence action=\"get\"",
+      "writeTool": "kaggle_presence action=\"set\" mode=\"present|away\""
+    },
+    "search-engine": {
+      "meaning": "which engine a DISCOVERY search uses when nobody is available to be asked",
+      "values": [
+        "google",
+        "bing"
+      ],
+      "default": "google",
+      "gates": [
+        "discovery search only; direct navigation to a known URL never asks"
+      ],
+      "effect": {
+        "present": "ask the user which engine, then apply it",
+        "away": "use the configured default and record the choice"
+      },
+      "reader": "searchengine.describe",
+      "readTool": "kaggle_search_engine action=\"describe\"",
+      "writeTool": "kaggle_search_engine action=\"use\" engine=\"<name>\""
+    }
+  },
+  "divisionOfLabour": {
+    "_comment": "Skills that two mechanisms legitimately both touch, and exactly who decides what. ModularRSI found that jointly evolving its five modules scored 44.19% against 52.43% for evolving them independently and integrating: Agent Loop and validation each learned a completion judgement, and combined they produced two gates that blocked each other until timeout. Declaring the split is the fix - deleting an edge would only hide the overlap. tools/check_plugin.py refuses a duplicated claim with no entry here, and refuses an entry whose owners do not decide distinct things.",
+    "kaggle-account-switch": {
+      "owners": [
+        {
+          "who": "presence-mode",
+          "edge": "asks",
+          "decides": "whether to ask the user at all, and to auto-decide on a recorded default when they are away"
+        },
+        {
+          "who": "genui-scenarios",
+          "edge": "gate",
+          "decides": "whether the settled choice is rendered as the account picker or answered in text - never whether to ask"
+        }
+      ]
+    },
+    "experiment-launch": {
+      "owners": [
+        {
+          "who": "presence-mode",
+          "edge": "asks",
+          "decides": "whether to ask about engine and time limit, and what conservative default to take unattended"
+        },
+        {
+          "who": "genui-scenarios",
+          "edge": "gate",
+          "decides": "whether an engine picker is warranted once the decision exists; it has no widget yet, so it answers in text"
+        }
+      ]
+    },
+    "log-monitor": {
+      "owners": [
+        {
+          "who": "presence-mode",
+          "edge": "asks",
+          "decides": "whether a terminal state auto-advances to the next tree node or is reported and waited on"
+        },
+        {
+          "who": "genui-scenarios",
+          "edge": "gate",
+          "decides": "whether the fetch interval is rendered as the slider or settled in text"
+        }
+      ]
+    },
+    "handoff": {
+      "owners": [
+        {
+          "who": "presence-mode",
+          "edge": "asks",
+          "decides": "whether a handoff is drafted unattended; pushing to a remote is never auto-decided in either mode"
+        },
+        {
+          "who": "genui-scenarios",
+          "edge": "gate",
+          "decides": "whether the destination is offered as a picker; no visualizer exists yet, so it is text"
+        }
+      ]
+    }
+  },
+  "edgeTypes": {
+    "needs": "This skill cannot do its job without the other one. The other is a prerequisite, not a suggestion.",
+    "dispatches": "This skill launches the other one at runtime (a subagent task, a follow-on skill, or an external skill) as part of its own procedure.",
+    "produces": "This skill's output is the other's input. This is the hand-off edge, and it is what makes the reading order a graph rather than a list.",
+    "widget": "The decision point in this skill is rendered by that visualizer. The business skill must emit the widget; the visualizer is the presentation, not the decision.",
+    "gate": "This skill decides whether that one warrants a widget at all. It is the only thing allowed to say 'no widget here'.",
+    "browses": "This skill MUST actually open and parse this source's own pages before its research counts as complete. A search-engine snippet, a cached summary, or a search result listing about the source does NOT satisfy this edge. This is the coverage floor, and it is enforced, not aspirational.",
+    "asks": "This skill decides whether the agent may auto-decide at the other skill's decision point, or must stop and ask the user. It is the only thing allowed to raise the ask threshold.",
+    "enforces": "A tool, not a convention: the named skill's core discipline is validated in code and a malformed record is refused. Prose can be skipped; this cannot. The shape is the floor, never the ceiling - what to try next stays the agent's judgement.",
+    "loops": "The cycle this edge describes is a read-then-decide cycle, and it is enforced by a gate rather than trusted to memory: a write is refused unless the reader saw the current state. Two records cannot happen back to back without an intervening read."
+  },
+  "nodes": [
+    {
+      "id": "kaggle-cli",
+      "kind": "skill",
+      "category": "identity",
+      "path": "skills/kaggle-cli/SKILL.md"
+    },
+    {
+      "id": "kaggle-account-switch",
+      "kind": "skill",
+      "category": "identity",
+      "path": "skills/kaggle-account-switch/SKILL.md"
+    },
+    {
+      "id": "account-rename-visualizer",
+      "kind": "skill",
+      "category": "identity",
+      "path": "skills/account-rename-visualizer/SKILL.md"
+    },
+    {
+      "id": "presence-mode",
+      "kind": "skill",
+      "category": "collab",
+      "path": "skills/presence-mode/SKILL.md"
+    },
+    {
+      "id": "kaggle-competition-research",
+      "kind": "skill",
+      "category": "research",
+      "path": "skills/kaggle-competition-research/SKILL.md"
+    },
+    {
+      "id": "approach-decision",
+      "kind": "skill",
+      "category": "research",
+      "path": "skills/approach-decision/SKILL.md"
+    },
+    {
+      "id": "deep-research",
+      "kind": "builtin-skill",
+      "category": "research",
+      "reference": "deep-research",
+      "shipped": false,
+      "note": "Built-in skill of the host runtime, not part of this package. Used for the general browser search, in the MAIN thread, over multiple rounds. It is also what a research node in the experiment tree goes back to."
+    },
+    {
+      "id": "competition-browser",
+      "kind": "agent",
+      "category": "research",
+      "reference": "agent:competition-browser",
+      "avatar": "assets/agent-avatars/competition-browser.png"
+    },
+    {
+      "id": "github",
+      "kind": "source",
+      "category": "research",
+      "url": "https://github.com",
+      "mustBrowse": true
+    },
+    {
+      "id": "huggingface",
+      "kind": "source",
+      "category": "research",
+      "url": "https://huggingface.co",
+      "mustBrowse": true
+    },
+    {
+      "id": "arxiv",
+      "kind": "source",
+      "category": "research",
+      "url": "https://arxiv.org",
+      "mustBrowse": true
+    },
+    {
+      "id": "experiment-launch",
+      "kind": "skill",
+      "category": "experiment",
+      "path": "skills/experiment-launch/SKILL.md"
+    },
+    {
+      "id": "log-monitor",
+      "kind": "skill",
+      "category": "experiment",
+      "path": "skills/log-monitor/SKILL.md"
+    },
+    {
+      "id": "log-monitor-visualizer",
+      "kind": "skill",
+      "category": "experiment",
+      "path": "skills/log-monitor-visualizer/SKILL.md"
+    },
+    {
+      "id": "rsi-experiment-tree",
+      "kind": "skill",
+      "category": "experiment",
+      "path": "skills/rsi-experiment-tree/SKILL.md"
+    },
+    {
+      "id": "scientific-plotting",
+      "kind": "skill",
+      "category": "experiment",
+      "path": "skills/scientific-plotting/SKILL.md"
+    },
+    {
+      "id": "ablation-design",
+      "kind": "skill",
+      "category": "experiment",
+      "path": "skills/ablation-design/SKILL.md"
+    },
+    {
+      "id": "handoff",
+      "kind": "skill",
+      "category": "collab",
+      "path": "skills/handoff/SKILL.md"
+    },
+    {
+      "id": "evidence-sources",
+      "kind": "skill",
+      "category": "collab",
+      "path": "skills/evidence-sources/SKILL.md"
+    },
+    {
+      "id": "github-auth",
+      "kind": "skill",
+      "category": "collab",
+      "path": "skills/github-auth/SKILL.md"
+    },
+    {
+      "id": "genui-scenarios",
+      "kind": "skill",
+      "category": "collab",
+      "path": "skills/genui-scenarios/SKILL.md"
+    },
+    {
+      "id": "experiment-tree",
+      "kind": "tool",
+      "category": "experiment",
+      "reference": "kaggle_experiment_tree",
+      "note": "Validated RSI DAG. Refuses a node with no hypothesis, no parent metric, an empty reason, no operator/method family, no recorded rank, a change containing a conjunction, a dangling parent, or a base with no artifacts. Read-gated: record refuses a missing or stale readRevision. Also does non-greedy parent selection (quality+progress+novelty with visit cooling, per arXiv 2607.28568 sec 5.2) and an experience board attributing gain per operator."
+    },
+    {
+      "id": "openmle-uvi",
+      "kind": "paper",
+      "category": "experiment",
+      "url": "https://arxiv.org/abs/2607.28568",
+      "note": "Frontis-MA1 / OpenMLE. Source of the four atomic operators (draft/improve/debug/crossover) and the three-factor parent selection. Its matched comparison: Medal Average 53.03% -> 60.61% over score-greedy AIRA-Evo, same model, same 12h budget. Also the origin of the Human Rank convention recorded on every metric."
+    },
+    {
+      "id": "rsi-autonomy-levels",
+      "kind": "paper",
+      "category": "experiment",
+      "url": "https://arxiv.org/abs/2609.11873",
+      "note": "The Last AI Built by Humans. L1-L5 autonomy ladder and the three recurring RSI problems: safe inheritance, autonomy attribution, evaluator exploitation. The monotone selection guarantee is the direct answer to safe inheritance - persistence is not improvement."
+    },
+    {
+      "id": "dream-rsi",
+      "kind": "paper",
+      "category": "experiment",
+      "url": "https://arxiv.org/abs/2609.14858",
+      "note": "Dream-RSI: Recursive Self-Improvement through Evolving Worlds. Source of the replay simulator (a completed discovery history is walked to score alternative exploration policies at zero execution cost), the Eq.1 objective with its cost and parallelism terms, and the monotone selection that keeps the current policy in the candidate set. Its DAG departure is documented in the code."
+    },
+    {
+      "id": "efc-2605-29682",
+      "kind": "paper",
+      "category": "experiment",
+      "url": "https://arxiv.org/abs/2605.29682",
+      "note": "Scaling Laws for Agent Harnesses via Effective Feedback Compute. EFC is the trajectory-level coordinate for feedback that is informative, valid, non-redundant and retained; raw tokens, tool calls, wall time and cost cannot distinguish useful feedback from redundant interaction. Judged per criterion here. (Note: some sources misattribute this arXiv id to an unrelated harness survey.)"
+    },
+    {
+      "id": "modular-rsi-coupling",
+      "kind": "paper",
+      "category": "experiment",
+      "url": "https://arxiv.org/abs/2609.14857",
+      "note": "ModularRSI. Carries the coupling finding that motivates divisionOfLabour: joint evolution of five modules scored 44.19% against 52.43% for independent evolution plus integration, because two completion gates blocked each other. Report-sourced figure; the mechanism it describes is the point."
+    },
+    {
+      "id": "research-sources",
+      "kind": "source-group",
+      "category": "experiment",
+      "note": "The sources a research node may name. A research node goes back to one of these when a result made the current picture insufficient."
+    },
+    {
+      "id": "search-engine",
+      "kind": "tool",
+      "category": "research",
+      "reference": "kaggle_search_engine",
+      "note": "Chooses the engine for a DISCOVERY search. Its action='ask' reads the presence state itself, so the ask-or-auto decision is made by the tool rather than remembered by the agent. Direct navigation to a known URL is exempt and never asks."
+    },
+    {
+      "id": "sources-store",
+      "kind": "tool",
+      "category": "collab",
+      "reference": "kaggle_sources",
+      "note": "The evidence store. Papers, repos, datasets and forum threads are stored once with the sentence that carries each claim, and tree nodes link to them with an explicit relation (supports / motivates / contradicts / supersedes). A node citing an id that is not in the store is rejected, so a typo cannot leave a link that silently resolves to nothing. action='doctor' reports the optional plotting environment and installs nothing without consent."
+    },
+    {
+      "id": "plot-engine",
+      "kind": "module",
+      "category": "experiment",
+      "reference": "mcp/plots.py",
+      "note": "Pure standard-library SVG plotting bundled with this package: line, band, bar, scatter, pareto, forest. Zero dependencies by construction - measured on the build machine, numpy / scipy / pandas / matplotlib / statsmodels / pint / pyDOE3 are all absent and every figure still renders. Refuses a dataset with no plottable points rather than emitting an empty figure."
+    },
+    {
+      "id": "k-dense-methods",
+      "kind": "provenance",
+      "category": "experiment",
+      "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
+      "note": "Adapted from experimental-design and uncertainty-and-units, MIT, pinned commit 1dd0fccf46fc3c9855c4a0c313a0c57fe4319883. Scripts deliberately not vendored: every one imports numpy/pandas/scipy/statsmodels/pyDOE3, none of which this plugin requires or may assume."
+    },
+    {
+      "id": "browser",
+      "kind": "tool",
+      "category": "research",
+      "reference": "mcp_browser",
+      "hostProvided": true,
+      "note": "Host-bound in-app browser, used to open search pages and the required first-party sites. Session-scoped: a detached subagent does not have it, which is why the browsing happens in the main thread. Provided by the host, not registered by this package."
+    }
+  ],
+  "edges": [
+    {
+      "from": "kaggle-account-switch",
+      "to": "kaggle-cli",
+      "type": "needs",
+      "when": "every list, switch and status call is a kaggle_accounts / kaggle-cli call"
+    },
+    {
+      "from": "kaggle-account-switch",
+      "to": "account-rename-visualizer",
+      "type": "dispatches",
+      "when": "a stored name has to change, not just be re-labelled"
+    },
+    {
+      "from": "account-rename-visualizer",
+      "to": "kaggle-account-switch",
+      "type": "needs",
+      "when": "it renders that skill's decision point and owns no decision of its own"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "kaggle-cli",
+      "type": "needs",
+      "when": "slug, leaderboard, forum and kernels-list all go through the CLI tools"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "deep-research",
+      "type": "dispatches",
+      "when": "the general browser search, run in the MAIN thread over multiple rounds; it is where the in-app browser and web_search actually exist"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "github",
+      "type": "browses",
+      "when": "the research is not complete until GitHub's own pages were opened and parsed, not merely quoted by a search engine"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "huggingface",
+      "type": "browses",
+      "when": "same floor for Hugging Face model and dataset pages"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "arxiv",
+      "type": "browses",
+      "when": "same floor for the arXiv listing and the paper pages themselves"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "competition-browser",
+      "type": "dispatches",
+      "when": "AFTER the general search, for source-specific forensics the main thread should not hand-wave: stars, licence, last commit, model card, architecture"
+    },
+    {
+      "from": "competition-browser",
+      "to": "github",
+      "type": "browses",
+      "when": "the forensic pass is worthless if it never opened the repo"
+    },
+    {
+      "from": "competition-browser",
+      "to": "huggingface",
+      "type": "browses",
+      "when": "model and dataset cards are read on the page, not from a snippet"
+    },
+    {
+      "from": "competition-browser",
+      "to": "arxiv",
+      "type": "browses",
+      "when": "the paper page itself, for the number and the evaluation setup"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "approach-decision",
+      "type": "produces",
+      "when": "the plan's constraints and open questions are what the fork/write call is judged against"
+    },
+    {
+      "from": "approach-decision",
+      "to": "kaggle-competition-research",
+      "type": "needs",
+      "when": "the decision is only auditable if the evidence under it was gathered"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "search-engine",
+      "type": "needs",
+      "when": "a discovery search needs an engine, and the engine is a question until the presence state says otherwise"
+    },
+    {
+      "from": "search-engine",
+      "to": "presence-mode",
+      "type": "needs",
+      "when": "its 'ask' action reads the presence state, so the ask-or-auto decision is made by the tool rather than remembered by the agent"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "browser",
+      "type": "needs",
+      "when": "search pages and the three required sites are opened with the in-app browser, which only the main session has"
+    },
+    {
+      "from": "experiment-launch",
+      "to": "kaggle-cli",
+      "type": "needs",
+      "when": "quota, accelerator market state and the push itself"
+    },
+    {
+      "from": "experiment-launch",
+      "to": "kaggle-account-switch",
+      "type": "needs",
+      "when": "whose quota pays for this run is decided before anything is pushed"
+    },
+    {
+      "from": "experiment-launch",
+      "to": "log-monitor",
+      "type": "produces",
+      "when": "a run that produces logs is a run that needs watching"
+    },
+    {
+      "from": "experiment-launch",
+      "to": "rsi-experiment-tree",
+      "type": "produces",
+      "when": "the first result is the first node of the tree"
+    },
+    {
+      "from": "log-monitor",
+      "to": "experiment-launch",
+      "type": "needs",
+      "when": "there has to be a live ref to poll and a terminal state to watch for"
+    },
+    {
+      "from": "log-monitor",
+      "to": "log-monitor-visualizer",
+      "type": "dispatches",
+      "when": "the fetch interval is a pending decision, so it is rendered, never guessed"
+    },
+    {
+      "from": "log-monitor-visualizer",
+      "to": "log-monitor",
+      "type": "needs",
+      "when": "it sets a value the subagent re-reads every cycle; it does not own the polling"
+    },
+    {
+      "from": "log-monitor",
+      "to": "rsi-experiment-tree",
+      "type": "produces",
+      "when": "an error or a terminal state is the observation a node records"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "experiment-launch",
+      "type": "needs",
+      "when": "a node without a run behind it is a claim, not an experiment"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "handoff",
+      "type": "produces",
+      "when": "the base, its cost and the refuted set are read from the tree, never from recollection"
+    },
+    {
+      "from": "experiment-tree",
+      "to": "rsi-experiment-tree",
+      "type": "enforces",
+      "when": "the node shape is validated in code, so a missing hypothesis, an empty reason, a two-change 'and', a dangling parent or an unreproducible base is refused rather than written"
+    },
+    {
+      "from": "experiment-tree",
+      "to": "rsi-experiment-tree",
+      "type": "loops",
+      "when": "record refuses a missing or stale readRevision, so the tree is read before every node: two records cannot happen back to back without an intervening read"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "research-sources",
+      "type": "needs",
+      "when": "a research node names the source it went back to, because a result made the current picture insufficient; the tool refuses a target outside this group"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "openmle-uvi",
+      "type": "needs",
+      "when": "the four atomic operators, the three-factor parent selection and the Human Rank convention all come from here; it is why an operator and a rank are mandatory on every experiment node"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "rsi-autonomy-levels",
+      "type": "needs",
+      "when": "the L1-L5 ladder explains which decisions the agent is allowed to take itself, and its three failure modes explain why refuted nodes are kept as evidence rather than deleted"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "dream-rsi",
+      "type": "needs",
+      "when": "the replay simulator is the reason the tree is archived into rounds: a completed history is walked to score alternative exploration policies without re-running anything"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "efc-2605-29682",
+      "type": "needs",
+      "when": "raw quota and wall time cannot tell useful feedback from redundant work, so the cost term is computed on effective feedback and judged per criterion"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "modular-rsi-coupling",
+      "type": "needs",
+      "when": "two mechanisms owning one decision point is the documented failure that cost ModularRSI eight points; divisionOfLabour is the guard"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "experiment-tree",
+      "type": "needs",
+      "when": "the skill defines what a node must mean; the tool is what makes that definition binding"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "kaggle-competition-research",
+      "type": "dispatches",
+      "when": "a research node re-runs the same research sweep on purpose; re-reading the forum because a result told you to is the tree recording why"
+    },
+    {
+      "from": "experiment-launch",
+      "to": "experiment-tree",
+      "type": "needs",
+      "when": "a completed run is a node, and the node cannot be written without first reading the tree"
+    },
+    {
+      "from": "log-monitor",
+      "to": "experiment-tree",
+      "type": "needs",
+      "when": "an unattended auto-advance records a node, and the read-gate is what keeps an overnight loop off a stale base"
+    },
+    {
+      "from": "handoff",
+      "to": "rsi-experiment-tree",
+      "type": "needs",
+      "when": "the document is derived from the tree so it cannot claim a base the tree lacks"
+    },
+    {
+      "from": "handoff",
+      "to": "github-auth",
+      "type": "dispatches",
+      "when": "the relay should reach another machine, and only then"
+    },
+    {
+      "from": "github-auth",
+      "to": "handoff",
+      "type": "needs",
+      "when": "it authenticates the transport for a handoff, and owns no handoff content"
+    },
+    {
+      "from": "genui-scenarios",
+      "to": "kaggle-account-switch",
+      "type": "gate",
+      "when": "decides whether picking an account warrants a picker at all"
+    },
+    {
+      "from": "genui-scenarios",
+      "to": "log-monitor",
+      "type": "gate",
+      "when": "decides whether the interval is a real pending decision"
+    },
+    {
+      "from": "genui-scenarios",
+      "to": "experiment-launch",
+      "type": "gate",
+      "when": "engine and accelerator are choices; the local slider has no widget yet, so that one answers in text"
+    },
+    {
+      "from": "genui-scenarios",
+      "to": "handoff",
+      "type": "gate",
+      "when": "no widget row yet, so where the handoff goes is answered in text"
+    },
+    {
+      "from": "presence-mode",
+      "to": "kaggle-account-switch",
+      "type": "asks",
+      "when": "picking which account is a cheap reversible call when the user is away, and a question when they are present"
+    },
+    {
+      "from": "presence-mode",
+      "to": "experiment-launch",
+      "type": "asks",
+      "when": "engine and time limit are auto-decided when away only within a stated, conservative cap; never past remaining quota"
+    },
+    {
+      "from": "presence-mode",
+      "to": "approach-decision",
+      "type": "asks",
+      "when": "fork-vs-write defaults to the auditable path when away"
+    },
+    {
+      "from": "presence-mode",
+      "to": "log-monitor",
+      "type": "asks",
+      "when": "a terminal state auto-advances to the next tree node when away, and reports when present"
+    },
+    {
+      "from": "presence-mode",
+      "to": "handoff",
+      "type": "asks",
+      "when": "a handoff may be drafted unattended, but pushing it anywhere is never auto-decided"
+    },
+    {
+      "from": "presence-mode",
+      "to": "kaggle-competition-research",
+      "type": "asks",
+      "when": "research self-advances when away; the plan is still written and still shown to the user on return"
+    },
+    {
+      "from": "presence-mode",
+      "to": "search-engine",
+      "type": "asks",
+      "when": "present: ask which engine for a discovery search. away: use the default and record it. Direct navigation to a known URL is exempt either way."
+    },
+    {
+      "from": "presence-mode",
+      "to": "genui-scenarios",
+      "type": "needs",
+      "when": "a question that is asked can be carried by a widget, so the two decide together and neither alone"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "evidence-sources",
+      "type": "needs",
+      "when": "the tree refuses a concluded node with no provenance, and this is how provenance is supplied - neither half works alone"
+    },
+    {
+      "from": "evidence-sources",
+      "to": "rsi-experiment-tree",
+      "type": "needs",
+      "when": "a source is stored so a node can cite it; a store nobody cites is a reading list, not evidence"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "scientific-plotting",
+      "type": "needs",
+      "when": "a score, a spread, a per-operator gain and a cost frontier are numbers a table cannot argue with; the figures are the analysis"
+    },
+    {
+      "from": "scientific-plotting",
+      "to": "rsi-experiment-tree",
+      "type": "needs",
+      "when": "every figure is drawn from the tree, and action='analyze' attaches each one back to the nodes it came from"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "ablation-design",
+      "type": "needs",
+      "when": "one-variable nodes, honest replication and recorded cost are what make a kept node interpretable rather than merely true"
+    },
+    {
+      "from": "ablation-design",
+      "to": "rsi-experiment-tree",
+      "type": "needs",
+      "when": "it adapts design methodology to this tree's node shape; without the tree there is nothing for it to shape"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "evidence-sources",
+      "type": "produces",
+      "when": "every paper and repo the sweep opened is stored once, so a later review can re-read it instead of re-searching"
+    },
+    {
+      "from": "sources-store",
+      "to": "experiment-tree",
+      "type": "enforces",
+      "when": "a node citing a source id that is not in the store is refused, so provenance can never dangle"
+    },
+    {
+      "from": "plot-engine",
+      "to": "rsi-experiment-tree",
+      "type": "enforces",
+      "when": "action='analyze' turns the recorded samples and costs into figures, and reports every figure it could not draw rather than omitting it silently"
+    },
+    {
+      "from": "ablation-design",
+      "to": "k-dense-methods",
+      "type": "needs",
+      "when": "it is an adaptation; the upstream bodies and their licence are recorded here so the provenance is not lost"
+    }
+  ]
+}
