@@ -187,8 +187,9 @@ Why each piece is there:
   take effect" is answerable from evidence.
 - **silent ticks** — a tick with nothing to say writes a progress block and exits without
   messaging. That is the behaviour you want.
-- **`action="tick"`** — the rung is arithmetic, and arithmetic an agent does in its head is
-  arithmetic that drifts.
+- **`action="observe"` + `action="tick" verdict=...`** — the rung is arithmetic, and arithmetic an
+  agent does in its head is arithmetic that drifts. Keeping it in the tool also keeps the *input*
+  honest: the cadence is computed from the log's own content, not from a count the agent kept.
 
 **Also say this to the user:** scheduled tasks depend on the desktop app running, and a machine
 that sleeps or shuts down may miss a tick. For a run that matters, that is worth saying out loud
