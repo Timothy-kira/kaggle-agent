@@ -3,16 +3,21 @@
 
 The Windows entry point is ``bin/kaggle-cli.cmd``, which forwards to the same
 ``mcp/kaggle_cli.py``. This script is the equivalent for a shell, so both platforms
-share one implementation of credential resolution and one set of commands:
+share one implementation of credential resolution and one set of commands.
 
-    ./bin/kaggle-cli.sh login            # prompt for a token, input hidden
-    ./bin/kaggle-cli.sh login <TOKEN>    # or pass it directly
-    ./bin/kaggle-cli.sh whoami
-    ./bin/kaggle-cli.sh logout
-    ./bin/kaggle-cli.sh kernels list --mine
+It is a Python file with a shebang rather than a shell script, and it carries no
+executable bit: a packaged plugin must not depend on a file mode surviving a
+checkout. Invoke it through the interpreter, which is why the examples below name
+``python3`` explicitly instead of running the file directly:
+
+    python3 bin/kaggle-cli.sh login            # prompt for a token, input hidden
+    python3 bin/kaggle-cli.sh login <TOKEN>    # or pass it directly
+    python3 bin/kaggle-cli.sh whoami
+    python3 bin/kaggle-cli.sh logout
+    python3 bin/kaggle-cli.sh kernels list --mine
 
 Requires Python 3 and ``pip install kaggle``. The token is stored under
-``~/.kaggle-cli/credentials.json`` and is never printed.
+``~/.kaggle-agent/accounts.json`` and is never printed.
 """
 from __future__ import annotations
 

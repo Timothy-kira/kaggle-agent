@@ -96,7 +96,6 @@ log monitoring — silence is the healthy state.
 - `handoff` receives the tree this category maintains.
 
 ## Bound edges (rendered from `../relationships.json`)
-
 These rows are **rendered from `skills/relationships.json`**, the single source of truth for
 how the skills in this package relate, and for the live state those relationships are gated
 on. `tools/check_plugin.py` fails the build if this table drifts from that file, so the graph
@@ -105,62 +104,11 @@ re-run the checker.
 
 Edge types: `needs` = prerequisite, `dispatches` = launched at runtime, `produces` = this
 skill's output is the other's input, `browses` = must actually open this source, `asks` =
-presence-mode decides whether to ask here, `enforces` = a tool validates this, `loops` = a
-read-then-decide cycle gated by the tool, `widget`/`gates` = the GenUI binding.
+consulted for a decision, `enforces` = the gate is attached to that tool, `widget` = rendered
+by that visualizer, `gate` = decides whether a widget is warranted, `loops` = feeds back.
 
-Where two mechanisms legitimately touch the same skill, the split of labour is declared under
-`divisionOfLabour` in the same file, and the checker refuses a duplicated claim that has no
-such declaration.
-
-| From -> type -> To | When this edge is live |
-|---|---|
-| `experiment-launch` -> needs `kaggle-cli` | quota, accelerator market state and the push itself | <!-- edge:experiment-launch->kaggle-cli:needs --> |
-| `experiment-launch` -> needs `kaggle-account-switch` | whose quota pays for this run is decided before anything is pushed | <!-- edge:experiment-launch->kaggle-account-switch:needs --> |
-| `experiment-launch` -> produces `log-monitor` | a run that produces logs is a run that needs watching | <!-- edge:experiment-launch->log-monitor:produces --> |
-| `experiment-launch` -> produces `rsi-experiment-tree` | the first result is the first node of the tree | <!-- edge:experiment-launch->rsi-experiment-tree:produces --> |
-| `log-monitor` -> needs `experiment-launch` | there has to be a live ref to poll and a terminal state to watch for | <!-- edge:log-monitor->experiment-launch:needs --> |
-| `log-monitor` -> dispatches `log-monitor-visualizer` | the fetch interval is a pending decision, so it is rendered, never guessed | <!-- edge:log-monitor->log-monitor-visualizer:dispatches --> |
-| `log-monitor-visualizer` -> needs `log-monitor` | it sets a value the subagent re-reads every cycle; it does not own the polling | <!-- edge:log-monitor-visualizer->log-monitor:needs --> |
-| `log-monitor` -> produces `rsi-experiment-tree` | an error or a terminal state is the observation a node records | <!-- edge:log-monitor->rsi-experiment-tree:produces --> |
-| `rsi-experiment-tree` -> needs `experiment-launch` | a node without a run behind it is a claim, not an experiment | <!-- edge:rsi-experiment-tree->experiment-launch:needs --> |
-| `rsi-experiment-tree` -> produces `handoff` | the base, its cost and the refuted set are read from the tree, never from recollection | <!-- edge:rsi-experiment-tree->handoff:produces --> |
-| `rsi-experiment-tree` -> needs `experiment-tree` | the skill defines what a node must mean; the tool is what makes that definition binding | <!-- edge:rsi-experiment-tree->experiment-tree:needs --> |
-| `experiment-tree` => enforces `rsi-experiment-tree` | the node shape is validated in code, so a missing hypothesis, an empty reason, a two-change 'and', a dangling parent or an unreproducible base is refused rather than written | <!-- edge:experiment-tree->rsi-experiment-tree:enforces --> |
-| `experiment-tree` => loops `rsi-experiment-tree` | record refuses a missing or stale readRevision, so the tree is read before every node: two records cannot happen back to back without an intervening read | <!-- edge:experiment-tree->rsi-experiment-tree:loops --> |
-| `rsi-experiment-tree` -> needs `research-sources` | a research node names the source it went back to, because a result made the current picture insufficient; the tool refuses a target outside this group | <!-- edge:rsi-experiment-tree->research-sources:needs --> |
-| `rsi-experiment-tree` -> needs `openmle-uvi` | the four atomic operators, the three-factor parent selection and the Human Rank convention all come from here; it is why an operator and a rank are mandatory on every experiment node | <!-- edge:rsi-experiment-tree->openmle-uvi:needs --> |
-| `rsi-experiment-tree` -> needs `rsi-autonomy-levels` | the L1-L5 ladder explains which decisions the agent is allowed to take itself, and its three failure modes explain why refuted nodes are kept as evidence rather than deleted | <!-- edge:rsi-experiment-tree->rsi-autonomy-levels:needs --> |
-| `rsi-experiment-tree` -> needs `dream-rsi` | the replay simulator is the reason the tree is archived into rounds: a completed history is walked to score alternative exploration policies without re-running anything | <!-- edge:rsi-experiment-tree->dream-rsi:needs --> |
-| `rsi-experiment-tree` -> needs `efc-2605-29682` | raw quota and wall time cannot tell useful feedback from redundant work, so the cost term is computed on effective feedback and judged per criterion | <!-- edge:rsi-experiment-tree->efc-2605-29682:needs --> |
-| `rsi-experiment-tree` -> needs `modular-rsi-coupling` | two mechanisms owning one decision point is the documented failure that cost ModularRSI eight points; divisionOfLabour is the guard | <!-- edge:rsi-experiment-tree->modular-rsi-coupling:needs --> |
-| `rsi-experiment-tree` -> dispatches `kaggle-competition-research` | a research node re-runs the same research sweep on purpose; re-reading the forum because a result told you to is the tree recording why | <!-- edge:rsi-experiment-tree->kaggle-competition-research:dispatches --> |
-| `experiment-launch` -> needs `experiment-tree` | a completed run is a node, and the node cannot be written without first reading the tree | <!-- edge:experiment-launch->experiment-tree:needs --> |
-| `log-monitor` -> needs `experiment-tree` | an unattended auto-advance records a node, and the read-gate is what keeps an overnight loop off a stale base | <!-- edge:log-monitor->experiment-tree:needs --> |
-| `handoff` -> needs `rsi-experiment-tree` | the document is derived from the tree so it cannot claim a base the tree lacks | <!-- edge:handoff->rsi-experiment-tree:needs --> |
-| `genui-scenarios` -> gates `log-monitor` | decides whether the interval is a real pending decision | <!-- edge:genui-scenarios->log-monitor:gate --> |
-| `genui-scenarios` -> gates `experiment-launch` | engine and accelerator are choices; the local slider has no widget yet, so that one answers in text | <!-- edge:genui-scenarios->experiment-launch:gate --> |
-| `presence-mode` -> asks `experiment-launch` | engine and time limit are auto-decided when away only within a stated, conservative cap; never past remaining quota | <!-- edge:presence-mode->experiment-launch:asks --> |
-| `presence-mode` -> asks `log-monitor` | a terminal state auto-advances to the next tree node when away, and reports when present | <!-- edge:presence-mode->log-monitor:asks --> |
-
-## Bound edges (rendered from `../../relationships.json`)
-
-These rows are **rendered from `skills/relationships.json`**, the single source of truth for
-how the skills in this package relate, and for the live state those relationships are gated
-on. `tools/check_plugin.py` fails the build if this table drifts from that file, so the graph
-cannot rot back into loose prose. To change a relationship, edit `relationships.json` and
-re-run the checker.
-
-Edge types: `needs` = prerequisite, `dispatches` = launched at runtime, `produces` = this
-skill's output is the other's input, `browses` = must actually open this source, `asks` =
-presence-mode decides whether to ask here, `enforces` = a tool validates this, `loops` = a
-read-then-decide cycle gated by the tool, `widget`/`gates` = the GenUI binding.
-
-Where two mechanisms legitimately touch the same skill, the split of labour is declared under
-`divisionOfLabour` in the same file, and the checker refuses a duplicated claim that has no
-such declaration.
-
-| From -> type -> To | When this edge is live |
-|---|---|
+| Edge | Why it holds | Marker |
+|---|---|---|
 | `experiment-launch` -> needs `kaggle-cli` | quota, accelerator market state and the push itself | <!-- edge:experiment-launch->kaggle-cli:needs --> |
 | `experiment-launch` -> needs `kaggle-account-switch` | whose quota pays for this run is decided before anything is pushed | <!-- edge:experiment-launch->kaggle-account-switch:needs --> |
 | `experiment-launch` -> produces `log-monitor` | a run that produces logs is a run that needs watching | <!-- edge:experiment-launch->log-monitor:produces --> |
@@ -194,8 +142,11 @@ such declaration.
 | `scientific-plotting` -> needs `rsi-experiment-tree` | every figure is drawn from the tree, and action='analyze' attaches each one back to the nodes it came from | <!-- edge:scientific-plotting->rsi-experiment-tree:needs --> |
 | `rsi-experiment-tree` -> needs `ablation-design` | one-variable nodes, honest replication and recorded cost are what make a kept node interpretable rather than merely true | <!-- edge:rsi-experiment-tree->ablation-design:needs --> |
 | `ablation-design` -> needs `rsi-experiment-tree` | it adapts design methodology to this tree's node shape; without the tree there is nothing for it to shape | <!-- edge:ablation-design->rsi-experiment-tree:needs --> |
+| `ablation-design` -> needs `ablation-table` | designing the batch and reading what it established are two halves: this skill decides which arms to run and what to hold fixed, and the table reports the edges, the interactions four distinct arms make computable, the effects measured only alongside something else, and the arms whose controls disagree | <!-- edge:ablation-design->ablation-table:needs --> |
+| `ablation-table` => enforces `rsi-experiment-tree` | action='ablate' is built from the recorded factor sets, not re-derived from prose: the primitive is an edge between two arms differing by exactly one factor, which is direction-free, so add-one-in and leave-one-out are the same edges read up or down | <!-- edge:ablation-table->rsi-experiment-tree:enforces --> |
 | `sources-store` => enforces `experiment-tree` | a node citing a source id that is not in the store is refused, so provenance can never dangle | <!-- edge:sources-store->experiment-tree:enforces --> |
 | `plot-engine` => enforces `rsi-experiment-tree` | action='analyze' turns the recorded samples and costs into figures, and reports every figure it could not draw rather than omitting it silently | <!-- edge:plot-engine->rsi-experiment-tree:enforces --> |
 | `ablation-design` -> needs `k-dense-methods` | it is an adaptation; the upstream bodies and their licence are recorded here so the provenance is not lost | <!-- edge:ablation-design->k-dense-methods:needs --> |
+| `scientific-plotting` -> needs `k-dense-visualization` | its assets, references and scripts are vendored from there under MIT; deleting the node would leave a third-party licence with nothing pointing at it, and the palette audit that cleared this engine's colours lives in those scripts | <!-- edge:scientific-plotting->k-dense-visualization:needs --> |
 | `technical-report` -> produces `rsi-experiment-tree` | the report is written from action='report' on that tree; every sentence traces to a row | <!-- edge:technical-report->rsi-experiment-tree:produces --> |
 | `technical-report` -> needs `scientific-plotting` | the figures come from analyze, and the ones it could not draw are stated as a limitation | <!-- edge:technical-report->scientific-plotting:needs --> |

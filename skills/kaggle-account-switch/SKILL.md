@@ -179,5 +179,7 @@ another one automatically.
 
 - `KAGGLE_API_TOKEN` in the environment overrides the saved selection, so a shell export can
   silently pin a different account. `kaggle_auth_status` shows which source is in play.
-- Accounts live in `~/.kaggle-cli/accounts.json`, one file, owner-readable. Adding an account
-  never touches the plugin package.
+- Accounts live in `~/.kaggle-agent/accounts.json`, one file, owner-readable. Adding an account
+  never touches the plugin package. A store at the previous `~/.kaggle-cli/accounts.json` is
+  migrated across on first read, name for name, so a renamed account is never resurrected as a
+  duplicate.

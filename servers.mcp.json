@@ -7,10 +7,10 @@
       "args": [
         "-B",
         "-c",
-        "import os,runpy,sys;_c=os.environ.get('PLUGIN_ROOT','');_r=[_c] if _c and '${' not in _c else [];_r+=[os.getcwd(),os.path.expanduser('~/.minimax/plugins/kaggle-agent')];_n='mcp/agent_server.py';_p=next((os.path.join(x,_n) for x in _r if os.path.isfile(os.path.join(x,_n))),None);_p is None and sys.exit('kaggle-agent: cannot locate '+_n+'; tried '+', '.join(_r));sys.path.insert(0,os.path.dirname(_p));runpy.run_path(_p,run_name='__main__')"
+        "import os,sys;_n=os.path.join('mcp','agent_server.py');_r=[p for p in (os.environ.get('PLUGIN_ROOT',''),os.getcwd()) if p and '${' not in p]+[os.path.expanduser(p) for p in ('~/.minimax/plugins','~/.mavis/plugins','~/.minimax/v2/plugin-cache','~/.minimax/v2/plugin-import')];_ls=lambda b:(os.listdir(b) if os.path.isdir(b) else []);_ok=lambda d:(lambda m:os.path.isfile(m) and 'kaggle-agent' in open(m,encoding='utf-8').read())(os.path.join(d,'.minimax-plugin','plugin.json'));_p=next((os.path.join(x,_n) for b in _r for x in [b]+[os.path.join(b,n) for n in _ls(b)]+[os.path.join(b,n,m) for n in _ls(b) for m in _ls(os.path.join(b,n))] if _ok(x)),None);_p is None and sys.exit('kaggle-agent: cannot locate '+_n+'; tried '+', '.join(_r));sys.path.insert(0,os.path.dirname(_p));exec(compile(open(_p,encoding='utf-8').read(),_p,'exec'),{'__name__':'__main__','__file__':_p,'__package__':None})"
       ],
       "env": {},
-      "description": "Kaggle notebooks, competitions, accounts and accelerator quota as local tools. Sign in once with 'kaggle-cli.cmd login'; credentials resolve from KAGGLE_API_TOKEN, ~/.kaggle-cli/, or KAGGLE_KEY.",
+      "description": "Kaggle notebooks, competitions, accounts and accelerator quota as local tools. Sign in once with 'kaggle-cli.cmd login'; credentials resolve from KAGGLE_API_TOKEN, ~/.kaggle-agent/, or KAGGLE_KEY.",
       "timeout": 900000
     }
   }

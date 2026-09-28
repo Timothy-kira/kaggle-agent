@@ -53,6 +53,13 @@ user's, and it is cheap to get wrong.
 **Away** — **drafting** a handoff is auto-decidable, because it is a local file and reversible:
 write it, record that you did, and keep working. That is a tier-2 decision.
 
+**One exception, and it outranks the tier.** If the handoff carries a **plan the user has not
+approved**, drafting it is not tier-2 — away or not. The reason tier-2 is safe here is that a
+local file is reversible, and a file nobody depends on can be rewritten. A plan nobody agreed
+to, written down, is read by the next agent as *the* plan; the damage is not that it is
+hard to undo, it is that until someone undoes it, nobody knows it was never agreed to. So a
+handoff from an unreviewed research plan waits, whatever the presence mode says.
+
 But **syncing it anywhere is not.** Creating a repo, committing, pushing — every one of those is
 tier 3 and needs explicit confirmation whether or not the user is at the keyboard:
 

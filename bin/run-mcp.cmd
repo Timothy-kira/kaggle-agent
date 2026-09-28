@@ -1,8 +1,13 @@
 @echo off
 REM ---------------------------------------------------------------------------
-REM run-mcp.cmd - start the kaggle MCP server (stdio JSON-RPC 2.0).
+REM run-mcp.cmd - start the kaggle MCP server by hand (stdio JSON-RPC 2.0).
 REM
-REM Referenced from servers.mcp.json as: cmd /c "${PLUGIN_ROOT}\bin\run-mcp.cmd"
+REM NOT what the host uses. servers.mcp.json launches the server with its own inlined
+REM bootstrap (mcp/agent_server.py), which finds the package by marker file and therefore
+REM works from any directory and on any platform. This file is the fallback for the case
+REM that bootstrap does not cover: the host's default `python` may not have the kaggle CLI
+REM installed, and the interpreter search below picks the first one that does. Launch it
+REM yourself when you are debugging the server outside MiniMax Code.
 REM
 REM This batch file only locates a Python interpreter and starts
 REM mcp\kaggle_server.py. Credentials are NOT resolved here: the server resolves

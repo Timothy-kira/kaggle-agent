@@ -144,15 +144,21 @@ def note_tick(data: dict[str, Any] | None = None, action: str = "") -> dict[str,
     }
 
 
-def reset_ladder() -> dict[str, Any]:
-    """A new watch, or a cleared one, starts tight again."""
-    d = load()
+def _clear_ladder(d: dict[str, Any]) -> None:
+    """Drop every field that describes the previous run, in place.
+
+    One implementation, one caller. This replaced two: a two-line `reset_ladder` that
+    cleared only `rung` and `ticks` beside a wider inlined copy in set_target, so reaching
+    for the callable gave a tight cadence over a stale repair history - the opposite of what
+    a fresh watch wants. A digest of an unrelated log and a relax streak earned while
+    something else was being watched both belong to the run that is over.
+    """
     d["rung"] = 0
     d["ticks"] = 0
-    d["updatedAt"] = _now()
-    d["revision"] = int(d.get("revision") or 0) + 1
-    _write(d)
-    return ladder_state(d)
+    d["attempts"] = 0
+    d["tried"] = []
+    d["still"] = 0
+    d["digest"] = None
 
 
 # ------------------------------------------------------------------ watching content, not a clock
@@ -530,13 +536,10 @@ def set_target(kind: str, ref: str = "", path: str = "") -> dict[str, Any]:
     data["targets"] = [t for t in data["targets"] if not same(t)] + [target]
     # A fresh run is the moment worth watching closely, so a new target restarts the
     # ladder at its first rung rather than inheriting the last one's slack. It also starts
-    # with no repair history: the previous run's failed fetch routes say nothing about this one.
-    data["rung"] = 0
-    data["ticks"] = 0
-    data["attempts"] = 0
-    data["tried"] = []
-    data["still"] = 0
-    data["digest"] = None
+    # with no repair history: the previous run's failed fetch routes say nothing about this
+    # one. `lastRecipe` deliberately survives - knowing which fetch route worked last time
+    # is exactly what should carry over.
+    _clear_ladder(data)
     data["updatedAt"] = _now()
     _write(data)
     return {"ok": True, "target": target, "targets": data["targets"], "path": config_path()}

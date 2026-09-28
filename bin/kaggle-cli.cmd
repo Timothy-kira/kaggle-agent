@@ -15,7 +15,7 @@ REM   kaggle-cli.cmd logout                 forget the stored token
 REM   kaggle-cli.cmd <kaggle args...>       run the Kaggle CLI, authenticated
 REM
 REM Credentials resolve in this order: KAGGLE_API_TOKEN, then this user's store at
-REM %USERPROFILE%\.kaggle-cli\credentials.json, then KAGGLE_KEY. The token is never
+REM %USERPROFILE%\.kaggle-agent\accounts.json, then KAGGLE_KEY. The token is never
 REM written to this file, to the plugin package, or to stdout.
 REM ---------------------------------------------------------------------------
 setlocal DisableDelayedExpansion

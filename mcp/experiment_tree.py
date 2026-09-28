@@ -42,6 +42,7 @@ import os
 import re
 import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 NODE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$", re.I)
@@ -267,11 +268,20 @@ EXPECTATION_VERDICTS = ("confirmed", "partial", "refuted", "unreadable")
 # are different claims with different consequences for what to try next.
 #
 # `controls` exists for the confound that makes such a table quietly wrong: two arms measured
-# under different seeds, budgets, eval sets or retrain policies did not differ by one factor,
-# they differed by however many things changed between those two runs. Recording the controls
-# makes that difference visible instead of invisible.
+# under different seeds, budgets, eval sets, retrain policies or DATA did not differ by one
+# factor, they differed by however many things changed between those two runs. Recording the
+# controls makes that difference visible instead of invisible.
+#
+# `data` is the newest of them, and it answers a question the other four never asked: not "was
+# the comparison fair" but "what was it a comparison OF". A run records the dataset it read and
+# which version of it, so a delta measured across a re-uploaded or re-versioned file cannot be
+# attributed to the factor that was being tested. The tree already pinned which set was held out
+# (`metric.split` and the anchor) and which seed was used; what it never recorded was the input
+# itself, so two arms could differ by a factor AND by a data version and the table would call it
+# a clean win. `eval` is not a substitute - it names the evaluation surface, not the training
+# bytes, and a competition that re-uploads its data changes one without touching the other.
 FACTOR_RE = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
-CONTROL_KEYS = ("seed", "budget", "eval", "retrain")
+CONTROL_KEYS = ("seed", "budget", "eval", "retrain", "data")
 VALID_RETRAIN = ("from-scratch", "re-eval")
 # What a run says it is doing when the factor arithmetic alone cannot tell. A factorial arm
 # changes two factors and means it; a repeat changes none and is measuring noise. Both are
@@ -1207,16 +1217,25 @@ def _control_diff(na: dict[str, Any], nb: dict[str, Any],
     """Where two runs were not comparable because their controls differ.
 
     A delta between two arms is only attributable to the factor that differs if everything
-    else did too. Seeds, budget, eval set and retrain policy are the four that actually move
-    numbers in practice, so those are the four compared - and a run that recorded no controls
-    is compared as "unknown" rather than assumed to match, because assuming that is exactly how
-    a table becomes a table of losses that could belong to any system.
+    else did too. Seeds, budget, eval set, retrain policy and the dataset itself are the
+    five that actually move numbers in practice, so those are the five compared - and a run
+    that recorded no controls is compared as "unknown" rather than assumed to match, because
+    assuming that is exactly how a table becomes a table of losses that could belong to any
+    system.
 
     missing_is_a_problem is the difference between the two callers, and conflating them was a
     real bug: a tree reads as un-attributable when controls were never recorded, which is the
     normal state of most trees, but a WRITE must not refuse a node for silence about something
     the parent did not record either. So the table reports the unknown, and only a genuine
     disagreement between two recorded values blocks a write.
+
+    The same distinction applies WITHIN a recorded pair, and getting it wrong is how a newly
+    added control key would have broken every tree that predates it. Silence on both sides is
+    not a disagreement: two arms that both fail to name their dataset are equally unknown, and
+    reporting that as a mismatch claims a difference nobody observed. Only ONE side being
+    silent is a real finding - one run says what it read and the other does not, so the two
+    are not known to be comparable. That is the branch that fires for `data` on a tree whose
+    nodes predate it, which is why it cannot be folded into the both-absent case.
     """
     ca, cb = na.get("controls"), nb.get("controls")
     if not isinstance(ca, dict) or not isinstance(cb, dict):
@@ -1226,9 +1245,11 @@ def _control_diff(na: dict[str, Any], nb: dict[str, Any],
     out = []
     for key in CONTROL_KEYS:
         va, vb = ca.get(key), cb.get(key)
+        if va is None and vb is None:
+            continue                      # neither arm says: unknown, not a disagreement
         if va is None or vb is None:
             if missing_is_a_problem:
-                out.append(f"{key} (not recorded on both)")
+                out.append(f"{key} (recorded on one run but not the other)")
         elif str(va) != str(vb):
             out.append(f"{key}: {va!r} vs {vb!r}")
     return out
@@ -1251,8 +1272,9 @@ def ablation_table(tree: dict[str, Any]) -> dict[str, Any]:
     against an arbitrary pair instead of against the full configuration.
 
     Two things this refuses to do. It will not report a delta whose two arms disagreed about
-    seed, budget, eval set or retrain policy, because that number belongs to more than one
-    cause. And it will not report an interaction from a triple that is not three distinct arms:
+    seed, budget, eval set, retrain policy or the dataset itself, because that number belongs to
+    more than one cause. And it will not report an interaction from a triple that is not three
+    distinct arms:
     with a bare baseline and no standalone B, "A+B" is reachable as both the pair and the
     solo arm, and the arithmetic then prints a confident 0.00 interaction from a missing run.
     """
@@ -1486,8 +1508,8 @@ def ablation_table(tree: dict[str, Any]) -> dict[str, Any]:
         "size": size,
         "note": (
             "these edges were not comparable: their arms disagreed about seed, budget, eval "
-            "set or retrain policy, so the delta belongs to more than one cause and the table "
-            "names each one instead of printing a number."
+            "set, retrain policy or the dataset, so the delta belongs to more than one cause and "
+            "the table names each one instead of printing a number."
             if confounds else
             "every edge in this table has matching controls, so each delta belongs to the one "
             "factor it differs by."),
@@ -4140,6 +4162,198 @@ def report(competition: str) -> dict[str, Any]:
         "note": ("This is the ledger, not the report. Every sentence in the report must trace to a "
                  "row here; anything that cannot is in mayNotClaim and stays out of the prose."),
     }
+
+
+# A number the report pins to a node, with an explicit separator. "n3: 0.61" or "n3 = 0.61".
+# Bare adjacency is deliberately not matched: "the 3 runs took 0.4 quota hours" is ordinary prose,
+# and a check that fires on ordinary prose is a check people learn to ignore.
+_ATTRIBUTED = re.compile(r"(?P<nid>\b[nr]\d+\b)\s*(?::|=|->|→)\s*(?P<val>[+-]?\d+(?:\.\d+)?)")
+
+
+def _numbers_a_node_holds(node: dict[str, Any]) -> dict[str, float]:
+    """Every number one node recorded, keyed by where it came from.
+
+    The provenance is kept because the audit has to be able to say "n3 does not hold 0.61; it
+    holds result=0.556 and delta=+0.046", which is a sentence a human can act on, rather than
+    "number not found", which is not.
+    """
+    out: dict[str, float] = {}
+    m = node.get("metric") if isinstance(node.get("metric"), dict) else {}
+    for field in ("result", "delta", "parent"):
+        v = _num(m.get(field))
+        if v is not None:
+            out[f"metric.{field}"] = v
+    samples = m.get("samples") if isinstance(m.get("samples"), dict) else {}
+    for field in ("mean", "std", "n"):
+        v = _num(samples.get(field))
+        if v is not None:
+            out[f"metric.samples.{field}"] = v
+    cost = node.get("cost") if isinstance(node.get("cost"), dict) else {}
+    for field in ("quotaHours", "wallSeconds", "agentCalls"):
+        v = _num(cost.get(field))
+        if v is not None:
+            out[f"cost.{field}"] = v
+    for c in node.get("criteria") or []:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "?")
+        for field in ("value", "std"):
+            v = _num(c.get(field))
+            if v is not None:
+                out[f"criteria[{name}].{field}"] = v
+    return out
+
+
+def _same_number(a: float, b: float) -> bool:
+    """Equal to six decimals, so 0.61 and 0.610 are the same number and 0.611 is not."""
+    return round(float(a), 6) == round(float(b), 6)
+
+
+def audit_report(competition: str, path: str = "", text: str = "",
+                 review_report: bool = True) -> dict[str, Any]:
+    """Stage three of a claim audit: does the finished prose still match the ledger?
+
+    The deterministic half and the review half are different in kind, and keeping them apart is
+    the whole point of this function.
+
+    **It can refuse, and refusing needs no second opinion.** Two things are refusals because
+    they are mechanical: a sentence the tree itself put in `mayNotClaim` has appeared verbatim in
+    the prose, and an artifact the tree claims is not on disk. Neither needs judgement, and
+    routing them through a model would only make a certain answer an uncertain one.
+
+    **It cannot acquit, and a passing number is not an acquittal.** A number that matches the
+    tree proves the evidence EXISTS. Whether the sentence it sits in is *supported* by that
+    evidence is a judgement, and the only version of that judgement worth having comes from
+    something that did not write the report. So an attributed number that matches nothing is
+    reported, not cleared: it is the single most likely place for a fabricated figure to sit,
+    and it goes to the reviewer as work, not as a footnote.
+
+    The reviewer packet therefore carries FILE PATHS. Not this function's reading of the
+    report, not a summary, not a list of findings phrased as conclusions. A reviewer handed a
+    summary is reviewing the summary.
+    """
+    tree = load(competition)
+    problems = validate(tree)
+    if problems:
+        return {
+            "ok": False, "code": "tree_invalid",
+            "message": ("the tree does not validate, so a report about it cannot be audited into "
+                        "safety. Fix the tree first - see the problems below."),
+            "problems": problems,
+            "tree": tree_path_resolved(competition),
+        }
+
+    ledger = report(competition)
+    inner = _current(tree)
+    nodes = inner.get("nodes") or {}
+
+    if path:
+        p = Path(path).expanduser()
+        if not p.is_file():
+            return {"ok": False, "code": "report_missing",
+                    "message": f"no report at {p}. An audit of a file that is not there is a "
+                               f"verdict on nothing."}
+        body = p.read_text(encoding="utf-8")
+        report_path = str(p.resolve())
+    elif text:
+        body, report_path = str(text), ""
+    else:
+        return {"ok": False, "code": "nothing_to_audit",
+                "message": "pass path=<file> or text=<the report body>."}
+
+    refusals: list[dict[str, Any]] = []
+
+    # A. a forbidden sentence, copied in. The ledger wrote it out precisely so this could be
+    # mechanical, and a substring match is exact by construction, so this cannot misfire.
+    # The entries are objects, not sentences: the sentence is in `because`.
+    lowered = body.lower()
+    forbidden = 0
+    for claim in ledger.get("mayNotClaim") or []:
+        if isinstance(claim, dict):
+            text_claim = str(claim.get("because") or "").strip()
+            kind = str(claim.get("kind") or "")
+        else:
+            text_claim, kind = str(claim or "").strip(), "claim"
+        if len(text_claim) >= 12 and text_claim.lower() in lowered:
+            refusals.append({"kind": "forbidden_claim", "claimKind": kind, "detail": text_claim})
+            forbidden += 1
+
+    # B. a phantom artifact. The tree says a run produced this file; the file is not there.
+    # `artifacts` is a list of node entries, each carrying its own list of paths.
+    phantom = 0
+    for entry in ledger.get("artifacts") or []:
+        paths = entry.get("artifacts") if isinstance(entry, dict) else [entry]
+        for art in paths or []:
+            if not isinstance(art, str) or not art.strip():
+                continue
+            ap = Path(art).expanduser()
+            if not ap.exists():
+                refusals.append({
+                    "kind": "phantom_artifact",
+                    "node": entry.get("id") if isinstance(entry, dict) else None,
+                    "detail": art,
+                })
+                phantom += 1
+
+    # C. an attributed number. Checked against the node it names; unmatched is reviewer work.
+    matched, unmatched = [], []
+    seen: set[tuple[str, str]] = set()
+    for m in _ATTRIBUTED.finditer(body):
+        nid, raw = m.group("nid"), m.group("val")
+        key = (nid, raw)
+        if key in seen:
+            continue
+        seen.add(key)
+        held = _numbers_a_node_holds(nodes.get(nid) or {})
+        try:
+            claimed = float(raw)
+        except ValueError:
+            continue
+        if not held:
+            unmatched.append({"node": nid, "claimed": raw,
+                              "note": f"{nid} records no numbers at all"})
+            continue
+        hit = next((where for where, v in held.items() if _same_number(v, claimed)), None)
+        if hit:
+            matched.append({"node": nid, "claimed": raw, "field": hit})
+        else:
+            unmatched.append({
+                "node": nid, "claimed": raw,
+                "note": (f"{nid} holds " + ", ".join(f"{k}={v:g}" for k, v in held.items())
+                         + " - none of them is this"),
+            })
+
+    tree_path = tree_path_resolved(competition)
+    packet = {
+        "report": report_path or "(passed inline as text - give a path so the reviewer reads the file)",
+        "tree": tree_path,
+        "ledgerFields": ["kept", "refuted", "failuresByLayer", "bibliography", "mayNotClaim",
+                         "anchor", "quotaHours", "unsettled"],
+        "instruction": ("Read both files yourself. Do not accept any summary of them, including "
+                        "this one. Then judge whether the evidence supports each claim in the "
+                        "report, and whether any sentence overstates what the tree records. The "
+                        "deterministic pass below already refused what it could; it did NOT "
+                        "clear anything."),
+        "alreadyRefused": refusals,
+        "attributedNumbersChecked": len(matched) + len(unmatched),
+    }
+    return {
+        "ok": not refusals,
+        "code": "clean" if not refusals else "refused",
+        "read": {"chars": len(body), "nodes": len(nodes),
+                 "mayNotClaim": len(ledger.get("mayNotClaim") or []),
+                 "forbiddenClaimCopies": forbidden,
+                 "artifacts": len(ledger.get("artifacts") or []),
+                 "phantomArtifacts": phantom},
+        "refusals": refusals,
+        "attributedNumbers": {"matched": matched, "unmatched": unmatched},
+        "reviewerPacket": packet,
+        "reviewNeeded": bool(review_report and (matched or unmatched)),
+        "note": ("A deterministic pass can refuse and can prove a number EXISTS. It cannot say "
+                 "the evidence supports the sentence. That half is the reviewer's, and the "
+                 "packet hands over paths rather than conclusions."),
+    }
+
 
 
 def _next_questions(competition: str, cov: dict[str, Any], refuted: list[dict[str, Any]],

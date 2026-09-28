@@ -8,7 +8,7 @@ skills here are organised around *how* the evidence was gathered, not around wha
 | Skill | Use it when |
 |---|---|
 | [`kaggle-competition-research`](../kaggle-competition-research/SKILL.md) | Before committing to an approach. Two waves of parallel subagents: four on Kaggle-native sources, then three external ones whose queries the main agent derives from the first wave. Each wave is launched by issuing every subagent task in one assistant response. |
-| [`approach-decision`](../approach-decision/SKILL.md) | The write-it-myself vs fork-the-top-notebook choice, and how to make that call audibly. |
+| [`approach-decision`](../approach-decision/SKILL.md) | Which angle to attack before the first node exists — each candidate costed, given a killer, and scored against how converged the public cluster already is — and then the write-it-myself vs fork-the-top-notebook call. |
 
 ## The shape of a research sweep
 
@@ -52,16 +52,15 @@ already holds a signed-in Kaggle session, because Kaggle renders client-side. Re
 section in the skill before dispatching subagents — a wrong slug 403s and looks like an auth
 failure.
 
-## Reusable subagent
+## No reusable subagent
 
-The source forensics are handled by the plugin's own **`competition-browser`** (比赛 browser)
-subagent, which opens the real GitHub, Hugging Face and arXiv pages and reports checkable fields
-rather than impressions. Its avatar ships in
-`assets/agent-avatars/competition-browser.png` and is copied into the agent directory on install.
-See [`competition-browser-agent.md`](../competition-browser-agent.md).
+Both halves of wave 2 happen in the main thread. The general search is the host's
+`deep-research` skill, run over multiple rounds, and the source forensics that follow it are done
+in that same thread rather than dispatched — which is what lets the forensics use the in-app
+browser, something a detached subagent does not have.
 
-The general search is not that agent: it is the host's `deep-research` skill, run in the main
-thread over multiple rounds, because that is the session where the in-app browser actually lives.
+The three `browses` edges below are held by the research skill itself for exactly that reason:
+if the forensics ever went back to a subagent, the coverage floor would have no owner.
 
 ## Cross-references
 
@@ -70,7 +69,6 @@ thread over multiple rounds, because that is the session where the in-app browse
 - `experiment-launch` acts on the plan; `rsi-experiment-tree` records what the plan predicted.
 
 ## Bound edges (rendered from `../relationships.json`)
-
 These rows are **rendered from `skills/relationships.json`**, the single source of truth for
 how the skills in this package relate, and for the live state those relationships are gated
 on. `tools/check_plugin.py` fails the build if this table drifts from that file, so the graph
@@ -79,24 +77,16 @@ re-run the checker.
 
 Edge types: `needs` = prerequisite, `dispatches` = launched at runtime, `produces` = this
 skill's output is the other's input, `browses` = must actually open this source, `asks` =
-presence-mode decides whether to ask here, `enforces` = a tool validates this, `loops` = a
-read-then-decide cycle gated by the tool, `widget`/`gates` = the GenUI binding.
+consulted for a decision, `enforces` = the gate is attached to that tool, `widget` = rendered
+by that visualizer, `gate` = decides whether a widget is warranted, `loops` = feeds back.
 
-Where two mechanisms legitimately touch the same skill, the split of labour is declared under
-`divisionOfLabour` in the same file, and the checker refuses a duplicated claim that has no
-such declaration.
-
-| From -> type -> To | When this edge is live |
-|---|---|
+| Edge | Why it holds | Marker |
+|---|---|---|
 | `kaggle-competition-research` -> needs `kaggle-cli` | slug, leaderboard, forum and kernels-list all go through the CLI tools | <!-- edge:kaggle-competition-research->kaggle-cli:needs --> |
-| `kaggle-competition-research` -> dispatches `deep-research` | the general browser search, run in the MAIN thread over multiple rounds; it is where the in-app browser and web_search actually exist | <!-- edge:kaggle-competition-research->deep-research:dispatches --> |
+| `kaggle-competition-research` -> dispatches `deep-research` | the general search and the source forensics both run in the MAIN thread over multiple rounds, with no subagent dispatched anywhere in wave 2 | <!-- edge:kaggle-competition-research->deep-research:dispatches --> |
 | `kaggle-competition-research` -> browses `github` | the research is not complete until GitHub's own pages were opened and parsed, not merely quoted by a search engine | <!-- edge:kaggle-competition-research->github:browses --> |
 | `kaggle-competition-research` -> browses `huggingface` | same floor for Hugging Face model and dataset pages | <!-- edge:kaggle-competition-research->huggingface:browses --> |
 | `kaggle-competition-research` -> browses `arxiv` | same floor for the arXiv listing and the paper pages themselves | <!-- edge:kaggle-competition-research->arxiv:browses --> |
-| `kaggle-competition-research` -> dispatches `competition-browser` | AFTER the general search, for source-specific forensics the main thread should not hand-wave: stars, licence, last commit, model card, architecture | <!-- edge:kaggle-competition-research->competition-browser:dispatches --> |
-| `competition-browser` -> browses `github` | the forensic pass is worthless if it never opened the repo | <!-- edge:competition-browser->github:browses --> |
-| `competition-browser` -> browses `huggingface` | model and dataset cards are read on the page, not from a snippet | <!-- edge:competition-browser->huggingface:browses --> |
-| `competition-browser` -> browses `arxiv` | the paper page itself, for the number and the evaluation setup | <!-- edge:competition-browser->arxiv:browses --> |
 | `kaggle-competition-research` -> produces `approach-decision` | the plan's constraints and open questions are what the fork/write call is judged against | <!-- edge:kaggle-competition-research->approach-decision:produces --> |
 | `approach-decision` -> needs `kaggle-competition-research` | the decision is only auditable if the evidence under it was gathered | <!-- edge:approach-decision->kaggle-competition-research:needs --> |
 | `kaggle-competition-research` -> needs `search-engine` | a discovery search needs an engine, and the engine is a question until the presence state says otherwise | <!-- edge:kaggle-competition-research->search-engine:needs --> |
@@ -104,44 +94,6 @@ such declaration.
 | `kaggle-competition-research` -> needs `browser` | search pages and the three required sites are opened with the in-app browser, which only the main session has | <!-- edge:kaggle-competition-research->browser:needs --> |
 | `rsi-experiment-tree` -> dispatches `kaggle-competition-research` | a research node re-runs the same research sweep on purpose; re-reading the forum because a result told you to is the tree recording why | <!-- edge:rsi-experiment-tree->kaggle-competition-research:dispatches --> |
 | `presence-mode` -> asks `approach-decision` | fork-vs-write defaults to the auditable path when away | <!-- edge:presence-mode->approach-decision:asks --> |
-| `presence-mode` -> asks `kaggle-competition-research` | research self-advances when away; the plan is still written and still shown to the user on return | <!-- edge:presence-mode->kaggle-competition-research:asks --> |
-| `presence-mode` -> asks `search-engine` | present: ask which engine for a discovery search. away: use the default and record it. Direct navigation to a known URL is exempt either way. | <!-- edge:presence-mode->search-engine:asks --> |
-
-## Bound edges (rendered from `../../relationships.json`)
-
-These rows are **rendered from `skills/relationships.json`**, the single source of truth for
-how the skills in this package relate, and for the live state those relationships are gated
-on. `tools/check_plugin.py` fails the build if this table drifts from that file, so the graph
-cannot rot back into loose prose. To change a relationship, edit `relationships.json` and
-re-run the checker.
-
-Edge types: `needs` = prerequisite, `dispatches` = launched at runtime, `produces` = this
-skill's output is the other's input, `browses` = must actually open this source, `asks` =
-presence-mode decides whether to ask here, `enforces` = a tool validates this, `loops` = a
-read-then-decide cycle gated by the tool, `widget`/`gates` = the GenUI binding.
-
-Where two mechanisms legitimately touch the same skill, the split of labour is declared under
-`divisionOfLabour` in the same file, and the checker refuses a duplicated claim that has no
-such declaration.
-
-| From -> type -> To | When this edge is live |
-|---|---|
-| `kaggle-competition-research` -> needs `kaggle-cli` | slug, leaderboard, forum and kernels-list all go through the CLI tools | <!-- edge:kaggle-competition-research->kaggle-cli:needs --> |
-| `kaggle-competition-research` -> dispatches `deep-research` | the general browser search, run in the MAIN thread over multiple rounds; it is where the in-app browser and web_search actually exist | <!-- edge:kaggle-competition-research->deep-research:dispatches --> |
-| `kaggle-competition-research` -> browses `github` | the research is not complete until GitHub's own pages were opened and parsed, not merely quoted by a search engine | <!-- edge:kaggle-competition-research->github:browses --> |
-| `kaggle-competition-research` -> browses `huggingface` | same floor for Hugging Face model and dataset pages | <!-- edge:kaggle-competition-research->huggingface:browses --> |
-| `kaggle-competition-research` -> browses `arxiv` | same floor for the arXiv listing and the paper pages themselves | <!-- edge:kaggle-competition-research->arxiv:browses --> |
-| `kaggle-competition-research` -> dispatches `competition-browser` | AFTER the general search, for source-specific forensics the main thread should not hand-wave: stars, licence, last commit, model card, architecture | <!-- edge:kaggle-competition-research->competition-browser:dispatches --> |
-| `competition-browser` -> browses `github` | the forensic pass is worthless if it never opened the repo | <!-- edge:competition-browser->github:browses --> |
-| `competition-browser` -> browses `huggingface` | model and dataset cards are read on the page, not from a snippet | <!-- edge:competition-browser->huggingface:browses --> |
-| `competition-browser` -> browses `arxiv` | the paper page itself, for the number and the evaluation setup | <!-- edge:competition-browser->arxiv:browses --> |
-| `kaggle-competition-research` -> produces `approach-decision` | the plan's constraints and open questions are what the fork/write call is judged against | <!-- edge:kaggle-competition-research->approach-decision:produces --> |
-| `approach-decision` -> needs `kaggle-competition-research` | the decision is only auditable if the evidence under it was gathered | <!-- edge:approach-decision->kaggle-competition-research:needs --> |
-| `kaggle-competition-research` -> needs `search-engine` | a discovery search needs an engine, and the engine is a question until the presence state says otherwise | <!-- edge:kaggle-competition-research->search-engine:needs --> |
-| `search-engine` -> needs `presence-mode` | its 'ask' action reads the presence state, so the ask-or-auto decision is made by the tool rather than remembered by the agent | <!-- edge:search-engine->presence-mode:needs --> |
-| `kaggle-competition-research` -> needs `browser` | search pages and the three required sites are opened with the in-app browser, which only the main session has | <!-- edge:kaggle-competition-research->browser:needs --> |
-| `rsi-experiment-tree` -> dispatches `kaggle-competition-research` | a research node re-runs the same research sweep on purpose; re-reading the forum because a result told you to is the tree recording why | <!-- edge:rsi-experiment-tree->kaggle-competition-research:dispatches --> |
-| `presence-mode` -> asks `approach-decision` | fork-vs-write defaults to the auditable path when away | <!-- edge:presence-mode->approach-decision:asks --> |
-| `presence-mode` -> asks `kaggle-competition-research` | research self-advances when away; the plan is still written and still shown to the user on return | <!-- edge:presence-mode->kaggle-competition-research:asks --> |
+| `presence-mode` -> asks `kaggle-competition-research` | the two research agenda questions and the plan review are asked in either mode, so research stops and waits for them; between them research self-advances, and research decides what the questions ask | <!-- edge:presence-mode->kaggle-competition-research:asks --> |
 | `presence-mode` -> asks `search-engine` | present: ask which engine for a discovery search. away: use the default and record it. Direct navigation to a known URL is exempt either way. | <!-- edge:presence-mode->search-engine:asks --> |
 | `kaggle-competition-research` -> produces `evidence-sources` | every paper and repo the sweep opened is stored once, so a later review can re-read it instead of re-searching | <!-- edge:kaggle-competition-research->evidence-sources:produces --> |

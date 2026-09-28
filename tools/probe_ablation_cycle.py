@@ -18,6 +18,38 @@ import sys
 import tempfile
 from pathlib import Path
 
+
+import atexit as _atexit
+import shutil as _shutil
+
+_OWN_TEMP_DIRS: list[str] = []
+
+
+def _mkdtemp(*args, **kwargs) -> str:
+    """A temp directory this process is responsible for removing.
+
+    Thirty-odd suites across these files each made a throwaway home per run and never removed
+    it, so a few hundred ka-* folders had piled up in the user's temp directory. That residue
+    reads as if the WORK left it behind when the tests did, and a suite that passes every
+    assertion can still leave a mess behind - which is exactly the kind of failure that never
+    shows up as a failure. Tracking each directory and removing it at exit is the whole fix,
+    and it only ever touches what this process created, so a suite running beside another one
+    cannot delete its neighbour's home.
+    """
+    d = tempfile.mkdtemp(*args, **kwargs)
+    _OWN_TEMP_DIRS.append(d)
+    return d
+
+
+_atexit.register(lambda: [_shutil.rmtree(d, ignore_errors=True) for d in _OWN_TEMP_DIRS])
+
+# The launchers start the server with `-B` so the package directory stays free of
+# __pycache__. A developer running this file by hand would put it straight back, and
+# the directory is read-only by contract - so the tool holds the same line the
+# launcher does. Set before any mcp/ module is imported below, which is what makes it
+# effective rather than decorative.
+sys.dont_write_bytecode = True
+
 ROOT = Path(__file__).resolve().parent.parent
 SERVER = ROOT / "mcp" / "agent_server.py"
 COMP = "probe-ablate"
@@ -191,7 +223,7 @@ def _(home):
 def main():
     failures = 0
     for name, fn in CASES:
-        home = tempfile.mkdtemp(prefix="ka-probe-ablate-")
+        home = _mkdtemp(prefix="ka-probe-ablate-")
         try:
             ok, detail = fn(home)
         except Exception as exc:  # noqa: BLE001

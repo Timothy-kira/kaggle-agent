@@ -1,5 +1,5 @@
 {
-  "version": "1.24.0",
+  "version": "1.27.0",
   "comment": "Single source of truth for how the skills, agents and required sources in this package relate, AND for the live state those relationships are gated on. The per-category 'Bound edges' tables in each INDEX.md are RENDERED from this file, and tools/check_plugin.py fails the build when they drift. Edit this file, then re-run the checker, or it will tell you exactly which table is stale.",
   "state": {
     "_comment": "Live state, declared here and read through its own tool. The graph does not store the values - it points at the readers - so it cannot drift from reality. Read it all with kaggle_presence action='status', which reports the graph state and the ask-or-auto answer together. Anything unreadable fails toward asking: the cost of a wrong 'ask' is a pause, the cost of a wrong 'auto' is an unattended irreversible action.",
@@ -156,13 +156,6 @@
       "note": "Built-in skill of the host runtime, not part of this package. Used for the general browser search, in the MAIN thread, over multiple rounds. It is also what a research node in the experiment tree goes back to."
     },
     {
-      "id": "competition-browser",
-      "kind": "agent",
-      "category": "research",
-      "reference": "agent:competition-browser",
-      "avatar": "assets/agent-avatars/competition-browser.png"
-    },
-    {
       "id": "github",
       "kind": "source",
       "category": "research",
@@ -211,7 +204,8 @@
       "id": "scientific-plotting",
       "kind": "skill",
       "category": "experiment",
-      "path": "skills/scientific-plotting/SKILL.md"
+      "path": "skills/scientific-plotting/SKILL.md",
+      "note": "Step 0 is the backend: doctor, then install numpy + matplotlib on the user's word, and only then draw. Step 1 is the figure contract - conclusion, archetype, panel map, evidence hierarchy, statistics, reviewer risk - written before any plotting code, because a figure nobody needed is an invitation to read a pattern into noise. Step 2 is action='analyze' for the six figures the tree has earned. The rest - honest encoding, redundant colour, explicit uncertainty and missing data, inspected exports - is vendored from K-Dense's scientific-visualization rather than written here, because a hand-rolled plotting guide is how the engine ended up asserting colourblind safety it had never measured."
     },
     {
       "id": "ablation-design",
@@ -248,7 +242,7 @@
       "kind": "tool",
       "category": "experiment",
       "reference": "kaggle_experiment_tree",
-      "note": "Validated RSI DAG. Refuses a node with no hypothesis, no parent metric, an empty reason, no operator/method family, no recorded rank, a change containing a conjunction, a dangling parent, or a base with no artifacts. Read-gated: record refuses a missing or stale readRevision. Also does non-greedy parent selection (quality+progress+novelty with visit cooling, per arXiv 2607.28568 sec 5.2) and an experience board attributing gain per operator."
+      "note": "Validated RSI DAG. Refuses a node with no hypothesis, no parent metric, an empty reason, no operator/method family, no recorded rank, a change containing a conjunction, a dangling parent, or a base with no artifacts. The one-variable rule is arithmetic, not wording: an experiment records the `factors` it switched on ([] is the bare model every other arm is measured against) and `controls` for seed/budget/eval/retrain, and the factor set must differ from its parent's by exactly one. A two-factor change needs factorsIntent='factorial', a zero-factor run needs factorsIntent='repeat', and controls that disagree with the parent need a confoundReason - the refusals are for silence, not for the answer. A declaration is an announcement, not an arm: a settled run is measured against whatever its declaration was measured against. Read-gated: record refuses a missing or stale readRevision. Also does non-greedy parent selection (quality+progress+novelty with visit cooling, per arXiv 2607.28568 sec 5.2) and an experience board attributing gain per operator."
     },
     {
       "id": "openmle-uvi",
@@ -303,14 +297,14 @@
       "kind": "tool",
       "category": "collab",
       "reference": "kaggle_sources",
-      "note": "The evidence store. Papers, repos, datasets and forum threads are stored once with the sentence that carries each claim, and tree nodes link to them with an explicit relation (supports / motivates / contradicts / supersedes). A node citing an id that is not in the store is rejected, so a typo cannot leave a link that silently resolves to nothing. action='doctor' reports the optional plotting environment and installs nothing without consent."
+      "note": "The evidence store. Papers, repos, datasets and forum threads are stored once with the sentence that carries each claim, and tree nodes link to them with an explicit relation (supports / motivates / contradicts / supersedes). A node citing an id that is not in the store is rejected, so a typo cannot leave a link that silently resolves to nothing. action='doctor' reports whether the plotting backend (numpy + matplotlib) is importable and, when it is not, the exact command that installs it. It installs nothing without consent."
     },
     {
       "id": "plot-engine",
       "kind": "module",
       "category": "experiment",
       "reference": "mcp/plots.py",
-      "note": "Pure standard-library SVG plotting bundled with this package: line, band, bar, scatter, pareto, forest. Zero dependencies by construction - measured on the build machine, numpy / scipy / pandas / matplotlib / statsmodels / pint / pyDOE3 are all absent and every figure still renders. Refuses a dataset with no plottable points rather than emitting an empty figure."
+      "note": "numpy + matplotlib plotting engine: line, band, bar, scatter, pareto, forest. The two packages are a prerequisite, not an extra, so a missing one is reported as `backend_missing` carrying the exact install command rather than as an ImportError. A dataset with no plottable point is refused and writes no file, and a point with no measurement becomes NaN so the line breaks instead of interpolating across the gap. The palette is the audited five-colour Okabe-Ito subset, not the full eight: two of those fall below 3:1 on white."
     },
     {
       "id": "k-dense-methods",
@@ -318,6 +312,13 @@
       "category": "experiment",
       "url": "https://github.com/K-Dense-AI/scientific-agent-skills",
       "note": "Adapted from experimental-design and uncertainty-and-units, MIT, pinned commit 1dd0fccf46fc3c9855c4a0c313a0c57fe4319883. Scripts deliberately not vendored: every one imports numpy/pandas/scipy/statsmodels/pyDOE3, none of which this plugin requires or may assume."
+    },
+    {
+      "id": "k-dense-visualization",
+      "kind": "provenance",
+      "category": "experiment",
+      "url": "https://github.com/K-Dense-AI/claude-scientific-skills",
+      "note": "Vendored into skills/scientific-plotting/ from skills/scientific-visualization, MIT, read 2026-09-28: assets (5), references (5) and scripts (7), 187 KB. Unlike k-dense-methods the scripts ARE shipped here, because they are network-free and matplotlib-only. Kept mainly for scripts/palette_audit.py: run against this package's own palette it found 2 colours below WCAG 3:1 on white and 7 of 15 pairs colliding in greyscale - a claim the previous hand-written engine had asserted without ever measuring it. Adapted rather than copied verbatim: frontmatter flattened to this package's contract, a step 0 install gate added, action='analyze' made the entry point."
     },
     {
       "id": "browser",
@@ -339,6 +340,13 @@
       "category": "collab",
       "reference": "kaggle_datasets_publish",
       "note": "Publishes a release bundle as a Kaggle dataset and returns its URL. Reports the file count, total size and largest files before writing anything, because a git host refuses a large bundle and a dataset is the route that works. Writes outside, so it waits for a yes."
+    },
+    {
+      "id": "ablation-table",
+      "kind": "tool",
+      "category": "experiment",
+      "reference": "kaggle_experiment_tree",
+      "note": "action='ablate' on kaggle_experiment_tree. Reads the recorded factor sets back and reports the comparison set rather than a table of remembered deltas: every edge isolating exactly one factor in whichever direction it was run, the interactions four DISTINCT arms make computable, the effects measured only alongside another factor, the arms whose controls disagree and therefore have no attributable delta, and the noise floor implied by any configuration run twice. It refuses to invent a baseline, to report an interaction from a degenerate triple where A+B is reachable as both the pair and a solo arm, and to attribute a delta across disagreeing controls."
     }
   ],
   "edges": [
@@ -370,7 +378,7 @@
       "from": "kaggle-competition-research",
       "to": "deep-research",
       "type": "dispatches",
-      "when": "the general browser search, run in the MAIN thread over multiple rounds; it is where the in-app browser and web_search actually exist"
+      "when": "the general search and the source forensics both run in the MAIN thread over multiple rounds, with no subagent dispatched anywhere in wave 2"
     },
     {
       "from": "kaggle-competition-research",
@@ -389,30 +397,6 @@
       "to": "arxiv",
       "type": "browses",
       "when": "same floor for the arXiv listing and the paper pages themselves"
-    },
-    {
-      "from": "kaggle-competition-research",
-      "to": "competition-browser",
-      "type": "dispatches",
-      "when": "AFTER the general search, for source-specific forensics the main thread should not hand-wave: stars, licence, last commit, model card, architecture"
-    },
-    {
-      "from": "competition-browser",
-      "to": "github",
-      "type": "browses",
-      "when": "the forensic pass is worthless if it never opened the repo"
-    },
-    {
-      "from": "competition-browser",
-      "to": "huggingface",
-      "type": "browses",
-      "when": "model and dataset cards are read on the page, not from a snippet"
-    },
-    {
-      "from": "competition-browser",
-      "to": "arxiv",
-      "type": "browses",
-      "when": "the paper page itself, for the number and the evaluation setup"
     },
     {
       "from": "kaggle-competition-research",
@@ -652,7 +636,7 @@
       "from": "presence-mode",
       "to": "kaggle-competition-research",
       "type": "asks",
-      "when": "research self-advances when away; the plan is still written and still shown to the user on return"
+      "when": "the two research agenda questions and the plan review are asked in either mode, so research stops and waits for them; between them research self-advances, and research decides what the questions ask"
     },
     {
       "from": "presence-mode",
@@ -703,6 +687,18 @@
       "when": "it adapts design methodology to this tree's node shape; without the tree there is nothing for it to shape"
     },
     {
+      "from": "ablation-design",
+      "to": "ablation-table",
+      "type": "needs",
+      "when": "designing the batch and reading what it established are two halves: this skill decides which arms to run and what to hold fixed, and the table reports the edges, the interactions four distinct arms make computable, the effects measured only alongside something else, and the arms whose controls disagree"
+    },
+    {
+      "from": "ablation-table",
+      "to": "rsi-experiment-tree",
+      "type": "enforces",
+      "when": "action='ablate' is built from the recorded factor sets, not re-derived from prose: the primitive is an edge between two arms differing by exactly one factor, which is direction-free, so add-one-in and leave-one-out are the same edges read up or down"
+    },
+    {
       "from": "kaggle-competition-research",
       "to": "evidence-sources",
       "type": "produces",
@@ -725,6 +721,12 @@
       "to": "k-dense-methods",
       "type": "needs",
       "when": "it is an adaptation; the upstream bodies and their licence are recorded here so the provenance is not lost"
+    },
+    {
+      "from": "scientific-plotting",
+      "to": "k-dense-visualization",
+      "type": "needs",
+      "when": "its assets, references and scripts are vendored from there under MIT; deleting the node would leave a third-party licence with nothing pointing at it, and the palette audit that cleared this engine's colours lives in those scripts"
     },
     {
       "from": "technical-report",

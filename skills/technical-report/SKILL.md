@@ -103,6 +103,38 @@ words. That includes:
 A report that admits what it cannot support is worth more than one that does not, and this is the
 only place in the plugin where saying "we do not know" is the deliverable.
 
+## Step 6: audit the finished prose — and be precise about which half ran
+
+```
+kaggle_experiment_tree action="audit-report" competition="<slug>" path="<report>.md"
+```
+
+This has two halves, and they are different in kind. Knowing which one you are looking at is
+the whole point.
+
+**The mechanical pass refuses, and a refusal needs no second opinion.** It catches three things
+that are not judgement calls: a sentence from `mayNotClaim` copied into the prose verbatim, an
+artifact the tree claims that is not on disk, and a number the report pins to a node that the
+node does not hold. Route those to a model and you would only be turning a certain answer into
+an uncertain one.
+
+**The mechanical pass does not acquit.** A number that matches the tree proves the evidence
+**exists**. It does not prove the sentence around it is *supported*. `n3: 0.61` matching n3's
+recorded result is a fact about the tree; whether n3's run supports the claim written next to it
+is a judgement, and the only version of that judgement worth having comes from something that
+did not write the report.
+
+So when the answer says a reviewer is needed, give the reviewer the two **paths** — the report
+and `tree.json` — and nothing else. Dispatch a `verifier` subagent with those paths and the
+question "does the evidence in the tree support each claim in this report, and does any
+sentence overstate what the tree records?" Do not paste the audit's own summary in place of
+them. A reviewer handed a summary is reviewing the summary, and `reviewerPacket` exists so you
+never have to.
+
+This is the same rule the rest of the plugin is built on: a deterministic gate may **drive** a
+decision and it may refuse, but it may never **acquit** a claim. The check decides whether a
+write happens; the reviewer decides whether the result is true.
+
 ## Cross-references
 
 - `rsi-experiment-tree` — the tree these numbers come from, and the read-gate behind them

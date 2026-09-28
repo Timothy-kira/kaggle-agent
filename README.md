@@ -5,29 +5,46 @@ place you paste commands into: competition research that actually opens the sour
 report the accelerator they really got, and an experiment tree that remembers what was already
 refuted so the next iteration does not pay for it twice.
 
-**27 tools · 16 skills · 1 reusable subagent · 0 runtime dependencies.**
+**29 tools · 17 skills · 2 optional dependencies (plotting only).**
+
+Every tool runs without them. Figures are the one thing that needs a library, and the plotting
+skill checks for it before it draws anything and offers to install on your word — never silently.
 
 ---
 
 ## Install
 
-This repository is the package. Import it into MiniMax Code:
+**From the Marketplace** — search for *Kaggle Agent* in the plugin panel and install it. From
+the CLI that is `mcode plugin add kaggle-agent@official`.
 
-1. Open the plugin panel and add a plugin from a GitHub repository.
-2. Point it at `https://github.com/Timothy-kira/kaggle-agent`.
-3. Sign in when the first Kaggle call asks — credentials are yours, entered in the conversation
-   and stored in your home directory, never in this repository.
+**From a repository** — the plugin panel can also add a plugin straight from a GitHub
+repository; point it at `https://github.com/Timothy-kira/kaggle-agent`.
 
-Nothing to install, no `pip install`, no virtualenv. The MCP server is Python standard library
-only, and the plotting engine writes SVG by hand. If the tool list is empty after import, the
-plugin has not been registered — installing it *is* registering it.
+Either route registers the package; neither builds it. The MCP server is Python standard
+library only, so there is nothing to `pip install` to make the server start.
+
+| Requirement | Why |
+|---|---|
+| `python` on PATH | `servers.mcp.json` launches the server as `python`, so that exact name has to resolve. `python --version` is the check. |
+| `pip install kaggle` | The tools that shell out to the Kaggle CLI need it. |
+
+On macOS and Linux a machine that ships `python3` only has no `python`, and the symptom is a
+plugin that installs cleanly and then exposes **no tools at all**. An empty tool list means
+the interpreter was not found, not that the plugin failed to register; the fix is a `python`
+on PATH, because an edit to the installed manifest is overwritten by the next update.
+
+Figures are the one thing that draws on a library: `numpy` and `matplotlib`, which the plotting
+skill checks for before it draws anything and offers to install on your word — never silently.
+`kaggle_sources action="doctor"` says whether a figure can be produced on this machine right now.
 
 ### Credentials
 
 No token, key, or account name is committed here, and the repository is scanned for them on
 every validation run. The plugin reads credentials from your environment or from
-`~/.kaggle-cli/kaggle.json`, and a token you paste into the conversation is saved to your own
-store — never written into a skill, a manifest, a log, a chart, or a handoff.
+`~/.kaggle-agent/accounts.json`, and a token you paste into the conversation is saved to your own
+store — never written into a skill, a manifest, a log, a chart, or a handoff. A store found at
+the previous location (`~/.kaggle-cli/accounts.json`) is copied across the first time it is
+read, and left in place.
 
 ---
 
@@ -35,10 +52,10 @@ store — never written into a skill, a manifest, a log, a chart, or a handoff.
 
 | | |
 |---|---|
-| **Tools** | 27 — quotas, kernels, competitions, accounts, the experiment tree, the evidence store, plotting, presence |
-| **Skills** | 16 — grouped as identity, research, experiment, collab |
-| **Subagents** | 1 reusable — `competition-browser`, for source forensics on real pages |
-| **Dependencies** | none at runtime; `git` and `kaggle-cli` are optional and detected, not required |
+| **Tools** | 29 — quotas, kernels, competitions, accounts, the experiment tree, the evidence store, plotting, presence |
+| **Skills** | 17 — grouped as identity, research, experiment, collab |
+| **Subagents** | none — both halves of a research sweep run in the main thread |
+| **Dependencies** | none at runtime beyond optional plotting (`numpy`, `matplotlib`); `git` and `kaggle-cli` are optional and detected, not required |
 
 ### The four categories
 
@@ -101,19 +118,26 @@ DAG **and** a replay simulator.
   one boolean.
 - **Provenance is mandatory.** A node needs a linked source or an explicit `evidence:"local-only"`.
   A claim with no evidence behind it has to say so out loud.
+- **`action="audit-report"` checks the finished prose against the ledger.** It refuses mechanically
+  when a `mayNotClaim` sentence has been copied in, or when the tree claims an artifact that is not
+  on disk — a refusal is arithmetic, so no model is asked. It never *acquits*: a figure in the
+  report that the tree does hold proves the evidence exists, never that it supports the sentence,
+  so the reviewer packet carries file paths and an instruction not to accept any summary.
 
-`scientific-plotting` closes the loop: six chart types from a bundled standard-library SVG engine,
-because a delta without an interval is not a result.
+`scientific-plotting` closes the loop: six chart types drawn with numpy + matplotlib, against a
+palette that was measured rather than chosen — the bundled auditor shipped in the repo is how the
+five colours were cleared for contrast and greyscale, and a delta without an interval is not a
+result.
 
 ---
 
 ## Repository layout
 
 ```
-.minimax-plugin/plugin.json   manifest: 16 skills, one MCP server, no apps
+.minimax-plugin/plugin.json   manifest: 17 skills, one MCP server, no apps
 servers.mcp.json              stdio server, inlined bootstrap, cwd-independent
-mcp/                          the server and its nine modules
-skills/                       16 skills, flat as the manifest requires
+mcp/                          the server and its fifteen modules
+skills/                       17 skills, flat as the manifest requires
   categories/                 the layering, as readable pages
   _shared/                    GenUI foundation, forked once
   relationships.json          the single source of truth for how skills connect
@@ -131,11 +155,16 @@ category is a grouping you read, and an edge is a dependency the checker enforce
 python tools/check_plugin.py
 ```
 
-Around 850 assertions covering the manifest, the skill graph and its rendered index, the tree
-mechanics, the evidence chain, the plotting engine's self-containment, the secrets scan, and a
-live drive of the MCP server over the wire. It is the reason the claims in the skills are claims
-rather than intentions: a relationship described only in prose can rot, and one declared in the
-graph and checked cannot.
+Around 1400 assertions covering the manifest, the skill graph and its rendered index, the tree
+mechanics, the evidence chain, the plotting engine's backend, the secrets scan, and a live drive of
+the MCP server over the wire. It is the reason the claims in the skills are claims rather than
+intentions: a relationship described only in prose can rot, and one declared in the graph and
+checked cannot.
+
+Every file under a skill's `assets/`, `references/` or `scripts/` came from someone else, and all
+of them are scanned for prompt-injection patterns on every run — with no allowlist, so a vendored
+file added later is covered without anyone remembering. A clean scan is a floor rather than a
+verdict, and the report says so rather than implying the content was cleared.
 
 The checks include the failure this package actually had. Every check reads the working tree,
 so a file can sit on disk, be declared in the manifest, be linked from the graph — and still be

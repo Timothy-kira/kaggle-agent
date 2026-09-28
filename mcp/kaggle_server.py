@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 """MCP server exposing the Kaggle CLI as tools (stdio JSON-RPC 2.0, standard library only).
 
-Started by the host as ``python -B ./mcp/kaggle_server.py`` (see ``servers.mcp.json``), so the
+Started by the host through the one-line bootstrap in ``servers.mcp.json``, which locates
+``mcp/agent_server.py`` under any known plugin root - a local install, or a Marketplace
+install cached under a content hash - and hands over to this module from there, so the
 package needs no Windows-specific launcher and runs the same on Windows, macOS and Linux.
 Credentials are resolved by ``mcp/credentials.py`` from the KAGGLE_API_TOKEN env var, this
-plugin's per-user store (``~/.kaggle-cli/credentials.json``), or KAGGLE_KEY - so no token is ever
+plugin's per-user store (``~/.kaggle-agent/accounts.json``), or KAGGLE_KEY - so no token is ever
 shipped in the package or printed by a tool. If the interpreter the host started does not have
 the Kaggle CLI, the server probes PATH for one that does.
 
@@ -166,18 +168,6 @@ def _set_accelerator_in_metadata(folder: str, spec: str) -> tuple[bool, str]:
     return changed, f"kernel-metadata.json set to {want}"
 
 
-def _effective_accelerator(meta: dict) -> str:
-    """What the platform will actually give this kernel, per its metadata."""
-    if meta.get("enable_gpu"):
-        return "gpu"
-    if meta.get("enable_tpu"):
-        return "tpu"
-    shape = (meta.get("machine_shape") or meta.get("machineShape") or "").strip()
-    if shape:
-        return f"machine:{shape}"
-    return "none"
-
-
 def _live_accelerator(ref: str) -> Optional[str]:
     """Read a pushed kernel's real accelerator from the Kaggle API.
 
@@ -215,6 +205,21 @@ def _live_accelerator(ref: str) -> Optional[str]:
         return f"machine:{shape}" if shape else "none"
     return None
 
+# One account, named per call, on every tool that talks to Kaggle as an account. Naming it is
+# scoped to that call and never rewrites which account is active — a tool that switched identity
+# to answer "run this as B" makes every later call run as B too, and when B is the account holding
+# the GPU quota rather than the competition entry, that turns one launch into a competition-wide
+# 403. Keeping it per call is what lets one task read as one account and spend another.
+ACCOUNT_PROP: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "Saved account name, used for THIS call only — the active account is left unchanged. "
+        "Needed when the account that may read the competition is not the account that has "
+        "quota: check kaggle_quota account=<other> before moving a run, and read or write a "
+        "kernel that belongs to that other account by naming it here."
+    ),
+}
+
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "kaggle_quota",
@@ -223,7 +228,7 @@ TOOLS: list[dict[str, Any]] = [
             "and total, and when the quota refreshes. Check it before starting a long run so a "
             "12h job is not cut off mid-way."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {"type": "object", "properties": {"account": ACCOUNT_PROP,}, "required": []},
     },
     {
         "name": "kaggle_accelerators",
@@ -232,7 +237,7 @@ TOOLS: list[dict[str, Any]] = [
             "what the quota currently allows, and the accelerator names accepted by push. Use it "
             "to decide between GPU and TPU for a run before pushing."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {"type": "object", "properties": {"account": ACCOUNT_PROP,}, "required": []},
     },
     {
         "name": "kaggle_kernel_launch",
@@ -259,10 +264,7 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "gpu, tpu, or none. Written into kernel-metadata.json so it takes effect.",
                 },
-                "account": {
-                    "type": "string",
-                    "description": "Which saved account's quota to charge. Defaults to the active account.",
-                },
+                "account": dict(ACCOUNT_PROP),
                 "competition": {
                     "type": "string",
                     "description": (
@@ -345,6 +347,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account": ACCOUNT_PROP,
                 "kernel": {"type": "string", "description": "owner/slug of the public notebook."},
                 "path": {"type": "string", "description": "Local destination folder."},
                 "metadata": {"type": "boolean", "default": True, "description": "Generate kernel-metadata.json."},
@@ -401,6 +404,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account": ACCOUNT_PROP,
                 "competition": {"type": "string", "description": "Competition slug."},
                 "topic_id": {"type": "integer", "description": "Omit to list topics; set to read messages."},
                 "page": {"type": "integer", "description": "1-based page for topic listing."},
@@ -418,6 +422,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account": ACCOUNT_PROP,
                 "competition": {"type": "string", "description": "Competition slug."},
                 "page": {"type": "integer", "description": "1-based page."},
                 "show": {"type": "boolean", "default": True, "description": "Print to stdout."},
@@ -439,6 +444,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account": ACCOUNT_PROP,
                 "search": {"type": "string", "description": "Filter notebooks by substring."},
                 "mine": {
                     "type": "boolean",
@@ -458,7 +464,7 @@ TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"ref": {"type": "string", "description": "username/slug"}},
+            "properties": {"account": ACCOUNT_PROP,"ref": {"type": "string", "description": "username/slug"}},
             "required": ["ref"],
         },
     },
@@ -472,6 +478,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account": ACCOUNT_PROP,
                 "folder": {"type": "string", "description": "Local folder to upload."},
                 "tags": {"type": "string", "description": "Optional comma-separated tags."},
                 "privacy": {"type": "string", "enum": ["public", "private"], "description": "Default private."},
@@ -485,6 +492,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account": ACCOUNT_PROP,
                 "ref": {"type": "string", "description": "username/slug"},
                 "path": {"type": "string", "description": "Local destination folder."},
             },
@@ -497,6 +505,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account": ACCOUNT_PROP,
                 "ref": {"type": "string", "description": "username/slug"},
                 "path": {"type": "string", "description": "Local destination folder."},
             },
@@ -508,7 +517,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": "Search Kaggle competitions by name.",
         "inputSchema": {
             "type": "object",
-            "properties": {"search": {"type": "string", "description": "Competition name substring."}},
+            "properties": {"account": ACCOUNT_PROP,"search": {"type": "string", "description": "Competition name substring."}},
             "required": ["search"],
         },
     },
@@ -644,7 +653,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "kaggle_local_launch",
         "description": (
-            "Start a LOCAL run, capture its output to a log, and attach that log to the monitor 閳?"
+            "Start a LOCAL run, capture its output to a log, and attach that log to the monitor — "
             "the symmetric counterpart of kaggle_kernel_launch. A local run costs no quota and "
             "has full logs, which makes it the right engine for a short or CPU-bound run; this "
             "exists so choosing it does not also mean choosing to go unwatched. REFUSES to start "
@@ -683,7 +692,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "timeout_seconds": {
                     "type": "integer",
-                    "description": "Recorded for the report; not enforced 閳?kill the pid to stop.",
+                    "description": "Recorded for the report; not enforced — kill the pid to stop.",
                 },
                 "monitor": {
                     "type": "boolean",
@@ -706,6 +715,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account": ACCOUNT_PROP,
                 "folder": {"type": "string", "description": "Directory holding dataset-metadata.json and the files."},
                 "title": {"type": "string", "description": "Human title for the dataset."},
                 "slug": {"type": "string", "description": "kaggle dataset slug, e.g. owner/name-slug."},
@@ -885,6 +895,12 @@ TOOLS: list[dict[str, Any]] = [
             "action='declare' announces an experiment BEFORE it is run and action='settle' records "
             "its result as a node parented by the declaration; kaggle_kernel_launch refuses any run "
             "that was not declared, so no result can live only in the conversation. "
+            "action='audit-report' is the third stage of a claim audit: it checks a finished report "
+            "against the ledger and can REFUSE mechanically (a forbidden sentence copied in, an "
+            "artifact the tree claims that is not on disk, a number attributed to a node that the "
+            "node does not hold). It deliberately cannot acquit - a number that matches proves the "
+            "evidence EXISTS, not that it supports the sentence - so it returns a reviewer packet of "
+            "FILE PATHS for a reviewer that did not write the report. "
             "How to think - what to try, when to branch, when to stop - is deliberately left to "
             "the agent; only the record's shape and the order of records are constrained."
         ),
@@ -896,7 +912,8 @@ TOOLS: list[dict[str, Any]] = [
                     "enum": ["read", "consider", "diagnose", "declare", "settle", "prune",
                              "abandon", "goal", "stage", "branch", "alias", "record", "plan",
                              "status", "select", "board", "ablate", "replay", "compare", "policy",
-                             "round_close", "anchor", "undo", "analyze", "review", "report"],
+                             "round_close", "anchor", "undo", "analyze", "review", "report",
+                             "audit-report"],
                     "default": "read",
                     "description": (
                         "read = the tree plus the readRevision that authorises one write "
@@ -1008,8 +1025,11 @@ TOOLS: list[dict[str, Any]] = [
                         "experiment may also take factors=['aug-a','cache'] (the components "
                         "switched on in that run - [] is the bare model, which is the arm "
                         "everything else is measured against, not an absent field), "
-                        "controls={seed,budget,eval,retrain} (retrain is 'from-scratch' or "
-                        "'re-eval'), and factorsIntent='one-factor'|'factorial'|'repeat'. The "
+                        "controls={seed,budget,eval,retrain,data} (retrain is 'from-scratch' or "
+                        "'re-eval'; data is what the run read - a dataset id, a path, a version "
+                        "tag - so a delta measured across a re-uploaded or re-versioned file is "
+                        "not attributed to the factor), and factorsIntent='one-factor'|'factorial'"
+                        "|'repeat'. The "
                         "factor arithmetic is enforced: a node that differs from its parent by "
                         "more or fewer than one factor, or whose controls disagree with its "
                         "parent's, is refused unless it declares why (factorsIntent, or "
@@ -1023,6 +1043,24 @@ TOOLS: list[dict[str, Any]] = [
                 "new_base": {
                     "type": "string",
                     "description": "Node id to promote to base when this node is kept, if it should advance.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "For action='audit-report': the report file to audit. Pass the PATH rather "
+                        "than the text whenever you can - the reviewer packet this returns hands "
+                        "paths to whoever reviews next, and a packet built from pasted prose can "
+                        "only hand on prose."
+                    ),
+                },
+                "text": {
+                    "type": "string",
+                    "description": (
+                        "For action='audit-report': the report body, when there is no file yet. "
+                        "A tree with a missing, forbidden or unmatched-claim refusal is refused "
+                        "here mechanically; whether the evidence SUPPORTS the remaining claims is "
+                        "not answered by this call and is left to a reviewer."
+                    ),
                 },
                 "branch": {
                     "type": "string",
@@ -1124,7 +1162,8 @@ TOOLS: list[dict[str, Any]] = [
             "that flattens them cannot say which evidence justified a decision. action='backlink' "
             "answers the direction a ledger usually misses: what else does this paper support. "
             "action='review' reassembles the reasoning with its evidence attached. action='doctor' "
-            "reports the optional plotting environment and installs nothing without consent."
+            "reports whether the plotting backend (numpy + matplotlib) is importable, and when it "
+            "is not, the exact command that installs it. It installs nothing without consent."
         ),
         "inputSchema": {
             "type": "object",
@@ -1177,11 +1216,13 @@ TOOLS: list[dict[str, Any]] = [
                                   "description": "For search: only sources nobody has quoted yet."},
                 "packages": {
                     "type": "string",
-                    "description": ("For action='install': optional packages, as a JSON array in "
-                                    "one string, e.g. [\"matplotlib\",\"numpy\"]. ONLY call this "
-                                    "after the user has agreed - plotting works without any of "
-                                    "them. Send it as text: the host's tool layer empties a real "
-                                    "array argument before it reaches this server."),
+                    "description": ("For action='install': packages, as a JSON array in "
+                                    "one string, e.g. [\"matplotlib\",\"numpy\"]. The first two "
+                                    "ARE the plotting backend - without them no figure can be "
+                                    "drawn, so ask the user before running it. Everything else "
+                                    "is optional and changes nothing about whether a chart "
+                                    "appears. Send it as text: the host's tool layer empties a "
+                                    "real array argument before it reaches this server."),
                 },
             },
             "required": [],
@@ -1242,12 +1283,25 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.24.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.27.0"}
 
 
-def run_kaggle(args: list[str]) -> tuple[int, str, str]:
-    """Run the Kaggle CLI. Returns (returncode, stdout, stderr)."""
-    token, source = credentials.resolve_token()
+def run_kaggle(args: list[str], account: str = "") -> tuple[int, str, str]:
+    """Run the Kaggle CLI. Returns (returncode, stdout, stderr).
+
+    ``account`` names a saved account for THIS call only. It reads the store and does not rewrite
+    the active account, because a tool that switches identity to answer "run this as B" makes
+    every later call run as B too — and when B never entered the competition, that turns one
+    launch into a competition-wide 403. An unsaved name is refused rather than quietly falling
+    back to the active account.
+    """
+    if account:
+        try:
+            token, source = credentials.token_for(str(account))
+        except credentials.AccountError as exc:
+            return 2, "", f"error: {exc}"
+    else:
+        token, source = credentials.resolve_token()
     if not token:
         return 2, "", (
             "Kaggle is not signed in, so no call can authenticate. Sign in from inside the "
@@ -1374,17 +1428,30 @@ def _accounts_text() -> str:
     return "\n".join(lines)
 
 
+def _acct(args: dict[str, Any]) -> str:
+    """The per-call account name, if the caller named one. Scoped; never switches the store.
+
+    Two accounts are routinely needed for one piece of work — the one that may read the
+    competition's files and the one that has GPU quota left — so "which account" cannot be a
+    property of the session. It is a property of the call.
+    """
+    return str((args or {}).get("account") or "").strip()
+
+
 def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Map a tool name plus arguments to a Kaggle CLI invocation."""
     if name == "kaggle_quota":
-        return text_response("kaggle quota", *run_kaggle(["quota"]))
+        return text_response("kaggle quota", *run_kaggle(["quota"], _acct(args)))
 
     if name == "kaggle_accelerators":
         # The CLI has no dedicated accelerator listing, so pair the live quota with the
         # documented `--accelerator` values. Quota is what actually constrains a run; the
         # names below are the ones the platform documents for kernel pushes.
-        code, out, err = run_kaggle(["quota"])
+        code, out, err = run_kaggle(["quota"], _acct(args))
         body = out.strip() or err.strip() or "(no quota reported)"
+        _a = _acct(args)
+        if _a:
+            body += f"\n\n(account: {_a} — another account may still have quota; check it by name)"
         body += (
             "\n\naccelerators accepted by kernels push --accelerator:"
             "\n  gpu / tpu            request a type; the platform picks the exact device"
@@ -1406,7 +1473,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         # The guarantee. A run may only happen against a declared experiment, so no result can
         # exist only in a chat transcript. This is the one place in the plugin that refuses to do
-        # the user's work, and it refuses loudly rather than proceeding with a warning 闂?a soft
+        # the user's work, and it refuses loudly rather than proceeding with a warning — a soft
         # gate is a gate nobody has to walk through.
         _comp = str(args.get("competition") or "").strip() or str(
             (_read_metadata(folder) or {}).get("id") or "").strip()
@@ -1443,12 +1510,20 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 + (", ".join(sorted(_open)) or "(none)"),
             )
         notes: list[str] = []
-        # Which account pays. Done before the push so the run lands on the right quota.
-        if args.get("account"):
+        # Which account pays, and which one may read the data. Scoped to this launch: the named
+        # account's token is used for the push and the stored active account is left alone.
+        # It used to call use_account(), so charging a second account silently changed the
+        # identity of every later call — and the account that has spare GPU quota is often the
+        # one that never entered the competition and cannot read its files at all.
+        _account = str(args.get("account") or "").strip()
+        if _account:
             try:
-                notes.append(f"account: {credentials.use_account(str(args['account']))}")
+                credentials.token_for(_account)
             except credentials.AccountError as exc:
                 return text_response(f"kaggle kernels push -p {folder}", 2, "", f"error: {exc}")
+            notes.append(
+                f"account: {_account} (this launch only; the active account is unchanged)"
+            )
         # The accelerator must be in the metadata: the CLI flag alone is silently ignored.
         if args.get("accelerator"):
             _, note = _set_accelerator_in_metadata(folder, str(args["accelerator"]))
@@ -1467,7 +1542,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 )
         if args.get("accelerator"):
             cmd += ["--accelerator", str(args["accelerator"])]
-        result = text_response(" ".join(cmd), *run_kaggle(cmd))
+        result = text_response(" ".join(cmd), *run_kaggle(cmd, account=_account))
         if notes:
             result["content"][0]["text"] += "\nnotes: " + "; ".join(notes)
         # Monitoring is attached here, not left to the caller to remember. A run that nothing is
@@ -1579,7 +1654,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             cmd += ["-p", dest]
         if args.get("metadata", True):
             cmd.append("-m")
-        code, out, err = run_kaggle(cmd)
+        code, out, err = run_kaggle(cmd, _acct(args))
         if code == 0 and args.get("path"):
             files = []
             for root, _dirs, names in os.walk(str(args["path"])):
@@ -1674,14 +1749,14 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 cmd += ["--search", str(args["search"])]
             if args.get("page"):
                 cmd += ["--page", str(int(args["page"]))]
-        return text_response(f"kaggle {' '.join(cmd[1:3])}", *run_kaggle(cmd))
+        return text_response(f"kaggle {' '.join(cmd[1:3])}", *run_kaggle(cmd, _acct(args)))
 
     if name == "kaggle_competitions_leaderboard":
         comp = str(args["competition"])
         cmd = ["competitions", "leaderboard", comp, "--show"]
         if args.get("page"):
             cmd += ["--page", str(int(args["page"]))]
-        return text_response(f"kaggle competitions leaderboard {comp}", *run_kaggle(cmd))
+        return text_response(f"kaggle competitions leaderboard {comp}", *run_kaggle(cmd, _acct(args)))
 
     if name == "kaggle_kernels_list":
         cmd = ["kernels", "list", "--csv"]
@@ -1691,12 +1766,12 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             cmd += ["--search", str(args["search"])]
         if args.get("page"):
             cmd += ["--page", str(int(args["page"]))]
-        return text_response(" ".join(cmd), *run_kaggle(cmd))
+        return text_response(" ".join(cmd), *run_kaggle(cmd, _acct(args)))
 
     if name == "kaggle_kernels_status":
         ref = str(args["ref"])
         cmd = ["kernels", "status", ref]
-        code, out, err = run_kaggle(cmd)
+        code, out, err = run_kaggle(cmd, _acct(args))
         # `kernels status` exits non-zero while a run is in flight on some CLI versions;
         # the status line itself is the answer, so do not report that as a failure.
         return text_response(f"kaggle kernels status {ref}", 0, out or err, "")
@@ -1716,7 +1791,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             cmd += ["--tags", str(args["tags"])]
         if args.get("privacy"):
             cmd += ["--privacy", str(args["privacy"])]
-        return text_response(" ".join(cmd), *run_kaggle(cmd))
+        return text_response(" ".join(cmd), *run_kaggle(cmd, _acct(args)))
 
     if name in ("kaggle_kernels_output", "kaggle_kernels_logs"):
         sub = "output" if name.endswith("output") else "logs"
@@ -1726,7 +1801,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             dest = str(args["path"])
             os.makedirs(dest, exist_ok=True)
             cmd += ["-p", dest]
-        code, out, err = run_kaggle(cmd)
+        code, out, err = run_kaggle(cmd, _acct(args))
         if code == 0 and args.get("path"):
             listing = []
             for root, _dirs, files in os.walk(str(args["path"])):
@@ -1737,7 +1812,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
     if name == "kaggle_competitions_list":
         cmd = ["competitions", "list", "--csv", "--search", str(args["search"])]
-        return text_response(" ".join(cmd), *run_kaggle(cmd))
+        return text_response(" ".join(cmd), *run_kaggle(cmd, _acct(args)))
 
     if name == "kaggle_config_view":
         return text_response("kaggle config view", *run_kaggle(["config", "view"]))
@@ -1961,24 +2036,32 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             )
 
         if action == "configure":
+            changed: list[str] = []
+            # Only the client_id lives here, and it is a public identifier. A token is never
+            # written to config - github_sync keeps those in the separate credentials store.
+            #
+            # client_id goes through its own setter instead of being assigned here, which is
+            # what used to happen: two implementations of one write, so adding validation to
+            # the setter would have changed one caller and not the other.
             cfg = github_sync.load_config()
             gh = cfg.setdefault("github", {})
-            changed: list[str] = []
-            for field in ("repo", "branch", "client_id"):
+            for field in ("repo", "branch"):
                 if args.get(field):
                     gh[field] = str(args[field])
                     changed.append(field)
+            if changed:
+                github_sync.save_config(cfg)
+            if args.get("client_id"):
+                github_sync.set_client_id(str(args["client_id"]))
+                changed.append("client_id")
             if not changed:
                 return text_response(
                     "github_auth configure", 2, "",
                     "nothing to set: pass repo, branch or client_id",
                 )
-            # Only the client_id lives here, and it is a public identifier. A token is never
-            # written to config - github_sync keeps those in the separate credentials store.
-            path = github_sync.save_config(cfg)
             return text_response(
                 "github_auth configure", 0,
-                f"updated: {', '.join(changed)}\nwritten to {path}",
+                f"updated: {', '.join(changed)}\nwritten to {github_sync.config_path()}",
                 "",
             )
 
@@ -2025,7 +2108,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                "--dir-mode", str(args.get("dir_mode") or "zip")]
         if args.get("private") is False:
             cmd += ["-u"]  # public; the CLI default is private
-        code, out, err = run_kaggle(cmd)
+        code, out, err = run_kaggle(cmd, _acct(args))
         url = f"https://www.kaggle.com/datasets/{slug}"
         if code != 0:
             return text_response(
@@ -2890,6 +2973,58 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     lines.append(f"  {a['id']}: {', '.join(a.get('artifacts') or []) or '(none)'}")
             return text_response("kaggle_experiment_tree report", 0, "\n".join(lines), "")
 
+        if action == "audit-report":
+            # The third stage of a claim audit: the prose exists now, so check it against the
+            # ledger. This call can REFUSE and can prove a number exists. It cannot say the
+            # evidence supports the sentence - that is a reviewer's job, and the packet it
+            # returns hands over file paths rather than this tool's opinion of them.
+            aud = experiment_tree.audit_report(
+                comp, path=str(args.get("path") or ""), text=str(args.get("text") or ""))
+            if not aud.get("ok") and aud.get("code") in ("tree_invalid", "report_missing",
+                                                          "nothing_to_audit"):
+                return text_response(
+                    f"kaggle_experiment_tree audit-report ({aud.get('code')})", 3, "",
+                    str(aud.get("message") or "")
+                    + ("\n" + "\n".join(f"  - {p}" for p in (aud.get("problems") or []))
+                       if aud.get("problems") else ""))
+            lines = [
+                f"competition: {comp}   verdict: {aud.get('code')}",
+                f"read {aud['read']['chars']} chars against {aud['read']['nodes']} node(s), "
+                f"{aud['read']['mayNotClaim']} forbidden claim(s), "
+                f"{aud['read']['artifacts']} artifact record(s)",
+                "",
+            ]
+            if aud.get("refusals"):
+                lines.append(f"REFUSED ({len(aud['refusals'])}) - mechanical, needs no reviewer:")
+                lines += [f"  - [{r['kind']}] {r.get('detail')}"
+                          + (f"  (node {r['node']})" if r.get("node") else "")
+                          for r in aud["refusals"]]
+            else:
+                lines.append("no mechanical refusal: nothing forbidden was copied in, and every "
+                             "artifact the tree claims exists on disk.")
+            nums = aud.get("attributedNumbers") or {}
+            lines += ["", f"ATTRIBUTED NUMBERS: {len(nums.get('matched') or [])} matched, "
+                          f"{len(nums.get('unmatched') or [])} matched nothing"]
+            for u in (nums.get("unmatched") or [])[:20]:
+                lines.append(f"  ! {u['node']}: {u['claimed']} - {u['note']}")
+            if aud.get("reviewNeeded"):
+                pk = aud["reviewerPacket"]
+                lines += [
+                    "",
+                    "MATCHING A NUMBER IS NOT SUPPORT. It means the evidence EXISTS. The support "
+                    "judgement is the reviewer's, and it has not been made:",
+                    f"  report: {pk['report']}",
+                    f"  tree:   {pk['tree']}",
+                    "  hand those two PATHS to a reviewer that did not write the report. Do not "
+                    "paste this summary in place of them - a reviewer given a summary reviews "
+                    "the summary.",
+                ]
+            else:
+                lines += ["", "no attributed numbers, so there is nothing for a reviewer to weigh "
+                              "on this pass."]
+            return text_response("kaggle_experiment_tree audit-report",
+                                 0 if not aud.get("refusals") else 4, "\n".join(lines), "")
+
         if action == "record":
             node = _node_argument(args.get("node"))
             if node is None:
@@ -3220,7 +3355,8 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "kaggle_local_launch":
         # A local run used to have no entry point at all: the agent composed a shell command and
         # ran it, so there was nowhere for monitoring to attach itself. This is the symmetric
-        # counterpart to kaggle_kernel_launch 閳?same declaration gate, same automatic log target 閳?        # so "nothing is watching this run" stops being a consequence of which engine you chose.
+        # counterpart to kaggle_kernel_launch — same declaration gate, same automatic log target —
+        # so "nothing is watching this run" stops being a consequence of which engine you chose.
         parts = jsonarg.argv(args.get("command"))
         if not parts or not parts[0]:
             return text_response(
@@ -3284,7 +3420,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         notes_l: list[str] = []
         if args.get("timeout_seconds") is not None:
             notes_l.append(f"timeout: {int(args['timeout_seconds'])}s (reported, not enforced "
-                           f"here 閳?kill the pid if it overruns)")
+                           f"here — kill the pid if it overruns)")
 
         handle = None
         try:
@@ -3337,11 +3473,11 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             for key in sorted(searchengine.ENGINES):
                 spec = searchengine.ENGINES[key]
                 options.append(
-                    f"  - {key}: {spec['label']} 闂?{spec['note']}"
+                    f"  - {key}: {spec['label']} — {spec['note']}"
                     + ("   (current)" if key == cur["engine"] else "")
                 )
             lines = [
-                "DISCOVERY SEARCH 闂?choose an engine before searching.",
+                "DISCOVERY SEARCH — choose an engine before searching.",
                 "",
                 "Is this a discovery search (you do not have the URL yet)?",
                 "  yes  -> an engine is required: use this tool, then open the returned URL.",
@@ -3437,28 +3573,33 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         if action == "doctor":
             p = deps.probe()
             types = deps.available_chart_types()
-            lines = [
-                f"plotting is ready now: {p['bundled']['engine']}",
-                f"  chart types available: {', '.join(types['all'])}",
-                f"  python {p['python']} at {p['executable']}",
-                "",
-            ]
+            ready = bool(p.get("plottingReady"))
+            if ready:
+                head = [f"plotting is ready now: {p['engine']['backend']}",
+                        f"  chart types available: {', '.join(types['ready'])}"]
+            else:
+                # The whole point of reporting this is that a figure cannot be drawn yet, so
+                # the message leads with that rather than burying it under a list of extras.
+                head = [f"plotting is NOT ready: {p.get('error', 'backend missing')}",
+                        "  next step (ask the user first - it changes their environment):",
+                        f"    {p.get('install', '')}"]
+            lines = head + [f"  python {p['python']} at {p['executable']}", ""]
             if p["present"]:
-                lines.append("optional, present:")
+                lines.append("installed:")
                 for n, meta in p["present"].items():
                     lines.append(f"  {n} {meta['version']} - unlocks "
                                  f"{', '.join(meta['unlocks'])}")
-            if p["missing"]:
-                lines += ["", "optional, absent (plotting is unaffected):"]
-                for n, meta in p["missing"].items():
+            extras = {n: m for n, m in p["missing"].items() if n not in deps.BACKEND}
+            if extras:
+                lines += ["", "absent, and genuinely optional - plotting is unaffected without them:"]
+                for n, meta in extras.items():
                     lines.append(f"  {n} - would give {', '.join(meta['unlocks'])} "
                                  f"[~{meta['sizeHint']}]")
                     lines.append(f"      {meta['why']}")
             lines += [
                 "",
-                "Nothing here is required to draw a figure, and nothing is installed unless the "
-                "user explicitly agrees. If they want the extra chart types: "
-                "kaggle_sources action=\"install\" packages='[\"matplotlib\"]'",
+                "Nothing is installed by this call, ever. install() is only reached after the "
+                "user has said yes.",
             ]
             return text_response("kaggle_sources doctor", 0, "\n".join(lines), "")
 

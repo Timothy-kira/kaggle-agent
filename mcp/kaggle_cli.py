@@ -1,6 +1,6 @@
 """Entry point for the kaggle-cli plugin: manage accounts, and run the Kaggle CLI.
 
-The plugin's ``bin/kaggle-cli.cmd`` (Windows) and ``bin/kaggle-cli.sh`` (macOS/Linux)
+The plugin's ``bin/kaggle-cli.cmd`` (Windows) and ``python3 bin/kaggle-cli.sh`` (macOS/Linux)
 forward every invocation here. Doing the work in Python avoids the fragile part of batch
 scripting and keeps one implementation shared with the MCP server.
 
@@ -8,14 +8,16 @@ Usage::
 
     kaggle-cli accounts                       list accounts, mark the active one
     kaggle-cli login [--as NAME] [TOKEN]      add or replace an account (prompts if no token)
-    kaggle-cli use NAME                       switch the active account
+    kaggle-cli use NAME                       switch the active account (permanent)
     kaggle-cli remove NAME                    forget an account
     kaggle-cli whoami                         active account, token source, Kaggle's view
     kaggle-cli <kaggle args...>               run the Kaggle CLI, authenticated
+    kaggle-cli --as NAME <kaggle args...>     run ONE command as NAME; the active account is
+                                              unchanged, so the next command still runs as before
 
 The token is resolved from the environment, then the active saved account, then
-KAGGLE_KEY. It is placed in this process's environment for the child CLI and never
-printed by any command except the two that exist only to hand it to a parent process.
+KAGGLE_KEY — or, when ``--as NAME`` is given, from that one account for that one command. It is
+placed in this process's environment for the child CLI and is never printed by any command.
 """
 
 from __future__ import annotations
@@ -30,8 +32,23 @@ import credentials  # noqa: E402
 TIMEOUT = 900  # a kernels push uploads a notebook; give the CLI room
 
 
-def _kaggle(args: list[str]) -> int:
-    token, source = credentials.resolve_token()
+def _kaggle(args: list[str], account: str = "") -> int:
+    """Run the Kaggle CLI.
+
+    ``account`` names a saved account for THIS invocation only. The CLI has no way to pass a
+    credential per call, so the alternative is 'kaggle-cli use NAME', which rewrites the stored
+    active account and silently changes the identity of every later command — including the
+    competition reads that the newly active account may not be entitled to. A one-shot --as is
+    how a single command runs as somebody else without that.
+    """
+    if account:
+        try:
+            token, _source = credentials.token_for(account)
+        except credentials.AccountError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    else:
+        token, _source = credentials.resolve_token()
     if not token:
         print(
             "Kaggle is not signed in.\n"
@@ -79,6 +96,17 @@ def main(argv: list[str]) -> int:
     if not argv:
         _print_status()
         return 0
+
+    # A one-shot account selector: `kaggle-cli --as B kernels list --mine`. It applies to this
+    # invocation only, and it is stripped before the subcommand is read so it works in front of
+    # any command. Read only in leading position, so `login --as NAME` below keeps its own meaning.
+    # This exists because the alternative - 'kaggle-cli use B' - rewrites the stored active
+    # account, and the account worth running one command as is often NOT the one you want every
+    # later command to run as.
+    as_account = ""
+    argv = list(argv)
+    while len(argv) >= 2 and argv[0] == "--as":
+        as_account, argv = argv[1], argv[2:]
 
     cmd, rest = argv[0].lower(), argv[1:]
 
@@ -144,7 +172,7 @@ def main(argv: list[str]) -> int:
         _print_status()
         return 0 if credentials.status()["configured"] else 1
 
-    return _kaggle(argv)
+    return _kaggle(argv, account=as_account)
 
 
 if __name__ == "__main__":

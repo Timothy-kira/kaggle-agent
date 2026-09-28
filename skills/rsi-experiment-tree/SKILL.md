@@ -191,7 +191,9 @@ requires reading the tree again.
 ## An ablation is arithmetic, not a description
 
 Record what was switched **on** in each run, and the comparison stops being a thing you
-remember:
+remember. This section is the record-and-judgement half; `ablation-design` is the design-time
+half — what to run, what to hold fixed, what would be confounded, and why repeats must vary
+something. Read that one before designing a batch, and this one before writing a node.
 
 ```
 node='{"id":"e4","factors":["aug-a","cache"],"controls":{"seed":1,"budget":"1h",
@@ -238,9 +240,14 @@ Three things the table will not do:
   needs a reference, each factor alone, and the pair. When standalone B was never run, `A+B` is
   reachable as both the pair *and* a solo — the arithmetic then prints a flat `0.00`, which
   reads exactly like independence and is the most expensive kind of wrong.
-- **It will not attribute a delta whose two arms disagreed** about seed, budget, eval set or
-  retrain policy. Those comparisons are listed with the control that moved, instead of a number
-  that belongs to more than one cause.
+- **It will not attribute a delta whose two arms disagreed** about seed, budget, eval set,
+  retrain policy, or the **dataset they read**. Those comparisons are listed with the control that
+  moved, instead of a number that belongs to more than one cause. The dataset is the newest of the
+  five and the one that changes under you: a competition that re-uploads its files, or a public
+  dataset that ships a new version, changes the input while every other control stays identical,
+  and the jump would otherwise be reported as a clean win for the factor. Record what you read —
+  `"data": "train-v3"`, a dataset id, a path with its version — and if you *meant* to move it, say
+  so with `confoundReason` rather than letting the silence look like a controlled comparison.
 
 And two it will keep telling you about:
 

@@ -6,7 +6,8 @@ __pycache__/
 *.pyo
 
 # Runtime state must never be committed. The plugin's state lives outside the package
-# (~/.kaggle-agent and ~/.kaggle-cli), but a stray local run can still drop one here.
+# (~/.kaggle-agent, which holds the trees, runs, plots, sources and the account store), but a
+# stray local run can still drop one here.
 #
 # Every pattern below is ANCHORED to the package root with a leading slash, and that is
 # load-bearing rather than cosmetic. A pattern with no internal separator — `handoff/`,

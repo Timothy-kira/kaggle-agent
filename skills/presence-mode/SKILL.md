@@ -94,7 +94,7 @@ Reversible, cheap to undo, and the default is obviously right, so unattended is 
 | Which account pays | The active one, or the one with quota headroom. Reversible. |
 | Read-only probe or cheap baseline | Run it. It costs minutes, not hours. |
 | Log-monitor interval | Leave the current value; it is already a deliberate setting. |
-| Research self-advance | Keep going to the plan. It is a document, not an action. |
+| Research **between** its stops | Keep going. The first answer is in and the reports are being read; the next question or review is the following stop. |
 | Which engine a **discovery search** uses | The configured default — currently **Google**. This is the one you have to keep the user in the loop about, because the engines index differently. |
 
 When you take one, record it:
@@ -114,6 +114,12 @@ Irreversible, externally visible, expensive to undo, or the user's call to make.
 - Creating a repo, pushing a handoff, any remote write.
 - Retiring or deleting a kernel.
 - A run whose time limit would consume most of the remaining quota.
+- **The agenda questions of a research sweep** — what to search for, what the findings changed
+  the search into, and the review of the finished plan. These are asked in **either** mode, away
+  included: nothing is running when the first is asked, and the first wave has already finished
+  when the last one is. The work between them self-advances; the questions themselves do not.
+  "The user is away" is not a reason to guess what a four-subagent sweep is for, and it is
+  certainly not a reason to hand over a plan nobody has read.
 - Anything where the two options lead to genuinely different plans.
 - Publishing a submission.
 

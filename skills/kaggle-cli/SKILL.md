@@ -34,23 +34,38 @@ kaggle-cli whoami           # which account is active, and where the token came 
 kaggle-cli logout           # forget the stored token
 ```
 
-On macOS/Linux the entry point is `bin/kaggle-cli.sh`; on Windows it is `bin/kaggle-cli.cmd`.
-Both run the same code, so the commands and output are identical.
+On macOS/Linux the entry point is `python3 bin/kaggle-cli.sh`; on Windows it is
+`bin/kaggle-cli.cmd`. Both run the same code, so the commands and output are identical.
+`bin/kaggle-cli.sh` is a Python file with a shebang, not a shell script, and it is
+committed without the executable bit on purpose: a package that depends on the mode bit
+survives only the checkout it was built on. Calling it through the interpreter also means
+one line works whether or not the bit was kept.
 
 Credentials are resolved in this order, so an existing setup keeps working:
 
 1. `KAGGLE_API_TOKEN` environment variable
-2. this plugin's store, `~/.kaggle-cli/credentials.json`
+2. this plugin's store, `~/.kaggle-agent/accounts.json` (a store at the previous
+   `~/.kaggle-cli/accounts.json` is copied across verbatim on first read, and left in place)
 3. `KAGGLE_KEY` environment variable
+
+`KAGGLE_AGENT_HOME` moves the store, so a probe or a second install does not read the real one.
 
 The token lives in one of those places only. It is never written into the plugin package and never
 printed by a tool. A token pasted into the conversation is still saved - that is what the user
 asked for - but it is also now in the transcript, so say so once and offer rotation as a known
 option, not a lecture.
 
-**Requirement:** Python 3 with the CLI installed (`pip install kaggle`). The MCP server is started
-as `python -B ./mcp/kaggle_server.py`; if that interpreter has no `kaggle`, the server reports it
-rather than failing silently.
+**Requirement:** Python 3 with the CLI installed (`pip install kaggle`), reachable under the name
+`python` - that is the name `servers.mcp.json` launches, and a machine that ships `python3` only
+has no `python`. The symptom of that is an install that succeeds and then exposes **no tools at
+all**; `python --version` is the check, and the fix is a `python` on PATH rather than an edit to
+the installed manifest, which the next update overwrites. If that interpreter has no `kaggle`,
+the server reports it rather than failing silently.
+
+The host launches the server through the bootstrap in `servers.mcp.json`, which finds this package
+under any known plugin root - `~/.minimax/plugins/kaggle-agent` for a local install, or
+`~/.minimax/v2/plugin-cache/official/sha256-tree-<hash>` for a Marketplace one - and runs
+`mcp/agent_server.py`, which resolves this server from there.
 
 ## Tools
 

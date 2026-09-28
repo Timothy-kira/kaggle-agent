@@ -1,6 +1,6 @@
 # Kaggle Agent — skill index
 
-Sixteen skills, one reusable subagent, twenty-six tools, and one graph that binds them. This
+Seventeen skills, twenty-nine tools, no reusable subagent, and one graph that binds them. This
 page is the index: what exists, which category it belongs to, and what it is bound to.
 
 Every entry below links to its own `SKILL.md`, which remains the single source of truth for its
@@ -18,7 +18,7 @@ own procedure. This page tells you which file to open and how the pieces connect
 | 1 | [`kaggle-cli`](kaggle-cli/SKILL.md) | identity | Any Kaggle call from this machine: sign in, list, push, pull, status, logs. The tool reference, and the rule that a token pasted in chat is still saved. |
 | 2 | [`kaggle-account-switch`](kaggle-account-switch/SKILL.md) | identity | More than one account exists and you need to know which is active, or the active one is wrong. The two-name model: username is identity, stored name is the handle. |
 | 3 | [`account-rename-visualizer`](account-rename-visualizer/SKILL.md) | identity | An account needs a different stored name. Renders the rename panel — **load and emit it, do not describe it in prose**. |
-| 4 | [`kaggle-competition-research`](kaggle-competition-research/SKILL.md) | research | Before committing to an approach. Wave 1 launches four Kaggle-native subagents in one response; wave 2 runs the general browser search in the main thread, opens GitHub / Hugging Face / arXiv for real, and declares the held-out anchor. |
+| 4 | [`kaggle-competition-research`](kaggle-competition-research/SKILL.md) | research | Before committing to an approach. Wave 1 launches four Kaggle-native subagents in one response; wave 2 then runs entirely in the main thread — the general browser search, then the forensics on the pages it named — opens GitHub / Hugging Face / arXiv for real, asks what the sweep is for before and after wave 1, puts the finished plan up for review, and declares the held-out anchor. |
 | 5 | [`approach-decision`](approach-decision/SKILL.md) | research | Write it yourself or fork the top public solution, and how to make that call audibly. |
 | 6 | [`experiment-launch`](experiment-launch/SKILL.md) | experiment | About to start a real run: which engine, which accelerator, how long, whose quota. Includes the verify-after-launch step that is not optional. |
 | 7 | [`log-monitor`](log-monitor/SKILL.md) | experiment | A run is producing logs and you want a subagent to watch it. Defines the only three conditions that justify interrupting the main agent. |
@@ -43,13 +43,16 @@ own procedure. This page tells you which file to open and how the pieces connect
 | [experiment](categories/experiment.md) | How do I run it, watch it, and learn from it? | `experiment-launch`, `log-monitor`, `log-monitor-visualizer`, `rsi-experiment-tree`, `scientific-plotting`, `ablation-design` |
 | [collab](categories/collab.md) | How does the work outlive this session, and when should I ask? | `handoff`, `github-auth`, `presence-mode`, `evidence-sources`, `genui-scenarios` |
 
-## The reusable subagent
+## No reusable subagent
 
-- **[`competition-browser`](competition-browser-agent.md)** (比赛 browser) — opens the real
-  GitHub / Hugging Face / arXiv pages and returns the fields a general search is not supposed to
-  assert: stars, **licence**, last commit, model card, paper numbers, architecture. Dispatched
-  *after* the general search, with the URLs that search surfaced. Avatar ships in
-  `assets/agent-avatars/competition-browser.png` and is copied into the agent directory on install.
+A research sweep's forensics used to be a dispatched subagent. It is now done in the main
+thread, immediately after the general search, for one reason worth keeping: the in-app browser
+is bound to the session that owns it, so a detached child could only ever fetch. Doing it here
+means a page that needs JavaScript or a signed-in session can actually be opened.
+
+That is also why `kaggle-competition-research` holds the `browses` edges to GitHub, Hugging Face
+and arXiv itself. If the forensics ever went back to being delegated, the coverage floor would
+have an owner that could not meet it.
 
 ## The graph is the binding
 
@@ -72,7 +75,7 @@ presence-mode ──asks──▶ every decision point in the plugin
                  └─needs─▶ genui-scenarios   (who is there to click a widget?)
 
 kaggle-competition-research ──browses──▶ github · huggingface · arxiv
-competition-browser         ──browses──▶ github · huggingface · arxiv
+                                 (one thread; the forensics are not delegated)
 
 experiment-tree (kaggle_experiment_tree) ──enforces──▶ rsi-experiment-tree
                                      ├─loops──────▶ rsi-experiment-tree

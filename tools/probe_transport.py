@@ -14,7 +14,40 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+
+import atexit as _atexit
+import shutil as _shutil
+
+_OWN_TEMP_DIRS: list[str] = []
+
+
+def _mkdtemp(*args, **kwargs) -> str:
+    """A temp directory this process is responsible for removing.
+
+    Thirty-odd suites across these files each made a throwaway home per run and never removed
+    it, so a few hundred ka-* folders had piled up in the user's temp directory. That residue
+    reads as if the WORK left it behind when the tests did, and a suite that passes every
+    assertion can still leave a mess behind - which is exactly the kind of failure that never
+    shows up as a failure. Tracking each directory and removing it at exit is the whole fix,
+    and it only ever touches what this process created, so a suite running beside another one
+    cannot delete its neighbour's home.
+    """
+    d = tempfile.mkdtemp(*args, **kwargs)
+    _OWN_TEMP_DIRS.append(d)
+    return d
+
+
+_atexit.register(lambda: [_shutil.rmtree(d, ignore_errors=True) for d in _OWN_TEMP_DIRS])
+
+# The launchers start the server with `-B` so the package directory stays free of
+# __pycache__. A developer running this file by hand would put it straight back, and
+# the directory is read-only by contract - so the tool holds the same line the
+# launcher does. Set before any mcp/ module is imported below, which is what makes it
+# effective rather than decorative.
+sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER = ROOT / "mcp" / "agent_server.py"
@@ -109,14 +142,29 @@ CASES = [
 
 def main():
     import tempfile
+    dead = []
     for i, (label, tool, args) in enumerate(CASES):
-        home = tempfile.mkdtemp(prefix=f"ka-probe-{i}-")
+        home = _mkdtemp(prefix=f"ka-probe-{i}-")
         reply, err = call(tool, args, home)
         print(f"  {label}\n    -> {brief(reply)}")
+        if reply is None:
+            # No reply is not a rejected payload: the server never came up. Every case in this
+            # suite reported SERVER DIED and the suite still exited 0, which is how a dead entry
+            # point reads as a suite that passed.
+            dead.append(label)
         if err and "Traceback" in err:
             print(f"    !! server stderr had a traceback: {err[:160]}")
+            dead.append(label + " (traceback)")
     print("\neach case ran in its own process, so no crash can bleed into the next.")
+    if dead:
+        print(f"\nPROBE_TRANSPORT_FAILED ({len(dead)}): a case got no reply at all. That is a dead "
+              f"entry point, not a rejected payload, and it must not exit 0.")
+        for line in dead:
+            print(f"  - {line}")
+        return 1
+    print("\nPROBE_TRANSPORT_OK")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

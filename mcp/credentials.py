@@ -4,7 +4,13 @@ One file holds every account, so a user can work across several Kaggle identitie
 switch between them without re-authenticating. Nothing here points at one person's
 machine: the store lives under the user's own home directory.
 
-Storage: ``<home>/.kaggle-cli/accounts.json``::
+The store lives in ``~/.kaggle-agent`` because that is where the rest of this plugin keeps
+its trees, runs, plots and sources - one plugin should own one directory, not two. A store
+found at the previous location (``~/.kaggle-cli``) is copied forward verbatim the first time
+it is read, and left in place; KAGGLE_AGENT_HOME redirects the new location for probes and
+tests, and is honoured here for the same reason it is everywhere else.
+
+Storage: ``<home>/.kaggle-agent/accounts.json``::
 
     {
       "active": "work",
@@ -57,7 +63,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-APP_DIR_NAME = ".kaggle-cli"
+APP_DIR_NAME = ".kaggle-agent"
+LEGACY_APP_DIR_NAME = ".kaggle-cli"
 ACCOUNTS_FILE = "accounts.json"
 LEGACY_FILE = "credentials.json"
 DEFAULT_ACCOUNT = "work"
@@ -83,13 +90,43 @@ def default_name_for(username: str) -> str:
     return cleaned[:64]
 
 
+def home_dir() -> Path:
+    """The one directory this plugin owns: ``<home>/.kaggle-agent``.
+
+    KAGGLE_AGENT_HOME is honoured for the same reason the rest of the plugin honours it -
+    a probe, a test or a second tree must be able to point the whole plugin somewhere
+    disposable. The store used to be the one file that ignored it, which meant a run with
+    KAGGLE_AGENT_HOME set to a temp directory still read the real accounts, and a check
+    against a throwaway home was quietly checking the user's live credentials.
+    """
+    override = (os.environ.get("KAGGLE_AGENT_HOME") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path(os.path.expanduser("~")) / APP_DIR_NAME
+
+
 def store_path() -> Path:
-    """Where this plugin keeps its accounts: ``<home>/.kaggle-cli/accounts.json``."""
-    return Path(os.path.expanduser("~")) / APP_DIR_NAME / ACCOUNTS_FILE
+    """Where this plugin keeps its accounts: ``<home>/.kaggle-agent/accounts.json``."""
+    return home_dir() / ACCOUNTS_FILE
+
+
+def legacy_store_path() -> Path:
+    """The same file at its previous location, read once and copied forward.
+
+    Deliberately NOT under home_dir(): it is a fixed historical location, and pointing it at
+    KAGGLE_AGENT_HOME would make a probe "migrate" a temp directory that never held anything.
+    """
+    return Path(os.path.expanduser("~")) / LEGACY_APP_DIR_NAME / ACCOUNTS_FILE
 
 
 def legacy_path() -> Path:
-    return Path(os.path.expanduser("~")) / APP_DIR_NAME / LEGACY_FILE
+    """The older single-token file. It also only ever existed at the OLD location.
+
+    Naming a ``credentials.json`` under the new home would collide with github_sync's store,
+    which already keeps its GitHub token in exactly that path - and two meanings for one
+    filename is how somebody ends up logged out of one service and logged in to another.
+    """
+    return Path(os.path.expanduser("~")) / LEGACY_APP_DIR_NAME / LEGACY_FILE
 
 
 def _empty() -> dict:
@@ -117,10 +154,21 @@ def _write(data: dict) -> None:
 
 
 def load() -> dict:
-    """Read the account store, migrating a legacy single-token file on first use."""
+    """Read the account store, migrating from the old directory and the old filename."""
     data = _read(store_path())
     if not isinstance(data.get("accounts"), dict):
         data = _empty()
+    if not data["accounts"]:
+        # The store moved from ~/.kaggle-cli to ~/.kaggle-agent so the plugin owns one
+        # directory. Copied VERBATIM, name for name: re-deriving anything here would be the
+        # same mistake the single-token migration below already documents - a user who
+        # renamed the default account would get the old label resurrected as a duplicate
+        # credential, silently. The old file is left where it is; deleting somebody's
+        # credentials is their decision, not a side effect of an upgrade.
+        old = _read(legacy_store_path())
+        if isinstance(old.get("accounts"), dict) and old["accounts"]:
+            data = {"active": old.get("active"), "accounts": dict(old["accounts"])}
+            _write(data)
     legacy = _read(legacy_path())
     if legacy.get("token") and DEFAULT_ACCOUNT not in data["accounts"]:
         # A previous version kept one token; keep the user logged in across the upgrade.
@@ -254,16 +302,6 @@ def use_account(name: str) -> str:
     return name
 
 
-def active_name() -> Optional[str]:
-    return load().get("active")
-
-
-def active_token() -> Optional[str]:
-    data = load()
-    acct = data["accounts"].get(data.get("active") or "")
-    return (acct or {}).get("token") or None
-
-
 def list_accounts() -> list[dict]:
     """Every account with its label and whether it is active. No tokens.
 
@@ -310,6 +348,33 @@ def resolve_token() -> tuple[Optional[str], str]:
     return None, "not configured"
 
 
+def token_for(name: str) -> tuple[str, str]:
+    """Return (token, source) for one NAMED account, without touching the active one.
+
+    ``resolve_token`` answers a different question — "who is active right now" — and answering a
+    second question by switching the answer to the first is what made account-scoped work
+    impossible. ``kaggle_kernel_launch`` used to call ``use_account`` to charge a named account,
+    which rewrote the stored active account; every later competition-scoped call then ran as that
+    second account, which is often precisely the account that never entered the competition and
+    cannot read its files. One kernel launch quietly changed the identity of everything after it.
+
+    Naming an account is therefore scoped to the call that names it: the store is read, never
+    written. A name that is not saved is an error rather than a silent fall back to the active
+    account, because falling back is the failure this function exists to remove.
+    """
+    name = _check_name(name)
+    data = load()
+    entry = (data.get("accounts") or {}).get(name)
+    if not isinstance(entry, dict) or not entry.get("token"):
+        known = ", ".join(sorted(data.get("accounts") or {})) or "(none saved)"
+        raise AccountError(
+            f"no token stored for account {name!r}. Saved accounts: {known}. "
+            f"Add it with kaggle_accounts action='add', or check the name with "
+            f"kaggle_accounts action='list'."
+        )
+    return entry["token"], f"account '{name}' ({store_path()})"
+
+
 def status() -> dict:
     """A login summary safe to print: no secret, only where it came from."""
     token, source = resolve_token()
@@ -327,7 +392,16 @@ def status() -> dict:
 
 
 def _cli(argv: list[str]) -> int:
-    """Small CLI for maintenance and debugging. Never prints a token."""
+    """Small CLI for maintenance and debugging. Never prints a token.
+
+    There used to be a `print-token` command here, and a `mcp/resolve_token.py` whose only job
+    was the same thing: the launchers ran one of them and assigned stdout to KAGGLE_API_TOKEN
+    in their own environment. Both were left behind when credential resolution moved into Python
+    - the command contradicting the sentence above, the file claiming a launcher contract that
+    neither launcher honoured - and neither had a caller left. A maintenance CLI that can print
+    the secret it manages is a different tool from one that cannot, so the surface is now what
+    this docstring says it is, and check_plugin holds it there.
+    """
     if not argv:
         argv = ["status"]
     cmd, rest = argv[0], argv[1:]
@@ -361,10 +435,6 @@ def _cli(argv: list[str]) -> int:
             return 0
         if cmd == "remove":
             print("removed" if remove_account(rest[0]) else "no such account")
-            return 0
-        if cmd == "print-token":
-            # Consumed by a parent process to populate its own environment; never shown.
-            print(resolve_token()[0] or "")
             return 0
     except AccountError as exc:
         print(f"error: {exc}", file=sys.stderr)

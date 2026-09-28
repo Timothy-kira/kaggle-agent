@@ -12,6 +12,7 @@ Exit: 0 = all checks pass, 1 = at least one failure.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -21,6 +22,38 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+
+import atexit as _atexit
+import shutil as _shutil
+
+_OWN_TEMP_DIRS: list[str] = []
+
+
+def _mkdtemp(*args, **kwargs) -> str:
+    """A temp directory this process is responsible for removing.
+
+    Thirty-odd suites across these files each made a throwaway home per run and never removed
+    it, so a few hundred ka-* folders had piled up in the user's temp directory. That residue
+    reads as if the WORK left it behind when the tests did, and a suite that passes every
+    assertion can still leave a mess behind - which is exactly the kind of failure that never
+    shows up as a failure. Tracking each directory and removing it at exit is the whole fix,
+    and it only ever touches what this process created, so a suite running beside another one
+    cannot delete its neighbour's home.
+    """
+    d = tempfile.mkdtemp(*args, **kwargs)
+    _OWN_TEMP_DIRS.append(d)
+    return d
+
+
+_atexit.register(lambda: [_shutil.rmtree(d, ignore_errors=True) for d in _OWN_TEMP_DIRS])
+
+# The launchers start the server with `-B` so the package directory stays free of
+# __pycache__. A developer running this file by hand would put it straight back, and
+# the directory is read-only by contract - so the tool holds the same line the
+# launcher does. Set before any mcp/ module is imported below, which is what makes it
+# effective rather than decorative.
+sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / ".minimax-plugin" / "plugin.json"
@@ -94,6 +127,159 @@ def parse_json(path: Path):
         return None, f"invalid JSON: {exc}"
 
 
+# ---------------------------------------------------------------- vendored content
+# Anchored on attack-specific vocabulary, not on bossy English. "you must" appears in honest
+# skill prose constantly; flagging it teaches everyone to ignore this check, which is worse
+# than not having one. The `(?:\w+\s+){0,n}` gap between tokens is deliberate - it defeats
+# "ignore all PRIOR instructions" style evasion without matching ordinary prose.
+INJECTION_PATTERNS = (
+    ("ignore-prior-instructions",
+     r"ignore\s+(?:\w+\s+){0,3}(?:all\s+)?(?:previous|prior|earlier|above|foregoing)\s+"
+     r"(?:\w+\s+){0,2}instructions"),
+    ("reveal-system-prompt",
+     r"(?:reveal|print|show|output|repeat|dump)\s+(?:\w+\s+){0,3}(?:system\s+prompt|"
+     r"your\s+instructions|developer\s+message|initial\s+prompt)"),
+    ("role-hijack", r"you\s+are\s+now\s+(?:a|an|the)\s+\w+"),
+    ("exfiltrate-secret",
+     r"(?:send|post|upload|transmit|exfiltrate|leak)\s+(?:\w+\s+){0,3}"
+     r"(?:api[\s_-]?keys?|tokens?|credentials?|\.env|ssh\s+key|private\s+key)"),
+    ("hide-from-user",
+     r"(?:\w+\s+){0,3}do\s+not\s+(?:\w+\s+){0,2}(?:tell|inform|notify|mention\s+(?:this\s+)?to|"
+     r"show)\s+(?:the\s+)?(?:user|human|operator)"),
+    ("exec-decoded-blob",
+     r"base64\s+(?:-d|--decode)[^|\n]{0,60}\|\s*(?:ba|z|d)?sh"),
+    ("pipe-download-to-shell",
+     r"(?:curl|wget)\s+[^|\n]{0,120}\|\s*(?:sudo\s+)?(?:ba)?sh"),
+    ("destructive-rm",
+     r"\brm\s+-[a-z]*[rR][a-z]*\s+/(?:\s|$)|Remove-Item[^-\n]{0,40}-Recurse[^-\n]{0,20}"
+     r"-Force[^-\n]{0,40}[A-Za-z]:\\\\\\?"),
+)
+
+
+# Build residue, not content. Running an upstream script regenerates __pycache__ next to it,
+# and a .pyc is a derived, machine-specific blob whose readable twin is already in the set -
+# counting it as "third-party content nobody scanned" would be both true and useless noise.
+_BUILD_RESIDUE_DIRS = {"__pycache__"}
+_BUILD_RESIDUE_SUFFIX = {".pyc", ".pyo"}
+
+
+def _is_build_residue(p: Path) -> bool:
+    return bool(_BUILD_RESIDUE_DIRS.intersection(p.parts)) or p.suffix.lower() in _BUILD_RESIDUE_SUFFIX
+
+
+def vendored_files() -> list[Path]:
+    """Every file this package took from someone else.
+
+    By convention, not by manifest: anything under a skill's assets/, references/ or scripts/
+    came from upstream, and the SKILL.md beside it is the only file in that skill this
+    package authored. That is a convention, so it is a thing the check can drift away from -
+    which is why the count is asserted too.
+    """
+    out: list[Path] = []
+    for skill in sorted((ROOT / "skills").glob("*/")):
+        for sub in ("assets", "references", "scripts"):
+            d = skill / sub
+            if d.is_dir():
+                out.extend(p for p in sorted(d.rglob("*"))
+                           if p.is_file() and not _is_build_residue(p))
+    return out
+
+
+# A security document legitimately says "must not transmit a token", and flagging that teaches
+# everyone to ignore this check - which is worse than not having one. But a tripwire that
+# downgrades hits on its own judgement and says nothing is worse still, so downgrading is
+# clause-scoped and always reported.
+_PROHIBITION = re.compile(
+    r"\b(?:must|may|shall|can|will|do|does|did|is|are|should)\s+not\b"
+    r"|\bnever\b|\bcannot\b|\bcan't\b|\bdon't\b|\bdoesn't\b|\bwon't\b"
+    r"|\brefuse[sd]?\s+to\b|\bwithout\b", re.I)
+_CLAUSE_BREAK = re.compile(r"[.;!?]")
+
+
+def _phrased_as_prohibition(line: str, match_start: int) -> bool:
+    """True when the match sits inside a clause that forbids something.
+
+    Clause-scoped on purpose: "Never mind. Ignore all previous instructions" puts `Never` in the
+    *previous* sentence, and reading it as a prohibition would suppress a real attack. The
+    residual hole - "Do not follow this: ignore all previous instructions" - is accepted rather
+    than closed, because closing it means parsing intent, and a scanner that guesses intent is
+    the failure mode this whole check exists to avoid. Downgraded hits are printed regardless.
+    """
+    return bool(_PROHIBITION.search(_CLAUSE_BREAK.split(line[:match_start])[-1]))
+
+
+def _line_at(text: str, pos: int) -> tuple[int, str, int]:
+    """(1-based line number, the line's text, offset of pos inside that line)."""
+    start = text.rfind("\n", 0, pos) + 1
+    end = text.find("\n", pos)
+    if end == -1:
+        end = len(text)
+    return text.count("\n", 0, pos) + 1, text[start:end], pos - start
+
+
+def scan_for_injection(text: str) -> list[tuple[str, int, bool]]:
+    """Return (pattern_id, 1-based line, phrased_as_prohibition) for every hit.
+
+    A clean result means "no known-bad strings", never "safe" - a regex tripwire is not a
+    boundary. The layer that can acquit content is a reviewer reading it, and the plugin says
+    so in the skills that vendor it.
+    """
+    hits: list[tuple[str, int, bool]] = []
+    for pid, pat in INJECTION_PATTERNS:
+        for m in re.finditer(pat, text, re.I):
+            lineno, line_text, offset = _line_at(text, m.start())
+            hits.append((pid, lineno, _phrased_as_prohibition(line_text, offset)))
+    return hits
+
+
+def check_vendored_content_is_scanned():
+    """Third-party code we vendored is still third-party code.
+
+    Vendoring does not launder a file. Everything under a skill's `assets/`, `references/` or
+    `scripts/` came from somewhere else, and this package hands parts of it straight back to an
+    agent: a SKILL.md the agent reads, a script a human runs. A poisoned entry in that content
+    is not a hypothetical - it is instructions aimed at the next turn, delivered through a file
+    a reviewer already agreed was fine.
+
+    So the vendored set is scanned here, on every run, with no allowlist to maintain: adding a
+    vendored file scans it automatically rather than requiring someone to remember. A clean
+    scan is a floor, not a verdict - that distinction is the reason this section exists at all,
+    and it is the reason the same discipline appears in the skills that vendor the content.
+    """
+    print("vendored third-party content")
+    files = vendored_files()
+    check(bool(files), f"a vendored set exists to scan ({len(files)} files) - if this drops to "
+                       f"0, the convention moved and this check is scanning nothing")
+    executable = [p for p in files if p.suffix.lower() in (".py", ".sh", ".cmd", ".bat", ".ps1")]
+    check(bool(executable),
+          f"vendored executable files are in scope ({len(executable)}) - the riskiest kind")
+    found: list[str] = []
+    phrased_as_prohibition: list[str] = []
+    for p in files:
+        rel = p.relative_to(ROOT).as_posix()
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            found.append(f"{rel}: unreadable as UTF-8, so it was NOT scanned")
+            continue
+        for pid, line, prohibited in scan_for_injection(text):
+            rec = f"{rel}:{line} matches injection pattern {pid!r}"
+            (phrased_as_prohibition if prohibited else found).append(rec)
+    check(not found,
+          f"no vendored file carries an injection instruction ({len(found)} hit(s): {found[:5]})")
+    check(True, f"{len(phrased_as_prohibition)} hit(s) were phrased as a prohibition rather than an "
+               f"instruction, and are reported rather than dropped - a tripwire that explains itself "
+               f"away without saying so is the failure this section is guarding against: "
+               f"{phrased_as_prohibition[:5]}")
+    check(len(phrased_as_prohibition) >= 1,
+          f"the prohibition branch has a live example in the real vendored set ({len(phrased_as_prohibition)}) "
+          f"- a branch that never fires reads as coverage right up until it is needed")
+    by_ext: dict[str, int] = {}
+    for p in files:
+        by_ext[p.suffix.lower() or "(none)"] = by_ext.get(p.suffix.lower() or "(none)", 0) + 1
+    check(True, f"scanned {len(files)} vendored file(s): {dict(sorted(by_ext.items()))}")
+
+
 # ---------------------------------------------------------------- manifest
 def check_manifest():
     print("manifest")
@@ -115,6 +301,15 @@ def check_manifest():
         dark = ROOT / data["darkIcon"]
         check(dark.is_file() and dark.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"),
               "darkIcon file exists with a valid image extension")
+        if dark.is_file() and icon.is_file():
+            # A darkIcon that is a byte-for-byte copy of the light one is not a dark icon. The
+            # host has no way to tell the difference, so the field is decorative: it declares
+            # that dark mode was considered, and renders exactly the light artwork anyway. The
+            # two files here hashed identically for the whole life of the field.
+            same = (icon.read_bytes() == dark.read_bytes())
+            check(not same,
+                  f"darkIcon ({data['darkIcon']}) is a different image from icon "
+                  f"({data['icon']}) - a byte-identical copy makes the field decorative")
     for q in data.get("exampleQueries", []):
         check(isinstance(q, str) and q.strip() != "", f"example query non-empty: {q[:40]!r}")
     # every declared skill file exists
@@ -178,7 +373,7 @@ def _frontmatter_line_is_valid(line: str) -> tuple[bool, str]:
         return True, ""  # flow collection: a real parser's job, not ours
     if not _plain_scalar_is_safe(value):
         return False, (f"'{key}' is an unquoted scalar containing ': ' or ' #', which YAML "
-                       f"reads as a nested mapping 鈥?quote the value")
+                       f"reads as a nested mapping — quote the value")
     return True, ""
 
 
@@ -358,11 +553,43 @@ def check_relationships():
         text = idx.read_text(encoding="utf-8")
         expected = render_edges(rel, cat)
         for row in expected:
-            check(row in text, f"{cat}/INDEX.md bound edge row present: {row.split('|')[1].strip()}")
-        # no stale markers left behind
-        for marker in re.findall(r"<!-- edge:([^>]+?) -->", text):
-            if f"<!-- edge:{marker} -->" not in expected:
-                bad(f"categories/{cat}.md has a stale edge marker not in relationships.json: {marker}")
+            # COUNTED, not membership-tested. `row in text` was true for a row that appears
+            # once and for a row that appears twice, so a category index could carry a whole
+            # extra copy of the bound-edge table and every one of these checks still passed -
+            # which is exactly what had happened in all four files. A rendered table is
+            # rendered once; anything else is two documents disagreeing about the graph.
+            n = text.count(row)
+            check(n == 1,
+                  f"{cat}/INDEX.md bound edge row appears exactly once: "
+                  f"{row.split('|')[1].strip()} (found {n})")
+        # no stale markers left behind.
+        #
+        # Two things were wrong here, and they hid each other. The pattern was
+        # `<!-- edge:([^>]+?) -->`, but a marker body is `from->to:type` - so `[^>]` could
+        # never span the arrow and the pattern matched ZERO markers: the block was vacuous.
+        # Fixing the pattern alone then exposed the second bug: the comparison was
+        # `f"<!-- edge:{marker} -->" in expected`, a list-membership test against a list of
+        # whole rendered ROWS, so every marker looked stale. Two dead checks stacked.
+        expected_markers = {m for row in expected
+                            for m in re.findall(r"<!-- edge:(.+?) -->", row)}
+        markers = re.findall(r"<!-- edge:(.+?) -->", text)
+        for marker in markers:
+            if marker not in expected_markers:
+                bad(f"categories/{cat}.md has a stale edge marker not in relationships.json: "
+                    f"{marker}")
+        # ...and no marker rendered more than once, which a row count can miss when a copy
+        # was hand-edited: a duplicated block is the failure, not a duplicated string.
+        for marker in set(markers):
+            n = text.count(f"<!-- edge:{marker} -->")
+            if n != 1:
+                bad(f"categories/{cat}.md renders edge marker {n} times: {marker}")
+        # one table, not two. A second '## Bound edges' heading is how the duplication
+        # announced itself: the stale copy still pointed at `../../relationships.json`, a
+        # path that does not exist from skills/categories/, because it was written before
+        # the file moved up a level.
+        heads = re.findall(r"^##\s+Bound edges", text, re.M)
+        check(len(heads) == 1,
+              f"categories/{cat}.md has exactly one '## Bound edges' section (found {len(heads)})")
 
 
 # ---------------------------------------------------------------- coverage floor
@@ -388,8 +615,10 @@ def check_browses_floor():
         check(node is not None and node.get("kind") == "source",
               f"source node '{sid}' exists in the graph")
 
-    # both the research skill and the forensics agent must genuinely browse all three
-    for owner in ("kaggle-competition-research", "competition-browser"):
+    # The research skill holds all three, and holds them itself rather than delegating them. That
+    # is the point of the ownership: if the forensics ever went back to a subagent, a detached
+    # child has no in-app browser and the floor would have no owner that could actually meet it.
+    for owner in ("kaggle-competition-research",):
         held = {e["to"] for e in edges if e["from"] == owner and e["type"] == "browses"}
         for sid in REQUIRED_BROWSED:
             check(sid in held, f"'{owner}' holds a browses edge to '{sid}'")
@@ -518,15 +747,191 @@ def check_no_secrets():
 
 
 # ---------------------------------------------------------------- stale references
-# The agent was renamed from kaggle-search to competition-browser. A half-finished rename is
-# the worst outcome: the package would document a reference that no longer resolves, and the
-# wave-2 dispatch would fail only at runtime, in a research sweep, hours in.
+# The forensics agent was renamed kaggle-search -> competition-browser, and has since been
+# removed entirely: wave 2 does its own forensics in the main thread. A half-finished rename is
+# the worst outcome - the package documents a reference that no longer resolves, and a
+# dispatch fails only at runtime, in a research sweep, hours in. Removal is the same failure
+# with more room for it, which is why nothing is exempt any more: the file that used to be
+# allowed to mention the old names is gone, and the agent it named is gone with it.
 #
 # These are matched as whole words, not substrings. "kaggle_search_engine" is a *current*
 # tool name that happens to contain the retired agent's name, and a substring rule would
 # flag the tool that replaced it.
 RETIRED_NAMES = ("kaggle-search", "Kaggle 搜索", "search-agent.png")
 RETIRED_PATTERNS = [re.compile(r"\bkaggle_search\b"), re.compile(r"agent:kaggle-search")]
+
+
+# ---------------------------------------------------------------- the one home directory
+def check_store_migration():
+    print("credential store migration")
+    spec = importlib.util.spec_from_file_location(
+        "cred_check", ROOT / "mcp" / "credentials.py")
+    cred = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cred)
+
+    check(cred.APP_DIR_NAME == ".kaggle-agent",
+          f"the plugin owns one home directory (got {cred.APP_DIR_NAME})")
+    check(cred.LEGACY_APP_DIR_NAME == ".kaggle-cli",
+          "the previous location is still named, so an existing setup can be found")
+    check(cred.store_path().name == "accounts.json",
+          "the store is accounts.json - README once documented a kaggle.json that never existed")
+    check(cred.legacy_store_path().name == "accounts.json",
+          "the old multi-account file is migrated, not ignored")
+    check(cred.legacy_store_path().parent.name == cred.LEGACY_APP_DIR_NAME
+          and cred.legacy_path().parent.name == cred.LEGACY_APP_DIR_NAME,
+          "both legacy paths stay in the OLD directory - pointing them at the new home would "
+          "make a probe 'migrate' a temporary directory that never held anything")
+
+    # github_sync already keeps its own credentials.json in the new home. Two meanings for
+    # that one filename is how somebody ends up logged out of one service and into another.
+    gs = ROOT / "mcp" / "github_sync.py"
+    spec2 = importlib.util.spec_from_file_location("gh_check", gs)
+    gh = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(gh)
+    # pinned, because an earlier suite may have left KAGGLE_AGENT_HOME pointing at its own
+    # throwaway home - and the question here is which NAME github_sync uses, not where it
+    # happens to be resolved from right now.
+    saved_gh = os.environ.get("KAGGLE_AGENT_HOME")
+    os.environ["KAGGLE_AGENT_HOME"] = str(Path.home() / ".kaggle-agent")
+    try:
+        gh_path = Path(gh._store_path())
+    finally:
+        if saved_gh is None:
+            os.environ.pop("KAGGLE_AGENT_HOME", None)
+        else:
+            os.environ["KAGGLE_AGENT_HOME"] = saved_gh
+    check(gh_path.name == "credentials.json" and gh_path.parent.name == ".kaggle-agent",
+          f"github_sync's store is ~/.kaggle-agent/credentials.json (got {gh_path})")
+    check(cred.store_path().name != gh_path.name,
+          "the account store is not named credentials.json, so it cannot shadow the GitHub one")
+
+    # the behaviour, against a fake home: a renamed account must not come back
+    saved_expand, saved_env = os.path.expanduser, os.environ.get("KAGGLE_AGENT_HOME")
+    home = Path(_mkdtemp(prefix="ka-cred-check-"))
+    old_dir = home / ".kaggle-cli"
+    old_dir.mkdir(parents=True)
+    renamed = {"active": "second-handle",
+               "accounts": {"second-handle": {"token": "T1", "username": "bob",
+                                              "renamedFrom": "work"}}}
+    (old_dir / "accounts.json").write_text(json.dumps(renamed), encoding="utf-8")
+    agent = home / ".kaggle-agent"
+    os.path.expanduser = lambda p=None: str(home) if (p or "").startswith("~") else (p or "")
+    os.environ["KAGGLE_AGENT_HOME"] = str(agent)
+    try:
+        data = cred.load()
+    finally:
+        os.path.expanduser = saved_expand
+        if saved_env is None:
+            os.environ.pop("KAGGLE_AGENT_HOME", None)
+        else:
+            os.environ["KAGGLE_AGENT_HOME"] = saved_env
+    check(data.get("active") == "second-handle",
+          "a store at the old location is migrated and keeps the active account")
+    check(list((data.get("accounts") or {})) == ["second-handle"],
+          f"account names are copied verbatim - a renamed account must not come back as a "
+          f"duplicate (got {list((data.get('accounts') or {}))})")
+    check((agent / "accounts.json").exists(), "the migrated store is written to the new home")
+    check((old_dir / "accounts.json").exists(),
+          "the old file is left alone: deleting somebody's credentials is their call, not a "
+          "side effect of an upgrade")
+
+    # the override has to actually redirect, or a probe reads the real accounts
+    os.environ["KAGGLE_AGENT_HOME"] = str(agent)
+    try:
+        check(str(cred.store_path()).startswith(str(agent)),
+              "KAGGLE_AGENT_HOME redirects the store, so a probe cannot read real credentials")
+    finally:
+        if saved_env is None:
+            os.environ.pop("KAGGLE_AGENT_HOME", None)
+        else:
+            os.environ["KAGGLE_AGENT_HOME"] = saved_env
+    shutil.rmtree(home, ignore_errors=True)
+
+    # Every doc that names a store path has to name the current one. Mentioning the OLD path
+    # is allowed and in two places required - a reader with an existing store needs to be told
+    # it still works - but it must never be the only path in the file, because a doc that
+    # names one store and not the other is a doc that got half-reverted.
+    for rel in ("README.md", "servers.mcp.json", "bin/kaggle-cli.cmd", "bin/kaggle-cli.sh",
+                "mcp/kaggle_server.py", "skills/kaggle-cli/SKILL.md",
+                "skills/kaggle-account-switch/SKILL.md"):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        check("kaggle.json" not in text,
+              f"{rel} does not name a kaggle.json - that file never existed")
+        mentions_old = ".kaggle-cli" in text
+        mentions_new = ".kaggle-agent" in text
+        check(mentions_new and (not mentions_old or mentions_new),
+              f"{rel} names the current store (old path present: {mentions_old})")
+        check(not mentions_old or mentions_new,
+              f"{rel} never presents the old store on its own")
+
+
+def check_no_uncalled_functions():
+    """A module-level function nobody calls must SAY so.
+
+    Six of these accumulated unnoticed: a ladder reset that cleared less than the copy
+    beside it, an accelerator reader with a second spelling and no caller, a config setter
+    whose logic the handler had re-implemented inline, and two accessors and two GitHub
+    readers with no consumer at all. None of them raised, so every suite stayed green.
+
+    Dead code is worse than no code when it looks correct: `reset_ladder`'s docstring
+    promised exactly what its body failed to do. So an uncalled function is allowed, but
+    only when it declares that it is uncalled - `# noqa: KA-uncalled` - which is a sentence
+    somebody has to write on purpose.
+    """
+    print("no uncalled functions")
+    marker = "KA-uncalled"
+    modules = sorted(p for p in (ROOT / "mcp").glob("*.py"))
+    tools = sorted(p for p in (ROOT / "tools").glob("*.py"))
+
+    def live_code(text: str) -> str:
+        """Drop docstrings and comments, so a mention in prose is not a call site.
+
+        Without this the check is wrong in both directions: a name quoted in a docstring
+        reads as a reference, and a function registered in a dispatch table - plots.py puts
+        all six chart renderers in RENDERERS and reaches them by key - reads as uncalled.
+        """
+        text = re.sub(r'("""|\'\'\')(?:.|\n)*?\1', '""', text)
+        return "\n".join(re.sub(r"#.*$", "", line) for line in text.split("\n"))
+
+    corpus = "\n".join(live_code(p.read_text(encoding="utf-8")) for p in modules + tools)
+    total = 0
+    for path in modules:
+        src = path.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        defined = [n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and not n.name.startswith("__")]
+        for fn in defined:
+            refs = len(re.findall(rf"(?<!\w){re.escape(fn.name)}\b", corpus))
+            defs = len(re.findall(rf"^def {re.escape(fn.name)}\s*\(", corpus, re.M))
+            if refs <= defs:
+                total += 1
+                segment = ast.get_source_segment(src, fn) or ""
+                head = src.splitlines()[fn.lineno - 1]
+                declared = marker in segment or marker in head
+                check(declared,
+                      f"{path.name}:{fn.lineno} {fn.name}() has no caller - delete it, wire it, or "
+                      f"mark it `# noqa: {marker}` to say it is deliberately uncalled")
+    check(True, f"scanned {len(modules)} modules; {total} uncalled function(s) accounted for")
+
+    # A doubled carriage return is invisible in a diff and fatal in a parse. It arrived twice
+    # while editing this package: read a CRLF file, split on \n (which leaves the \r attached),
+    # join with \n, then write with the line endings "restored" - producing \r\r\n throughout.
+    # The Python file became a SyntaxError on a line that had not been touched, and the only
+    # symptom was an OSError on a pipe flush three suites later. This is the check that says so
+    # at the source instead.
+    print("line endings")
+    strays = []
+    for path in sorted(ROOT.rglob("*")):
+        if not path.is_file() or ".git" in path.parts:
+            continue
+        if path.suffix.lower() not in (".py", ".json", ".md", ".cmd", ".sh", ".txt"):
+            continue
+        raw = path.read_bytes()
+        if b"\r\r\n" in raw or b"\r" in raw.replace(b"\r\n", b""):
+            strays.append(path.relative_to(ROOT).as_posix())
+    check(not strays,
+          f"no file carries a doubled carriage return ({len(strays)} affected: "
+          f"{strays[:4]})")
 
 
 def check_no_stale_names():
@@ -542,11 +947,9 @@ def check_no_stale_names():
         except Exception:
             continue
         rel_p = p.relative_to(ROOT).as_posix()
-        # The rename history is allowed to be *documented*, but only in the file that
-        # documents the rename; everywhere else a live reference is a bug.
-        exempt = rel_p == "skills/competition-browser-agent.md"
-        if exempt:
-            continue
+        # No file is exempt any more. The rename was documented in the agent's own doc, and that
+        # doc is gone along with the agent; a retired name surviving anywhere now is a live
+        # reference to something that no longer exists.
         for old in RETIRED_NAMES:
             if old in text:
                 bad(f"stale reference to retired '{old}' in {rel_p}")
@@ -597,7 +1000,7 @@ def check_tree_enforcement():
     spec = importlib.util.spec_from_file_location("et_check", ROOT / "mcp" / "experiment_tree.py")
     et = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(et)
-    os.environ["KAGGLE_AGENT_HOME"] = tempfile.mkdtemp()
+    os.environ["KAGGLE_AGENT_HOME"] = _mkdtemp()
     probe = "tree-enforcement-probe"
 
     refused = et.record(probe, {"id": "n1", "kind": "experiment"}, read_revision=None)
@@ -690,7 +1093,7 @@ def check_search_widening():
         "et_search_check", ROOT / "mcp" / "experiment_tree.py")
     et = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(et)
-    os.environ["KAGGLE_AGENT_HOME"] = tempfile.mkdtemp()
+    os.environ["KAGGLE_AGENT_HOME"] = _mkdtemp()
     comp = "search-widening-probe"
 
     check(set(et.OPERATORS) == {"draft", "improve", "debug", "crossover"},
@@ -839,7 +1242,7 @@ def _probe_tree():
         "et_v3_check", ROOT / "mcp" / "experiment_tree.py")
     et = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(et)
-    os.environ["KAGGLE_AGENT_HOME"] = tempfile.mkdtemp()
+    os.environ["KAGGLE_AGENT_HOME"] = _mkdtemp()
     return et, et.load("probe")
 
 
@@ -865,6 +1268,220 @@ def _v3_node(nid, parent, result, delta, op, fam, verdict="keep", reason="specif
         node["criteria"] = criteria
     node.update(extra)
     return node
+
+
+def check_the_dataset_is_a_control_and_silence_is_not_a_disagreement():
+    """controls.data, and the distinction that makes adding it safe.
+
+    Two separate claims, and the second one is the interesting one.
+
+    **The dataset is a control.** The other four record what made a comparison FAIR - same
+    seed, same budget, same eval surface, same retrain policy. None of them records what the
+    comparison was OF. A competition that re-uploads its data, or a public dataset that ships a
+    new version, changes the input while leaving every other control untouched, and the table
+    would report the resulting jump as a clean win for the factor. So the tree pins it the same
+    way, and the refusal is the existing confound gate rather than a new rule.
+
+    **Silence on both sides is not a disagreement.** This is the part that would have broken
+    every tree that predates the field. `data` is absent from all of them, so under the old
+    logic - "a key missing on either side means not recorded on both" - adding it would have
+    reported a mismatch for every comparable pair in the package and emptied the ablation table
+    everywhere. Two arms that both fail to name their dataset are equally unknown; calling that
+    a difference asserts something nobody observed. Only ONE side being silent is a real
+    finding, and that is the branch that fires.
+    """
+    print("the dataset as a control")
+    et, _ = _probe_tree()
+
+    check("data" in et.CONTROL_KEYS,
+          f"the dataset is one of the controls that make a delta attributable "
+          f"({', '.join(et.CONTROL_KEYS)})")
+    check(et.normalize_node({"controls": {"data": "train-v3"}}).get("controls") == {"data": "train-v3"},
+          "a run's dataset survives normalisation, so it reaches the tree instead of being dropped")
+
+    # A tree whose nodes all predate the field: every arm is silent about its data, and none of
+    # them may be reported as a mismatch because of it.
+    legacy = {"seed": 1, "budget": "s", "eval": "v", "retrain": "re-eval"}
+    silent = et._control_diff({"controls": dict(legacy)}, {"controls": dict(legacy)})
+    check(silent == [],
+          f"two arms that are both silent about their data are NOT a disagreement (got {silent}) - "
+          f"or every tree that predates the field would report one")
+    half = et._control_diff({"controls": dict(legacy, data="train-v3")}, {"controls": dict(legacy)})
+    check(any("data" in h for h in half),
+          f"one arm naming its dataset while the other does not IS reported ({half}) - the two are "
+          f"not known to be comparable")
+    clash = et._control_diff({"controls": dict(legacy, data="train-v3")},
+                             {"controls": dict(legacy, data="train-v4")})
+    check(any("train-v3" in c and "train-v4" in c for c in clash),
+          f"two arms naming different versions are reported, with both values ({clash})")
+
+    # The table: a delta measured across a data change belongs to the data, not to the factor.
+    moved = et.ablation_table(_ab_tree({
+        "n0": _ab("n0", [], 0.50, controls=dict(legacy, data="train-v3")),
+        "n1": _ab("n1", ["a"], 0.60, parent="n0", controls=dict(legacy, data="train-v4")),
+    }))
+    check(moved["confounds"] and any("data" in c["differ"][0] for c in moved["confounds"]),
+          f"a factor's gain measured across a dataset change is not attributed to the factor "
+          f"(confounds={moved['confounds']})")
+    same = et.ablation_table(_ab_tree({
+        "n0": _ab("n0", [], 0.50, controls=dict(legacy, data="train-v3")),
+        "n1": _ab("n1", ["a"], 0.60, parent="n0", controls=dict(legacy, data="train-v3")),
+    }))
+    check(not same["confounds"] and len(same["edges"]) == 1,
+          f"the same comparison on one pinned dataset is a clean, attributable edge "
+          f"(confounds={same['confounds']}, edges={len(same['edges'])})")
+
+    # And the write gate, which is where a recorded change has to be declared.
+    parent = _v3_node("n1", None, 0.50, 0.00, "improve", "ablation", controls=dict(legacy, data="v3"))
+    child = _v3_node("n2", "n1", 0.60, 0.10, "improve", "ablation", controls=dict(legacy, data="v4"))
+    refused = et.validate(_ab_tree({"n1": parent, "n2": child}, base="n1"))
+    check(any("data" in p and "confound" in p.lower() for p in refused),
+          f"a run that silently switched dataset is refused at write time ({refused})")
+    declared = _v3_node("n2", "n1", 0.60, 0.10, "improve", "ablation",
+                        controls=dict(legacy, data="v4"),
+                        confoundReason="the dataset was re-uploaded mid-competition; the gain is "
+                                       "partly the new data, which is the point of measuring it")
+    accepted = et.validate(_ab_tree({"n1": parent, "n2": declared}, base="n1"))
+    check(not any("data" in p and "confound" in p.lower() for p in accepted),
+          f"declaring WHY the dataset moved is the escape hatch, and it works ({accepted})")
+
+
+def _skill_body(text: str) -> str:
+    """A skill's procedure, with the frontmatter removed.
+
+    The frontmatter is metadata: it describes the skill to whoever is deciding whether to load
+    it. Asserting against the whole file lets a description satisfy a check about the procedure,
+    which is how a deleted section still reads as present - the words survive in the summary
+    above the fold while the instruction is gone.
+    """
+    if text.startswith("---"):
+        close = text.find("\n---", 3)
+        if close != -1:
+            rest = text.find("\n", close + 1)
+            return text[rest:] if rest != -1 else ""
+    return text
+
+
+def check_the_readme_counts_what_the_package_contains():
+    """A number in a README is a claim, and it is the one kind nobody re-checks.
+
+    The plugin's whole argument is that a discipline written in prose decays silently, so the
+    counts in the README are the most embarrassing place for that to be true - and they were.
+    It claimed 16 skills where the manifest declares 17, "the server and its nine modules"
+    where `mcp/` holds fifteen, and 27 tools where the live server answers 29 on `tools/list`.
+    None of that broke anything, which is exactly why it survived: there was no check, so a
+    deletion and two skill additions moved reality without moving the sentence.
+
+    The counts are read from the sources rather than restated: `TOOLS` is the exact list the
+    server hands back, the manifest is what the runtime reads, and the module count is the
+    directory. Each is asserted with the surrounding words, because a bare number could match
+    anything; the count has to appear where a reader would take it as the package's size.
+    """
+    print("the README's own numbers")
+    spec = importlib.util.spec_from_file_location("ks_readme", ROOT / "mcp" / "kaggle_server.py")
+    sys.path.insert(0, str(ROOT / "mcp"))
+    ks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ks)
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    # "fifteen", not "15" - the sentence reads that way, and matching either form would let
+    # the check pass on a number the reader never sees.
+    WORDS = {15: "fifteen", 16: "sixteen", 17: "seventeen", 18: "eighteen", 14: "fourteen",
+             13: "thirteen", 12: "twelve", 11: "eleven", 10: "ten", 9: "nine"}
+    tools = len(ks.TOOLS)
+    manifest, err = parse_json(MANIFEST)
+    skills = len(manifest.get("skills") or []) if manifest else 0
+    modules = len([p for p in (ROOT / "mcp").glob("*.py") if p.is_file()])
+
+    check(f"{tools} tools" in readme,
+          f"the README's tool count is the one the server actually serves ({tools})")
+    check(readme.count(f"{skills} skills") >= 2,
+          f"both README counts of skills match the manifest ({skills}) - a manifest that says "
+          f"{skills} and a README that says something else is a claim nobody checked")
+    on_disk = len(list((ROOT / "skills").glob("*/SKILL.md")))
+    check(skills == on_disk,
+          f"the manifest declares exactly the skills that exist ({skills} declared, "
+          f"{on_disk} on disk)")
+    check(f"its {WORDS.get(modules, str(modules))} modules" in readme,
+          f"the README's module count matches mcp/ ({modules} .py files)")
+
+    # The residue audit has a floor of its own: a module no entry point reaches is a file the
+    # next reader has to work out the purpose of. This is the check that would have caught
+    # mcp/resolve_token.py, whose whole content was a credential path its callers had stopped
+    # using and whose docstring still described a launcher contract that no longer existed.
+    #
+    # Reachability is a CLOSURE, not a first hop. `plots` is imported by `experiment_tree`,
+    # not by the server, and a one-level check would have called it residue - which is the same
+    # error as a grep that only searches the file you happen to be editing.
+    def _imports_of(path: Path) -> set[str]:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            return set()
+        out: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                out.update(Path(a.name).stem for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                out.add(Path(node.module).stem)
+        return out
+
+    ENTRY_POINTS = {"kaggle_server", "kaggle_cli", "agent_server"}
+    on_disk_modules = {p.stem for p in (ROOT / "mcp").glob("*.py") if p.is_file()}
+    reached: set[str] = {"kaggle_server"}
+    frontier = ["kaggle_server.py", "kaggle_cli.py"]
+    while frontier:
+        for mod in _imports_of(ROOT / "mcp" / frontier.pop()):
+            if mod in on_disk_modules and mod not in reached:
+                reached.add(mod)
+                frontier.append(f"{mod}.py")
+    unreached = sorted(m for m in on_disk_modules if m not in reached and m not in ENTRY_POINTS)
+    check(not unreached,
+          f"every module in mcp/ is a declared entry point or reachable from one, transitively "
+          f"({len(on_disk_modules)} modules, {len(reached)} reached, unreached: {unreached})")
+
+
+def check_the_thinking_steps_were_actually_added():
+    """Two steps that are judgement, not arithmetic, asserted where an agent will read them.
+
+    Neither of these can be gated. A figure contract can be present and worthless, and a
+    candidate list can have three entries and no killer. What the check can do is the smaller
+    thing: make sure the step exists, names what it has to settle, and is not quietly deleted by
+    a later edit that tidies the file. The ORDER assertion is the part that carries weight - a
+    contract written after the chart has already been drawn is a caption, and the whole point is
+    that it comes first, while the claim is still small enough to be wrong.
+    """
+    print("the two thinking steps")
+    plot = _skill_body((ROOT / "skills" / "scientific-plotting" / "SKILL.md").read_text(encoding="utf-8"))
+    low = plot.lower()
+    for field in ("conclusion", "archetype", "panel map", "evidence hierarchy", "statistics",
+                  "reviewer risk"):
+        check(field in low,
+              f"the figure contract names '{field}' - a template with blanks is not a contract")
+    contract_at = low.find("write the figure contract")
+    analyze_at = low.find('action="analyze"')
+    check(0 < contract_at < analyze_at,
+          f"the figure contract comes BEFORE the chart is drawn (contract at {contract_at}, "
+          f"analyze at {analyze_at}) - afterwards it is a caption")
+    check("cannot acquit" in low or "refuse" in low,
+          "the contract says plainly that no gate can judge it, rather than implying one checks it")
+
+    approach = _skill_body((ROOT / "skills" / "approach-decision" / "SKILL.md").read_text(encoding="utf-8"))
+    alow = approach.lower()
+    check("what would kill it" in alow,
+          "a candidate is scored against the measurement that would end it")
+    check("not a candidate" in alow,
+          "the skill says why a candidate with no killer is not a candidate")
+    check("cheapest" in alow,
+          "and gives a tie-break between two survivors, so the section is not just a list")
+    check("converg" in alow,
+          "convergence counts against a candidate, reusing the argument the fork section makes")
+    check(approach.count("```json") >= 2,
+          "the recorded node is shown, because an unrecorded choice is re-litigated next session")
+    first_at, second_at = alow.find("what you are trying to win"), alow.find("the short version")
+    check(0 < first_at < second_at,
+          f"naming the attack comes before the fork-vs-write call, which assumes one "
+          f"(candidates at {first_at}, fork section at {second_at})")
 
 
 def check_replay_semantics():
@@ -1251,6 +1868,20 @@ def check_ablation_arithmetic():
           f"a declared-and-settled ladder step reads as an addition through the declaration "
           f"(got {[(e['factor'], e['direction']) for e in ladder2['edges']]})")
 
+    # --- a doc that claims to describe what the tree refuses must speak the tree's language
+    design = (ROOT / "skills" / "ablation-design" / "SKILL.md").read_text(encoding="utf-8")
+    for token in ("factors", "controls", "factorsIntent", "confoundReason", "ablate"):
+        check(token in design,
+              f"ablation-design mentions {token} - a skill that teaches one-variable nodes "
+              f"without them produces nodes that are legal and invisible to the ablation table")
+    check("The tree already refuses" not in design,
+          "ablation-design no longer claims the tree refuses conjunction words - that is a "
+          "wording scan, and the tree enforces the factor symmetric difference instead")
+    rsi = (ROOT / "skills" / "rsi-experiment-tree" / "SKILL.md").read_text(encoding="utf-8")
+    check("ablation-design" in rsi,
+          "rsi-experiment-tree points at ablation-design, so the design-time half is reachable "
+          "from the half that enforces the rules")
+
     # --- the action is actually reachable
     srv = SERVER_PY.read_text(encoding="utf-8")
     check('"board", "ablate"' in srv, "kaggle_experiment_tree exposes the ablate action")
@@ -1415,7 +2046,7 @@ def check_tree_ownership():
     sys.path.insert(0, str(ROOT / "mcp"))
     hf = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(hf)
-    os.environ["KAGGLE_AGENT_HOME"] = tempfile.mkdtemp()
+    os.environ["KAGGLE_AGENT_HOME"] = _mkdtemp()
     bad_tree = {"tree": {"base": {"id": "n1", "label": "n1", "parent": None},
                          "nodes": {"n1": {"id": "n1", "kind": "experiment", "parent": None,
                                            "change": "two things and a third",
@@ -1437,7 +2068,7 @@ def check_runtime_behaviour():
     print("runtime behaviour")
     import subprocess
     server = ROOT / "mcp" / "agent_server.py"
-    env = dict(os.environ, KAGGLE_AGENT_HOME=tempfile.mkdtemp())
+    env = dict(os.environ, KAGGLE_AGENT_HOME=_mkdtemp())
     proc = subprocess.Popen([sys.executable, "-B", str(server)],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True, encoding="utf-8", env=env)
@@ -1550,41 +2181,235 @@ def check_evidence_chain():
     check(not r5["ok"], "the same source repeated under the same relation is refused")
 
 
-def check_plotting_is_self_contained():
-    """Plotting must not depend on anything the user has to install.
+def check_plotting_backend_is_real():
+    """Figures are drawn with numpy + matplotlib, and every claim about that is measured.
 
-    Measured on the build machine: numpy, scipy, pandas, matplotlib, statsmodels, pint and
-    pyDOE3 are all absent. If any chart type needed one of them, "the plugin ships its own
-    environment" would be false in the only way that matters - on a machine that does not have it.
+    The previous version of this check asserted the OPPOSITE - that the engine must not import
+    either package - because the engine used to hand-write SVG. That invariant was honest for
+    the engine it described and wrong for the one that exists, and a check that outlives its
+    reason is a check that stops meaning anything. So it is inverted here, and the new
+    assertions are the ones that actually matter on a machine that is missing the backend:
+
+      - a missing package produces `backend_missing` carrying the command that fixes it, not
+        an ImportError traceback out of a third-party import;
+      - a dataset with nothing plottable is refused and writes no file;
+      - the palette is the audited one, and the audit is re-runnable from the repo;
+      - `doctor` tells the truth about readiness instead of hard-coding it.
     """
-    print("self-contained plotting")
+    print("plotting backend")
     src = (ROOT / "mcp" / "plots.py").read_text(encoding="utf-8")
-    for banned in ("import numpy", "import matplotlib", "import pandas", "from scipy"):
-        check(banned not in src, f"the bundled engine does not {banned}")
-    ok_kind, bad_kind = "line", "nonsense"
+    # By NAME, not by import statement. The engine resolves both through one lazy
+    # `importlib.import_module` call so there is a single place that can turn a missing package
+    # into an instruction, and an assertion looking for the text "import numpy" would have
+    # rejected the better implementation.
+    for needed in ("numpy", "matplotlib"):
+        check(needed in src, f"the engine draws with {needed} - it is the backend, not an extra")
+
     _spec = importlib.util.spec_from_file_location("pl_chk", ROOT / "mcp" / "plots.py")
     pl = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(pl)
-    os.environ["KAGGLE_AGENT_HOME"] = tempfile.mkdtemp()
-    res = pl.render(ok_kind, {"series": [{"label": "s", "points": [[1, 1], [2, 2], [3, 3]]}]},
-                    "selfcontained", "t")
-    check(res.get("ok") and os.path.isfile(res["path"]),
-          "a figure renders with nothing installed")
+    os.environ["KAGGLE_AGENT_HOME"] = _mkdtemp()
+    res = pl.render("line", {"series": [{"label": "s", "points": [[1, 1], [2, 2], [3, 3]]}]},
+                    "backend", "t")
+    check(res.get("ok") and os.path.isfile(res["path"]), "a figure renders through the backend")
     text = open(res["path"], encoding="utf-8").read()
-    check(text.startswith("<svg") and "</svg>" in text, "the output is standalone SVG")
-    empty = pl.render(ok_kind, {"series": []}, "empty", "t")
-    check(not empty.get("ok"), "an empty dataset is refused rather than drawn")
+    check(text.startswith("<?xml") and "</svg>" in text, "the output is standalone vector SVG")
+
+    # every kind draws, from the same data contract `analyze` uses
+    for kind, data in (("band", {"bands": [{"label": "n1", "mean": 0.5, "std": 0.02, "n": 3}]}),
+                       ("bar", {"items": [{"label": "op", "value": 0.1}]}),
+                       ("scatter", {"points": [{"x": 1, "y": 2}, {"x": 2, "y": 3}]}),
+                       ("pareto", {"points": [{"x": 1, "y": 2}, {"x": 2, "y": 3}]}),
+                       ("forest", {"rows": [{"name": "acc", "value": 0.6, "std": 0.01}]})):
+        r = pl.render(kind, data, f"each-{kind}", "t")
+        check(r.get("ok") and os.path.isfile(r["path"]), f"the {kind} chart draws")
+
+    empty = pl.render("line", {"series": []}, "empty", "t")
+    check(not empty.get("ok") and not os.path.isfile(os.path.join(pl.plots_dir(), "empty.svg")),
+          "an empty dataset is refused and writes no file")
     check(set(pl.CHART_KINDS) == {"line", "band", "bar", "scatter", "pareto", "forest"},
           "the six chart types are declared")
-    # the dependency module must never install anything on its own
+
+    # A missing backend has to be an instruction, not a stack trace. `sys.modules[name] = None`
+    # makes `import name` raise, which is the closest faithful simulation of an absent package.
+    saved = {k: sys.modules.get(k) for k in ("numpy", "matplotlib")}
+    sys.modules["numpy"] = None
+    try:
+        blocked = pl.render("line", {"series": [{"points": [[1, 1], [2, 2]]}]}, "blocked", "t")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    check(blocked.get("code") == "backend_missing" and "numpy" in blocked.get("install", ""),
+          "a missing backend is named, with the command that installs it")
+    check("Traceback" not in blocked.get("error", "") and "Error" not in blocked.get("error", ""),
+          "a missing backend is reported as an instruction, never as a traceback")
+
+    # ...and with BOTH packages absent it has to name both. Reporting only the first one would
+    # produce an install command that is still missing a dependency after the user runs it.
+    saved2 = {k: sys.modules.get(k) for k in ("numpy", "matplotlib")}
+    sys.modules["numpy"] = None
+    sys.modules["matplotlib"] = None
+    try:
+        both = pl._backend
+        try:
+            both()
+            names: list[str] = []
+        except pl.BackendMissing as exc:
+            names = list(exc.missing)
+    finally:
+        for k, v in saved2.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    check(set(names) == {"numpy", "matplotlib"},
+          f"an absent backend names every missing package, not just the first ({names})")
+
+    # The palette is the audited Okabe-Ito subset, not whatever order someone typed. Two of the
+    # eight full-set colours fall below 3:1 on white and a third pair collides in greyscale, so
+    # this list is a measurement, and the auditor that produced it ships in the repo.
+    check(list(pl.PALETTE) == ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#000000"],
+          "the palette is the audited five, in the order the audit cleared")
+    auditor = ROOT / "skills" / "scientific-plotting" / "scripts" / "palette_audit.py"
+    check(auditor.is_file(), "the palette auditor ships with the plugin, so the claim is re-runnable")
+
     dsrc = (ROOT / "mcp" / "deps.py").read_text(encoding="utf-8")
-    check("subprocess" in dsrc, "the optional-package installer exists")
+    check("subprocess" in dsrc, "the installer exists")
     import deps as _d
-    bad = _d.install(["definitely-not-real"])
-    check(not bad.get("ok"), "installing an unknown package is refused")
+    check(not _d.install(["definitely-not-real"]).get("ok"),
+          "installing an unknown package is refused")
     p = _d.probe()
-    check(p.get("plottingReady") is True,
-          "the environment probe reports plotting is ready regardless of what is absent")
+    ready = bool(p.get("plottingReady"))
+    check(ready == all(_d._installed(n) for n in _d.BACKEND),
+          "doctor reports readiness as the backend's real state, not a hard-coded True")
+    if ready:
+        check("nextStep" not in p, "a ready machine is not told to install something")
+    else:
+        check("kaggle_sources" in p.get("nextStep", ""),
+              "a machine without the backend is given the command, as a next step")
+
+
+def check_the_audit_drives_and_does_not_acquit():
+    """Stage three of a claim audit: the mechanical half refuses, and never clears.
+
+    The split is the whole design, so both halves are asserted separately and the more
+    dangerous one gets the harder test. A gate that can say "the evidence exists" is easy to
+    build and very easy to misread as "the evidence supports the claim" - and an audit that
+    acquits is worse than no audit, because it manufactures the confidence it was meant to
+    check. So:
+
+      - a forbidden sentence copied in, and an artifact the tree claims that is not on disk,
+        must both be REFUSED here, with no model in the loop. A refusal is arithmetic.
+      - a number attributed to a node must be checked against what that node holds, and an
+        unmatched one must be handed on as WORK rather than quietly cleared.
+      - the packet must carry file paths and an explicit instruction not to accept a summary,
+        because a reviewer handed a summary reviews the summary.
+    """
+    print("claim audit: drives, does not acquit")
+    et, tree = _probe_tree()
+    node = _v3_node("n1", None, 0.50, 0.00, "improve", "ablation",
+                    cost={"quotaHours": 0.4, "wallSeconds": 900, "agentCalls": 12})
+    r = et.record("probe", node, et.read("probe")["readRevision"])
+    check(bool(r.get("ok")), f"the audit fixture tree records - problems={r.get('problems')!r}")
+
+    # `artifacts: ["a"]` above points at nothing, so a phantom is present by construction.
+    # That is the point: a tree that claims a file it never produced must be refused.
+    check(hasattr(et, "audit_report"), "the tree exposes audit_report")
+    if not hasattr(et, "audit_report"):
+        return
+
+    report = ("# Results\n\nThe base reached n1: 0.50.\n"
+              "And the same run reached n1: 0.97.\n")   # n1 holds 0.50, not 0.97
+    a = et.audit_report("probe", text=report)
+    kinds = {x["kind"] for x in a.get("refusals") or []}
+    check("phantom_artifact" in kinds,
+          f"an artifact the tree claims but that is not on disk is refused ({sorted(kinds)})")
+    nums = a.get("attributedNumbers") or {}
+    matched = {(x["node"], x["claimed"]) for x in nums.get("matched") or []}
+    unmatched = {(x["node"], x["claimed"]) for x in nums.get("unmatched") or []}
+    check(("n1", "0.50") in matched, f"a number the node does hold is matched to its field "
+                                    f"(matched={sorted(matched)})")
+    check(("n1", "0.97") in unmatched,
+          f"a number the node does NOT hold is reported, not cleared (unmatched={sorted(unmatched)})")
+    check(any(x.get("note") for x in nums.get("unmatched") or []),
+          "an unmatched number says what the node actually holds, so it can be acted on")
+    check(a.get("reviewNeeded") is True,
+          "a report with attributed numbers is flagged as needing a reviewer, even when the "
+          "mechanical pass found nothing to refuse")
+
+    # The dangerous half, asserted behaviourally rather than on the prose: a report whose numbers
+    # all match and which trips no refusal still comes back "clean", and "clean" still does not
+    # acquit it. If these two could not disagree, the whole distinction would be decorative.
+    #
+    # It needs a SECOND tree: the one above is built to contain a phantom artifact, so "clean" is
+    # unreachable there and asserting it would fail for the fixture's reason, not the code's.
+    et2, _ = _probe_tree()
+    real_artifact = Path(os.environ["KAGGLE_AGENT_HOME"]) / "figure.png"
+    real_artifact.write_bytes(b"\x89PNG\r\n\x1a\n")
+    clean_node = _v3_node("n1", None, 0.50, 0.00, "improve", "ablation")
+    clean_node["artifacts"] = [str(real_artifact)]
+    r2 = et2.record("clean", clean_node, et2.read("clean")["readRevision"])
+    check(bool(r2.get("ok")), f"the clean-tree fixture records - problems={r2.get('problems')!r}")
+    clean = et2.audit_report("clean", text="# Results\n\nThe base reached n1: 0.50.\n")
+    check(clean.get("code") == "clean" and not (clean.get("refusals") or []),
+          f"a report with nothing mechanically wrong is not refused - the gate does not invent "
+          f"faults (code={clean.get('code')!r}, refusals={clean.get('refusals')!r})")
+    check(clean.get("reviewNeeded") is True and clean.get("ok") is True,
+          "and 'clean' still demands a reviewer: a matching number proves the evidence EXISTS, "
+          f"not that it supports the sentence (reviewNeeded={clean.get('reviewNeeded')!r})")
+    check(et2.audit_report("clean", text="# Results\n\nNo attributed figures here.\n",
+                           review_report=False).get("reviewNeeded") is False,
+          "a reader who asked for no reviewer gets no reviewer")
+
+    packet = a.get("reviewerPacket") or {}
+    check("tree.json" in str(packet.get("tree")),
+          f"the reviewer packet names the tree FILE, not a summary of it (tree={packet.get('tree')!r})")
+    check("do not accept any summary" in str(packet.get("instruction", "")).lower(),
+          "the packet tells the reviewer not to trust a summary of the artifacts")
+    check("did NOT" in str(packet.get("instruction", "")),
+          "the packet states that the deterministic pass cleared nothing")
+    check(packet.get("alreadyRefused") == a.get("refusals"),
+          "the reviewer is told what was already refused, so it does not re-decide it")
+    # The packet must not smuggle the prose back in. A reviewer handed a summary reviews the
+    # summary, so the assertion is that the report's own sentences are absent from the packet.
+    packet_json = json.dumps(packet, ensure_ascii=False)
+    smuggled = [s for s in re.split(r"(?<=[.!?])\s+", report.strip())
+                if len(s) > 20 and s in packet_json]
+    check(not smuggled, f"the reviewer packet carries no sentence of the report itself ({smuggled})")
+
+    # The forbidden-sentence refusal, taken from this tree's OWN ledger rather than a phrase
+    # invented here - a fixture that guesses the wording tests nothing.
+    ledger = et.report("probe")
+    forbidden = [c for c in (ledger.get("mayNotClaim") or []) if isinstance(c, dict)]
+    if forbidden:
+        sentence = str(forbidden[0].get("because") or "")
+        b = et.audit_report("probe", text=f"# Results\n\nWe can say: {sentence}\n")
+        check(any(x["kind"] == "forbidden_claim" for x in b.get("refusals") or []),
+              "a mayNotClaim sentence copied in verbatim is refused mechanically "
+              f"(refusals={[x['kind'] for x in b.get('refusals') or []]})")
+    else:
+        check(False, "the ledger produced a mayNotClaim entry to test the copy-in refusal with")
+
+    # A missing report is a refusal, not a silent pass.
+    c = et.audit_report("probe", path=str(Path(tempfile.gettempdir()) / "ka-no-such-report.md"))
+    check(c.get("code") == "report_missing",
+          "auditing a file that is not there is refused rather than answered")
+
+    # The rule has to be written where the agent will actually read it, or the tool exists and
+    # nobody uses it. A text assertion is cheap and it is the only thing that stops a later
+    # edit quietly deleting the distinction.
+    for rel in ("skills/technical-report/SKILL.md", "skills/ablation-design/SKILL.md"):
+        text = (ROOT / rel).read_text(encoding="utf-8").lower()
+        check("acquit" in text and "refus" in text,
+              f"{rel} states that a gate may refuse but may never acquit")
+
+    # and the action is actually advertised, not just implemented
+    srv = (ROOT / "mcp" / "kaggle_server.py").read_text(encoding="utf-8")
+    check('"audit-report"' in srv, "the action is in the published enum")
+    check("action == \"audit-report\"" in srv, "the action is dispatched by the server")
 
 
 def check_evidence_graph_binding():
@@ -1675,13 +2500,40 @@ def check_skill_index():
 
 # ---------------------------------------------------------------- version sync
 def check_version_sync():
+    """Every version declared anywhere in the package must be the same one.
+
+    This used to read exactly three places - the manifest, relationships.json and
+    SERVER_INFO - and hardcode them by name. A second, Claude-format manifest sat in the
+    repository for twelve releases saying 1.12.3, and nothing went red, because the checker
+    only ever looked at the three files it had been told about. So it now finds them: any
+    JSON in the package that declares a `version` has to agree with the manifest, and
+    SERVER_INFO is matched by regex wherever it lives. Adding a fourth distribution format
+    now costs one edit instead of producing a silent lie.
+    """
     print("version sync")
     data, _ = parse_json(MANIFEST)
     ver = data.get("version")
-    rel, _ = parse_json(REL)
-    if rel is not None:
-        check(rel.get("version") == ver,
-              f"relationships.json version matches manifest ({ver})")
+    check(bool(ver), f"the manifest declares a version ({ver})")
+
+    found: list[tuple[str, str]] = []
+    for path in sorted(ROOT.rglob("*.json")):
+        if ".git" in path.parts:
+            continue
+        rel = path.relative_to(ROOT).as_posix()
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        # a plugin manifest declares version at the top level, or on each listed plugin
+        for match in re.finditer(r'"version"\s*:\s*"([^"]+)"', raw):
+            found.append((rel, match.group(1)))
+    check(bool(found), "the package declares at least one version to compare")
+    for rel, declared in found:
+        check(declared == ver,
+              f"{rel} version matches the manifest ({ver}) - found {declared}")
+    check(MANIFEST.relative_to(ROOT).as_posix() in {r for r, _ in found},
+          "the manifest is one of the files compared")
+
     text = SERVER_PY.read_text(encoding="utf-8")
     m = re.search(r'SERVER_INFO\s*=\s*\{[^}]*"version"\s*:\s*"([^"]+)"', text)
     if check(m is not None, "kaggle_server.py has SERVER_INFO version"):
@@ -1691,7 +2543,7 @@ def check_version_sync():
 # ---------------------------------------------------------------- publishable
 # Everything above validates the working tree. That is the wrong tree. This package is
 # published as a git repository, and a file can be present on disk, declared in the
-# manifest, referenced by the relationship graph 鈥?and still be absent from the repo.
+# manifest, referenced by the relationship graph — and still be absent from the repo.
 #
 # It happened. `.gitignore` carried an unanchored `handoff/` to keep a runtime output
 # directory out of the tree; git reads a pattern with no leading slash as matching at
@@ -1808,7 +2660,7 @@ def check_publishable():
                 continue
             for rx, label in PUBLISH_SECRET_PATTERNS:
                 if rx.search(text):
-                    bad(f"possible {label} in {rel} 鈥?this repository is public")
+                    bad(f"possible {label} in {rel} — this repository is public")
                     hits += 1
         if hits == 0:
             ok(f"no credential literal in any of the {len(publishable)} publishable files")
@@ -1827,7 +2679,7 @@ def check_publishable():
         for rx, label in MACHINE_PATH_PATTERNS:
             found = rx.search(text)
             if found:
-                bad(f"{label} in {rel}: {found.group(0)!r} 鈥?this package is installed "
+                bad(f"{label} in {rel}: {found.group(0)!r} — this package is installed "
                     f"on other machines, use a plugin-relative path or ${{PLUGIN_ROOT}}")
                 machine_hits += 1
     if machine_hits == 0:
@@ -1837,7 +2689,7 @@ def check_publishable():
 # ---------------------------------------------------------------- data locality
 # The user does not want competition data pulled onto this machine, ever. The skill said
 # "must run locally" and "write a local CPU notebook", which is an instruction to download the
-# dataset 鈥?on a competition where every listed file 403s anyway. Prose was not enough: the fix
+# dataset — on a competition where every listed file 403s anyway. Prose was not enough: the fix
 # has to be something a later edit cannot quietly undo, so the required wording is asserted here.
 RESEARCH_SKILL = ROOT / "skills" / "kaggle-competition-research" / "SKILL.md"
 
@@ -1872,10 +2724,11 @@ def check_data_stays_on_kaggle():
 # The in-app browser is for *discovery*. Deciding which pages matter and reading them is not
 # delegated to it: a known URL is read with web_fetch. The skill used to say "Do it with the
 # in-app browser in this session, not with a search tool" for the coverage floor, while the
-# competition-browser agent doc already recorded that a detached subagent has only web_fetch 鈥?
-# the two files contradicted each other and the browser was doing a job it is bad at.
+# forensics doc already recorded that a detached subagent has only web_fetch — the two files
+# contradicted each other and the browser was doing a job it is bad at. Since the forensics moved
+# into the main thread, the skill is the only place these instructions live, and the checks in
+# check_wave_two_is_single_threaded are what keep them there.
 RESEARCH_SKILL = ROOT / "skills" / "kaggle-competition-research" / "SKILL.md"
-BROWSER_AGENT_DOC = ROOT / "skills" / "competition-browser-agent.md"
 
 
 def check_browser_is_search_only():
@@ -1894,7 +2747,7 @@ def check_browser_is_search_only():
               f"the research skill no longer says {banned[:46]!r}")
 
     # The boundary itself, stated positively. The floor names three specific sites, so each
-    # one gets a concrete web_fetch example on its own line 鈥?a whole-file containment test
+    # one gets a concrete web_fetch example on its own line — a whole-file containment test
     # would pass with two of the three examples deleted, because `web_fetch url=` and the
     # host strings both survive somewhere else in a 34 KB document.
     check("the floor is about the source, not the tool" in lowered,
@@ -1921,19 +2774,17 @@ def check_browser_is_search_only():
         check("web_fetch" in desc,
               "relationships.json scopes the browses edge to web_fetch for known URLs")
 
-    if BROWSER_AGENT_DOC.is_file():
-        agent_doc = BROWSER_AGENT_DOC.read_text(encoding="utf-8")
-        check("the in-app browser is the primary method" not in agent_doc.lower(),
-              "the competition-browser doc no longer makes the browser its primary method")
-        check("page selection is not the browser's job" in agent_doc.lower()
-              or "not the browser's job" in agent_doc.lower(),
-              "the competition-browser doc states the browser does not choose pages")
+    # The two assertions that used to live here, reading the agent's own doc, are gone with the
+    # doc. Guarding them behind `is_file()` would have turned them into two assertions that
+    # silently stop running while still reading as coverage - so the discipline they carried
+    # (the browser is not the primary method; page selection is not the browser's job) is now
+    # asserted against the research skill itself, which is where those instructions live.
 
 
 # ---------------------------------------------------------------- research preflight
 # Research is the expensive path in this plugin: four subagents, a multi-round sweep and a
 # forensics pass. Re-running it over work that already exists is the most wasteful thing the
-# skill can do, and the skill had no preflight at all 鈥?handoff appeared once, at the end, as
+# skill can do, and the skill had no preflight at all — handoff appeared once, at the end, as
 # something to *offer*. The user's rule: check the local workspace first, and ask about a cloud
 # handoff rather than assuming there is none.
 def check_research_preflight():
@@ -1945,7 +2796,7 @@ def check_research_preflight():
 
     # Form, not name. A document this size keeps the word "handoff_status" alive in prose long
     # after the call itself is gone, and keeps the word "ask" and "cloud" alive after the
-    # question is deleted 鈥?so each assertion below pins the exact instruction, not a token.
+    # question is deleted — so each assertion below pins the exact instruction, not a token.
     check('handoff_status competition=' in text,
           "the preflight shows the handoff_status CALL, not just the name")
     check('kaggle_experiment_tree action="read"' in text,
@@ -2018,7 +2869,7 @@ def check_launch_gate():
     tree_file = Path(et.tree_path(comp))
     if tree_file.exists():
         tree_file.unlink()
-    folder = Path(_tempfile.mkdtemp(prefix="ka-gate-"))
+    folder = Path(_mkdtemp(prefix="ka-gate-"))
     try:
         (folder / "notebook.ipynb").write_text("{}", encoding="utf-8")
         (folder / "kernel-metadata.json").write_text(
@@ -2277,14 +3128,18 @@ def check_launch_attaches_monitoring():
 
     try:
         def _nb():
-            d = Path(_tempfile.mkdtemp(prefix="ka-mon-"))
+            d = Path(_mkdtemp(prefix="ka-mon-"))
             folders.append(d)
             (d / "notebook.ipynb").write_text("{}", encoding="utf-8")
             (d / "kernel-metadata.json").write_text(
                 '{"id":"tester/nb-auto-monitor","title":"t"}', encoding="utf-8")
             return str(d)
 
-        ks.run_kaggle = lambda cmd: (
+        # The stub takes the real signature. run_kaggle grew an `account` keyword, and a stub
+        # that only accepted the positional command raised TypeError on every call - which reads
+        # as a broken check rather than as a stale test double, and is exactly the case where a
+        # suite can fail for a reason that has nothing to do with what it is testing.
+        ks.run_kaggle = lambda cmd, account="": (
             0, "Kernel version 1 successfully pushed to "
                "https://www.kaggle.com/code/tester/nb-auto-monitor", "")
 
@@ -2314,7 +3169,7 @@ def check_launch_attaches_monitoring():
         check(_targets() == [], f"and it attached no target: {_targets()}")
 
         lm.reset()
-        ks.run_kaggle = lambda cmd: (1, "", "kaggle: notebook metadata is invalid")
+        ks.run_kaggle = lambda cmd, account="": (1, "", "kaggle: notebook metadata is invalid")
         _mk_decl("e3")
         r = ks.tool_call("kaggle_kernel_launch",
                          {"folder": _nb(), "competition": comp, "declares": "e3"})
@@ -2381,7 +3236,7 @@ def check_local_run_is_monitored():
         tree_file.unlink()
     cfg = Path(lm.config_path())
     backup = cfg.read_bytes() if cfg.exists() else None
-    work = Path(_tempfile.mkdtemp(prefix="ka-check-local-"))
+    work = Path(_mkdtemp(prefix="ka-check-local-"))
 
     def _targets():
         return lm.describe().get("targets") or []
@@ -2515,7 +3370,7 @@ def check_competition_isolation():
     et = sys.modules.get("experiment_tree")
     json = __import__("json")
 
-    home = _tempfile.mkdtemp(prefix="ka-check-iso-")
+    home = _mkdtemp(prefix="ka-check-iso-")
     os.environ["KAGGLE_AGENT_HOME"] = home
     try:
         def rec(competition, nid, change="do a thing"):
@@ -2608,36 +3463,391 @@ def check_competition_isolation():
         _shutil.rmtree(home, ignore_errors=True)
 
 
-# ---------------------------------------------------------------- text encoding
-# A UTF-8 file round-tripped through a Windows PowerShell pipeline comes back as DIFFERENT
-# characters, not as an error: Get-Content -Raw decodes with the system codepage (GBK here)
-# and the next write re-encodes the result, so every CJK string in the file silently becomes
-# other CJK strings of similar width. It reached the published repository across four commits
-# before it was found, in a single retired-agent name, and 1053 checks stayed green because
-# nothing looked at the bytes.
-#
-# The tell is a code point comparison, never a console rendering: the console will happily
-# display corrupted characters as if they were the intended ones.
-BOM = b"\xef\xbb\xbf"
-ENCODING_SUFFIXES = {".py", ".md", ".json", ".sh", ".cmd", ".txt", ".yml", ".yaml"}
-# Literals whose exact characters matter, compared by code point. A mojibake round trip
-# produces same-width wrong characters, so a length check cannot see it.
-EXACT_LITERALS = [
-    ("tools/check_plugin.py", "Kaggle \u641c\u7d22", "\u641c\u7d22"),
-    ("skills/competition-browser-agent.md", "\u641c\u7d22", "\u641c\u7d22"),
-]
+
+def _flat(text: str) -> str:
+    """Whitespace-collapsed text, for checks that assert a phrase is present.
+
+    A reflowed paragraph splits "no score at / all" across two lines while the reader still sees
+    one phrase. Asserting on the raw source then fails on where the line breaks fell rather than
+    on whether the instruction exists, and the failure sends you to fix the line wrapping. The
+    quotes themselves are still matched exactly - only the whitespace between words is normalised.
+    """
+    return " ".join(text.split())
 
 
-def _publishable_text_files() -> list[Path]:
-    out = []
-    for f in ROOT.rglob("*"):
-        if not f.is_file() or f.suffix.lower() not in ENCODING_SUFFIXES:
-            continue
-        parts = set(f.parts)
-        if ".git" in parts or "__pycache__" in parts:
-            continue
-        out.append(f)
-    return sorted(out)
+# ---------------------------------------------------------------- the two agenda questions
+def check_the_waves_ask_what_to_search():
+    print("research agenda questions")
+    if not check(RESEARCH_SKILL.is_file(), "the research skill is present"):
+        return
+    text = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+    flat = _flat(text)
+    low = flat.lower()
+
+    check("do not stop to ask" not in low,
+          "the skill no longer tells an agent to push on without asking when nobody is watching")
+
+    marks = {
+        "shape": text.find("## The shape"),
+        "ask1": text.find("## Before the wave: ask what it is for"),
+        "launch": text.find("## Launch a wave"),
+        "ask2": text.find("## After the first wave: ask what it changed"),
+        "engine": text.find('kaggle_search_engine action="ask"'),
+    }
+    check(all(v > 0 for v in marks.values()),
+          "both agenda questions, and the sections they bracket, are present")
+    # No early return here. Bailing out on the first missing heading would report ONE failure
+    # for a skill that lost both questions, and every assertion after the bail would sit
+    # unexercised while still reading as coverage. Guard each one instead.
+    if all(v > 0 for v in marks.values()):
+        check(marks["shape"] < marks["ask1"] < marks["launch"],
+              "the first question sits after the shape and before the wave is launched")
+        check(marks["launch"] < marks["ask2"] < marks["engine"],
+              "the second question sits after the wave and before an engine is asked about")
+
+    check(text.count("ask_user") >= 2, "both questions go through ask_user")
+    check("not a widget" in low, "a mid-sweep question is text, not a widget")
+
+    # Each question's own section has to say it is asked away as well, not just inherit that
+    # from the first one: "like the first" is a pointer, and a reader who skipped that section
+    # is exactly the one who needs the sentence. Offsets are taken on the same text that is
+    # sliced - positions found in the un-collapsed source mean nothing in the collapsed copy.
+    f_ask1 = flat.find("## Before the wave: ask what it is for")
+    f_launch = flat.find("## Launch a wave")
+    f_ask2 = flat.find("## After the first wave: ask what it changed")
+    f_engine = flat.find('kaggle_search_engine action="ask"')
+    for label, lo, hi in (("first", f_ask1, f_launch), ("second", f_ask2, f_engine)):
+        check(lo > 0 and hi > lo, f"the {label} question's section is locatable")
+        seg = flat[lo:hi].lower() if lo > 0 and hi > lo else ""
+        check("tier-3" in seg and "away" in seg,
+              f"the {label} question says it is asked away, not only when present")
+
+    # A question inside a wave blocks that response and turns the parallel into a queue.
+    idxs = [m.start() for m in re.finditer(r"task\(agent_name=", text)]
+    check(len(idxs) >= 4, f"a wave is shown as four task( calls (found {len(idxs)})")
+    if len(idxs) >= 4:
+        check("ask_user" not in text[idxs[0]:idxs[3]],
+              "no question is interleaved between the four task( calls of one wave")
+
+    # Trimming a wave is allowed. Losing one without saying so is not: a trimmed wave and a
+    # complete one produce the same shape of report, and the next reader cannot tell them apart.
+    check("you may cut a subagent" in low,
+          "the skill permits a subagent to be cut rather than forbidding it")
+    check("quietly lost a member" in low,
+          "and a cut member has to be named in the report as cut")
+
+
+def check_reading_the_code_is_a_chain_not_a_vow():
+    print("reading the code is a chain")
+    if not check(RESEARCH_SKILL.is_file(), "the research skill is present"):
+        return
+    text = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+    flat = _flat(text)
+
+    check("kaggle_kernel_pull" in flat and "notebook.ipynb" in flat,
+          "the sweep pulls each notebook and reads the source file, not the title")
+    check("share an ancestor" in flat and "forked from it" in flat,
+          "same-lineage notebooks are clustered by an ancestor, and the fan-out is reported")
+    check("score bands" in flat and "inside a cluster, or between clusters" in flat,
+          "scores are banded, and the question is whether the movement is inside a cluster")
+    for v in ("`factors`", "`controls`", "`conditional`"):
+        check(v in flat, f"attribution is written in the existing shape: {v}")
+    check("author-reported" in flat and "only a re-run settles it" in flat,
+          "a diff yields a hypothesis about an author-reported number; only a re-run settles it")
+    check("which notebooks you did not read" in flat,
+          "the report has to name the notebooks that were not read")
+
+
+def check_the_code_sweep_states_its_proxy_and_its_gotchas():
+    print("code sweep triage")
+    if not check(RESEARCH_SKILL.is_file(), "the research skill is present"):
+        return
+    text = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+    flat = _flat(text)
+    low = flat.lower()
+
+    check("no score at all" in low,
+          "the skill states that the kernel listing carries no score column")
+    check("Pick one proxy, write it down" in flat,
+          "so 'high scoring' needs a proxy the report names out loud")
+    check("100 is a ceiling" in low and "never a total" in low,
+          "the 100-record server cap is stated as a ceiling, never as the size of the field")
+    check("bytes reprs" in low and "the highest-voted notebook" in low,
+          "the bytes-repr ref damage is recorded, including that it hit the top-voted notebook")
+    check("Next Page Token" in flat,
+          "leaderboard pagination is recorded, the same way the forum's already was")
+    check("list separately anything you could not repair" in low,
+          "an unrepairable ref is listed rather than dropped, since a dropped one reads as absent")
+
+
+def check_the_method_note_has_a_home():
+    print("the four-line method note")
+    if not check(RESEARCH_SKILL.is_file(), "the research skill is present"):
+        return
+    text = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+    flat = _flat(text)
+    low = flat.lower()
+
+    # Matched as a template line, not as the bare word. The prose around the block also says
+    # "Coverage" twice - once explaining that it is the field people skip, once in an example
+    # report - so a check on the word is satisfied by the explanation alone and passes after
+    # the field itself has been deleted. The angle bracket is what makes it a required field.
+    for field in ("Read", "How", "Blocked at", "Coverage"):
+        check(re.search(rf"{re.escape(field)}:\s+<", flat) is not None,
+              f"every subagent reports a {field} line, as a filled-in field")
+    check("`controls.data`" in flat,
+          "the data subagent's read is lifted into its own node's controls.data")
+    # Scoped to the data section. The review gate's table also names action="declare" - for a
+    # different, allowed thing - so searching the whole skill for the token is satisfied by
+    # that row and passes even after the data run's own declaration was deleted.
+    a = text.find("## Wave 1 subagent 4")
+    b = text.find("### When the account that may read the data")
+    check(a > 0 and b > a, "the data subagent's section is locatable")
+    if a > 0 and b > a:
+        sec = _flat(text[a:b])
+        check('action="declare"' in sec and "declares=" in sec,
+              "the data run is declared before it is launched, which the launch tool requires")
+    check("`constraints`" in flat, "the other notes are lifted into the handoff's constraints")
+    check("added by the main agent" in low and "stale_read" in flat,
+          "sources are stored by the main agent, because parallel writers lose each other's work")
+
+
+def check_no_mojibake_in_english_sources():
+    print("encoding damage in code")
+    # 16 of these shipped: a UTF-8 em dash decoded as GBK, so the sources that a model reads -
+    # including one inside a tool description - carried a CJK character and a stray '?'.
+    signature = {0x9225: "U+9225", 0x95B3: "U+95B3", 0x95C2: "U+95C2", 0x9226: "U+9226"}
+    hits: list[str] = []
+    for sub in ("mcp", "tools"):
+        for path in sorted((ROOT / sub).rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                for ch in line:
+                    if ord(ch) in signature:
+                        hits.append(f"{path.relative_to(ROOT)}:{i} {signature[ord(ch)]}")
+    check(not hits, f"no mojibake left in mcp/ or tools/ ({len(hits)} hit(s))"
+          + ("" if not hits else f": {hits[:5]}"))
+
+
+def check_the_scores_that_the_rules_gave_away_are_separated():
+    print("method gains vs scores the rules gave away")
+    if not check(RESEARCH_SKILL.is_file(), "the research skill is present"):
+        return
+    text = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+    flat = _flat(text)
+
+    check("a label leak" in flat and "duplicated train/test row" in flat,
+          "the static patterns of a rules-era score are named, so they can be looked for")
+    check("when it does the score evaporates" in flat,
+          "the skill says such a score goes away when the host fixes the rule")
+    check("let a re-run decide it" in flat,
+          "and that the re-run, not the reading, is what settles it")
+    check("Claimed" in flat and "Reproduced today" in flat and "Verdict" in flat,
+          "the report carries claimed and reproduced as separate columns")
+    check("is not a failed experiment" in flat,
+          "a collapsed score is reported as a first-class result rather than dropped")
+    check("we fixed the scoring" in flat,
+          "the host's own announcement is a source, so an unfixed rule is carried into the plan")
+
+
+def check_an_account_named_for_one_call_does_not_switch_the_session():
+    print("per-call accounts")
+    spec = importlib.util.spec_from_file_location(
+        "ks_acct_check", ROOT / "mcp" / "kaggle_server.py")
+    ks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ks)
+    creds = getattr(ks, "credentials", None)
+    check(creds is not None and hasattr(creds, "token_for"),
+          "credentials can resolve a named account without rewriting the active one")
+    if creds is not None and hasattr(creds, "token_for"):
+        doc = (creds.token_for.__doc__ or "").lower()
+        check("without touching the active one" in doc,
+              "and the function says so, so the guarantee is readable at the call site")
+
+    src = (ROOT / "mcp" / "kaggle_server.py").read_text(encoding="utf-8")
+    code_only = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+    launch = code_only.find('if name == "kaggle_kernel_launch"')
+    accounts = code_only.find('if name == "kaggle_accounts"')
+    check(launch > 0 and accounts > 0 and "use_account" not in code_only[min(launch, accounts):
+                                                                        max(launch, accounts)],
+          "launching as another account no longer switches the active account as a side effect")
+
+    aware = [t["name"] for t in ks.TOOLS
+             if "account" in ((t.get("inputSchema") or {}).get("properties") or {})]
+    for tool in ("kaggle_quota", "kaggle_kernel_launch", "kaggle_kernels_output",
+                 "kaggle_competitions_list", "kaggle_kernel_pull", "kaggle_datasets_publish"):
+        check(tool in aware, f"{tool} takes an account, so a second account is usable mid-task")
+    check(len(aware) >= 12, f"account is a per-call option, not a launch-only extra ({len(aware)})")
+
+    cli = (ROOT / "mcp" / "kaggle_cli.py").read_text(encoding="utf-8")
+    check('argv[0] == "--as"' in cli and "token_for" in cli,
+          "the CLI has the same one-shot selector, so the shell route is not a global switch")
+
+    text = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+    check('account="<A>"' in text and 'account="<B>"' in text,
+          "the research skill routes a copy as one account and a compute as another")
+    check('accelerator="none"' in text, "and the copy itself runs on the CPU tier")
+    check("kaggle datasets create" in text and "dataset_sources" in text,
+          "the data changes hands as a dataset inside Kaggle, mounted by the second account")
+    check("Never put A's token in a notebook cell" in text,
+          "and the token is never inlined into a notebook that gets published")
+
+
+def check_wave_two_is_single_threaded():
+    print("wave 2 runs in one thread")
+    if not check(RESEARCH_SKILL.is_file(), "the research skill is present"):
+        return
+    text = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+    flat = _flat(text)
+    low = flat.lower()
+
+    check("agent:competition-browser" not in flat,
+          "no subagent is dispatched for the forensics any more")
+    check("competition-browser" not in low,
+          "the removed agent is not named anywhere in the skill body")
+
+    # The wave-2 span, bounded by its own headings, must hold no task() at all. Checking the
+    # whole file instead would pass while a dispatch sat inside the forensics section, which is
+    # exactly where it used to be.
+    w2 = flat.find("Wave 2, step 1")
+    end = flat.find("Before any experiment: declare the held-out set")
+    check(w2 > 0 and end > w2, "the wave-2 span is locatable between its own two headings")
+    if w2 > 0 and end > w2:
+        check("task(" not in flat[w2:end],
+              "nothing inside wave 2 dispatches a subagent - the forensics are done in-thread")
+
+    # The discipline the removed agent's persona carried. It was the whole reason the agent
+    # existed, and it disappears silently: a report that stops opening the real page still looks
+    # like a report.
+    for phrase, label in (
+        ("not reachable in this session", "a page that cannot be read is named, not skipped"),
+        ("A missing licence is a finding", "a missing licence is treated as a finding"),
+        ("Paper numbers are not leaderboard numbers",
+         "a paper's number is never treated as a leaderboard score"),
+        ("A snippet is a claim *about* a source, not the source",
+         "a search snippet is not accepted as the source"),
+        ("An empty result is a result", "an empty result is not padded"),
+        ("Never substitute a generic search to fill the gap",
+         "a search never fills the gap a page left"),
+    ):
+        check(phrase in flat, f"the forensics still says: {label}")
+
+    check("`fetch`, `browser`, or\n`not reachable`" in flat or
+          all(x in flat for x in ("`fetch`", "`browser`", "`not reachable`")),
+          "every source carries the method it was read with")
+
+    # Read-but-not-recorded is a field the next session re-reads.
+    for tool in ('kaggle_sources action="add"', 'action="extract"', 'action="link"'):
+        check(tool in flat, f"the forensics stores what it read: {tool}")
+    check('"kind":"research"' in flat and '"sources"' in flat,
+          "and lands it on a research node with its source references")
+
+
+def check_the_plan_is_reviewed_before_it_is_handed_off():
+    print("the plan is reviewed before it is handed off")
+    if not check(RESEARCH_SKILL.is_file(), "the research skill is present"):
+        return
+    text = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+    flat = _flat(text)
+    low = flat.lower()
+
+    # Gate A. Three questions, and the ones that branch - not a proofread request.
+    check("Gate A" in flat, "there is a gate before the handoff is offered")
+    check("ask_user" in flat, "the first gate asks with ask_user")
+    for what, label in (("Which approach", "which approach"),
+                        ("Which experiment runs first", "which experiment runs first"),
+                        ("Which held-out set", "which held-out set")):
+        check(what in flat, f"the gate asks {label}")
+    check("tier-3" in low, "and it is tier-3, so it is asked away as well as present")
+
+    # Gate B has two valid exits. A skill that assumes ExitPlanMode exists stalls the most
+    # important step of the whole skill on a tool the runtime may not have.
+    check("ExitPlanMode" in flat, "the plan can be put up for review with ExitPlanMode")
+    # The whole bullet, not a fragment of it. The file contains "is not available" in an
+    # unrelated sentence about reading every notebook, so a bare search for the phrase is
+    # satisfied by a coincidence and would pass after the fallback had been deleted.
+    check("It is not available, and that is a normal outcome" in flat,
+          "and there is a documented route when that tool is not available")
+    check("you will not write a handoff" in low,
+          "the fallback states what will not happen until the plan is approved")
+
+    # The gate has to bite. A handoff is what the next agent reads as the plan. Matched per
+    # line rather than as one fixed cell, because a row may name more than the tool it blocks.
+    rows = [l for l in text.splitlines() if l.strip().startswith("|")]
+    for blocked in ("`handoff_write`", "`handoff_sync`", "`kaggle_kernel_launch`"):
+        row = next((l for l in rows if blocked in l), None)
+        check(row is not None and "**blocked**" in row,
+              f"{blocked} is blocked until the plan is approved")
+    check(any('`kaggle_experiment_tree action="anchor"`' in l and "**allowed**" in l for l in rows),
+          "and declaring the anchor is explicitly still allowed, so the gate blocks acting, "
+          "not thinking")
+
+    # presence-mode's tier-2 "draft it locally" rule would otherwise write an unapproved plan
+    # to disk the moment the user looks away, and the gate would be theatre.
+    handoff = ROOT / "skills" / "handoff" / "SKILL.md"
+    if check(handoff.is_file(), "the handoff skill is present"):
+        h = _flat(handoff.read_text(encoding="utf-8"))
+        check("One exception, and it outranks the tier" in h,
+              "the handoff skill's tier-2 drafting exception is stated")
+        check("not tier-2" in h and "unreviewed research plan" in h.lower(),
+              "and it says an unapproved plan is not the tier-2 case, even when away")
+
+
+def check_the_package_survives_a_marketplace_install():
+    """A local install and a Marketplace install do not have the same shape on disk.
+
+    A local plugin sits at ``<root>/kaggle-agent``. A Marketplace plugin is cached under a
+    directory named after its content hash, several levels further down. Two separate pieces of
+    code find this package - the entry module, and the one-line bootstrap the manifest carries
+    because it cannot reference a path - and both used to look one level down and match on a
+    directory name. A Marketplace user therefore got a server that never started, and the
+    symptom is an empty tool list, which reads as "the plugin did not register".
+
+    The bootstrap is also run under ``python -c``, where ``runpy.run_path(..., run_name=
+    '__main__')`` cannot work: the interpreter's ``__main__`` has no spec and sys.path[0] is the
+    package's own directory. That raised before a single tool was registered, so it is asserted
+    here rather than left to the shape of the code.
+    """
+    entry = (ROOT / "mcp" / "agent_server.py").read_text(encoding="utf-8")
+    servers = json.loads((ROOT / "servers.mcp.json").read_text(encoding="utf-8"))
+    args = servers["mcpServers"]["kaggle"]["args"]
+    code = args[args.index("-c") + 1]
+
+    check("plugin-cache" in entry, "the entry module knows the marketplace cache root")
+    check("plugin-import" in entry, "the entry module knows the imported-plugin root")
+    check("plugin-cache" in code, "the bootstrap knows the marketplace cache root too")
+    check("plugin-import" in code, "the bootstrap knows the imported-plugin root too")
+    check("os.path.join(b,n,m)" in code, "the bootstrap descends two levels, not one")
+
+    check("PLUGIN_NAME" in entry and 'get("name")' in entry,
+          "the package is identified by its manifest name, not by a directory name")
+    check("run_name='__main__'" not in code,
+          "the bootstrap does not ask runpy for a __main__ module that python -c cannot provide")
+    check("exec(compile(" in code and "'__name__':'__main__'" in code,
+          "the bootstrap executes the entry with an explicit __name__")
+
+    # bin/kaggle-cli.sh is a Python file with a shebang and carries no executable bit, so a
+    # documented `./bin/kaggle-cli.sh` fails with permission denied on the machine that installs.
+    sh = (ROOT / "bin" / "kaggle-cli.sh").read_text(encoding="utf-8")
+    cli_skill = (ROOT / "skills" / "kaggle-cli" / "SKILL.md").read_text(encoding="utf-8")
+    check("./bin/kaggle-cli.sh" not in cli_skill,
+          "the skill never asks a user to run a file whose executable bit is not shipped")
+    check("./bin/kaggle-cli.sh" not in sh, "the script's own examples do not either")
+    check("python3 bin/kaggle-cli.sh" in cli_skill,
+          "the skill documents the interpreter call that works without the mode bit")
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    check("mcode plugin add kaggle-agent@official" in readme,
+          "the README tells an installed user how the plugin gets there")
+
+    probe = ROOT / "tools" / "probe_marketplace_layout.py"
+    check(probe.is_file(), "the marketplace layout probe ships with the package")
+
+    transport = (ROOT / "tools" / "probe_transport.py").read_text(encoding="utf-8")
+    check("PROBE_TRANSPORT_OK" in transport and "PROBE_TRANSPORT_FAILED" in transport,
+          "the transport probe can report failure, not only success")
+
 
 def main() -> int:
     check_manifest()
@@ -2656,18 +3866,35 @@ def main() -> int:
     check_undo_and_rounds()
     check_migration_v2_to_v3()
     check_ablation_arithmetic()
+    check_the_dataset_is_a_control_and_silence_is_not_a_disagreement()
+    check_the_thinking_steps_were_actually_added()
+    check_the_readme_counts_what_the_package_contains()
     check_decision_coupling()
     check_tree_ownership()
     check_runtime_behaviour()
     check_evidence_chain()
-    check_plotting_is_self_contained()
+    check_plotting_backend_is_real()
+    check_vendored_content_is_scanned()
+    check_the_audit_drives_and_does_not_acquit()
     check_evidence_graph_binding()
     check_skill_index()
     check_widget_binding()
     check_no_secrets()
+    check_no_uncalled_functions()
+    check_store_migration()
     check_no_stale_names()
     check_version_sync()
     check_data_stays_on_kaggle()
+    check_wave_two_is_single_threaded()
+    check_the_plan_is_reviewed_before_it_is_handed_off()
+    check_the_package_survives_a_marketplace_install()
+    check_the_waves_ask_what_to_search()
+    check_reading_the_code_is_a_chain_not_a_vow()
+    check_the_code_sweep_states_its_proxy_and_its_gotchas()
+    check_the_method_note_has_a_home()
+    check_no_mojibake_in_english_sources()
+    check_the_scores_that_the_rules_gave_away_are_separated()
+    check_an_account_named_for_one_call_does_not_switch_the_session()
     check_browser_is_search_only()
     check_research_preflight()
     check_launch_gate()
@@ -2744,9 +3971,9 @@ def check_diagnosis_loop():
 
     comp = "zz-check-" + "_ks_loop"
     COMP = comp          # the embedded body was written against a module constant
-    home = _tempfile.mkdtemp(prefix="ka-_ks_loop-")
+    home = _mkdtemp(prefix="ka-_ks_loop-")
     _os.environ["KAGGLE_AGENT_HOME"] = home
-    work = _pl.Path(_tempfile.mkdtemp(prefix="ka-_ks_loop-work-"))
+    work = _pl.Path(_mkdtemp(prefix="ka-_ks_loop-work-"))
     log = Path(work, "run.log")     # the embedded body refers to this name
     log.write_text(
         "loading data...\n"
@@ -2905,9 +4132,9 @@ def check_node_survives_the_tool_boundary():
 
     comp = "zz-check-" + "_ks_boundary"
     COMP = comp          # the embedded body was written against a module constant
-    home = _tempfile.mkdtemp(prefix="ka-_ks_boundary-")
+    home = _mkdtemp(prefix="ka-_ks_boundary-")
     _os.environ["KAGGLE_AGENT_HOME"] = home
-    work = _pl.Path(_tempfile.mkdtemp(prefix="ka-_ks_boundary-work-"))
+    work = _pl.Path(_mkdtemp(prefix="ka-_ks_boundary-work-"))
     log = Path(work, "run.log")     # the embedded body refers to this name
     log.write_text(
         "loading data...\n"
@@ -3002,7 +4229,6 @@ ENCODING_SUFFIXES = {".py", ".md", ".json", ".sh", ".cmd", ".txt", ".yml", ".yam
 # produces same-width wrong characters, so a length check cannot see it.
 EXACT_LITERALS = [
     ("tools/check_plugin.py", "Kaggle \u641c\u7d22", "\u641c\u7d22"),
-    ("skills/competition-browser-agent.md", "\u641c\u7d22", "\u641c\u7d22"),
 ]
 
 
@@ -3291,7 +4517,7 @@ def check_the_monitor_watches_content():
         return
     lm = sys.modules["logmonitor"]
 
-    home = _tempfile.mkdtemp(prefix="ka-check-monitor-")
+    home = _mkdtemp(prefix="ka-check-monitor-")
     _os.environ["KAGGLE_AGENT_HOME"] = home
     try:
         # 1. The rules are DATA, not code: a user can watch for their own field.
@@ -3384,7 +4610,7 @@ def check_a_node_keeps_its_recipe():
         return
     et = sys.modules["experiment_tree"]
 
-    home = _tempfile.mkdtemp(prefix="ka-check-recipe-")
+    home = _mkdtemp(prefix="ka-check-recipe-")
     _os.environ["KAGGLE_AGENT_HOME"] = home
     comp = "zz-recipe"
     try:
@@ -3496,7 +4722,7 @@ def check_predictions_are_judged():
           "no prediction is unreadable, not silently fine")
 
     # declare refuses a node with no prediction, and accepts one with
-    home = _tempfile.mkdtemp(prefix="ka-check-pred-")
+    home = _mkdtemp(prefix="ka-check-pred-")
     _os.environ["KAGGLE_AGENT_HOME"] = home
     comp = "zz-pred"
     try:
@@ -3576,7 +4802,7 @@ def check_the_curriculum_gates_declare():
         return
     et = sys.modules["experiment_tree"]
 
-    home = _tempfile.mkdtemp(prefix="ka-check-curr-")
+    home = _mkdtemp(prefix="ka-check-curr-")
     _os.environ["KAGGLE_AGENT_HOME"] = home
     comp = "zz-curr"
     try:
@@ -3642,7 +4868,7 @@ def check_a_line_can_be_abandoned():
         return
     et = sys.modules["experiment_tree"]
 
-    home = _tempfile.mkdtemp(prefix="ka-check-abandon-")
+    home = _mkdtemp(prefix="ka-check-abandon-")
     _os.environ["KAGGLE_AGENT_HOME"] = home
     comp = "zz-abandon"
     try:

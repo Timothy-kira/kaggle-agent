@@ -36,7 +36,6 @@ transcript.
   decides what it offers.
 
 ## Bound edges (rendered from `../relationships.json`)
-
 These rows are **rendered from `skills/relationships.json`**, the single source of truth for
 how the skills in this package relate, and for the live state those relationships are gated
 on. `tools/check_plugin.py` fails the build if this table drifts from that file, so the graph
@@ -45,43 +44,11 @@ re-run the checker.
 
 Edge types: `needs` = prerequisite, `dispatches` = launched at runtime, `produces` = this
 skill's output is the other's input, `browses` = must actually open this source, `asks` =
-presence-mode decides whether to ask here, `enforces` = a tool validates this, `loops` = a
-read-then-decide cycle gated by the tool, `widget`/`gates` = the GenUI binding.
+consulted for a decision, `enforces` = the gate is attached to that tool, `widget` = rendered
+by that visualizer, `gate` = decides whether a widget is warranted, `loops` = feeds back.
 
-Where two mechanisms legitimately touch the same skill, the split of labour is declared under
-`divisionOfLabour` in the same file, and the checker refuses a duplicated claim that has no
-such declaration.
-
-| From -> type -> To | When this edge is live |
-|---|---|
-| `kaggle-account-switch` -> needs `kaggle-cli` | every list, switch and status call is a kaggle_accounts / kaggle-cli call | <!-- edge:kaggle-account-switch->kaggle-cli:needs --> |
-| `kaggle-account-switch` -> dispatches `account-rename-visualizer` | a stored name has to change, not just be re-labelled | <!-- edge:kaggle-account-switch->account-rename-visualizer:dispatches --> |
-| `account-rename-visualizer` -> needs `kaggle-account-switch` | it renders that skill's decision point and owns no decision of its own | <!-- edge:account-rename-visualizer->kaggle-account-switch:needs --> |
-| `kaggle-competition-research` -> needs `kaggle-cli` | slug, leaderboard, forum and kernels-list all go through the CLI tools | <!-- edge:kaggle-competition-research->kaggle-cli:needs --> |
-| `experiment-launch` -> needs `kaggle-cli` | quota, accelerator market state and the push itself | <!-- edge:experiment-launch->kaggle-cli:needs --> |
-| `experiment-launch` -> needs `kaggle-account-switch` | whose quota pays for this run is decided before anything is pushed | <!-- edge:experiment-launch->kaggle-account-switch:needs --> |
-| `genui-scenarios` -> gates `kaggle-account-switch` | decides whether picking an account warrants a picker at all | <!-- edge:genui-scenarios->kaggle-account-switch:gate --> |
-| `presence-mode` -> asks `kaggle-account-switch` | picking which account is a cheap reversible call when the user is away, and a question when they are present | <!-- edge:presence-mode->kaggle-account-switch:asks --> |
-
-## Bound edges (rendered from `../../relationships.json`)
-
-These rows are **rendered from `skills/relationships.json`**, the single source of truth for
-how the skills in this package relate, and for the live state those relationships are gated
-on. `tools/check_plugin.py` fails the build if this table drifts from that file, so the graph
-cannot rot back into loose prose. To change a relationship, edit `relationships.json` and
-re-run the checker.
-
-Edge types: `needs` = prerequisite, `dispatches` = launched at runtime, `produces` = this
-skill's output is the other's input, `browses` = must actually open this source, `asks` =
-presence-mode decides whether to ask here, `enforces` = a tool validates this, `loops` = a
-read-then-decide cycle gated by the tool, `widget`/`gates` = the GenUI binding.
-
-Where two mechanisms legitimately touch the same skill, the split of labour is declared under
-`divisionOfLabour` in the same file, and the checker refuses a duplicated claim that has no
-such declaration.
-
-| From -> type -> To | When this edge is live |
-|---|---|
+| Edge | Why it holds | Marker |
+|---|---|---|
 | `kaggle-account-switch` -> needs `kaggle-cli` | every list, switch and status call is a kaggle_accounts / kaggle-cli call | <!-- edge:kaggle-account-switch->kaggle-cli:needs --> |
 | `kaggle-account-switch` -> dispatches `account-rename-visualizer` | a stored name has to change, not just be re-labelled | <!-- edge:kaggle-account-switch->account-rename-visualizer:dispatches --> |
 | `account-rename-visualizer` -> needs `kaggle-account-switch` | it renders that skill's decision point and owns no decision of its own | <!-- edge:account-rename-visualizer->kaggle-account-switch:needs --> |
