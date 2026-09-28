@@ -3794,6 +3794,57 @@ def check_the_plan_is_reviewed_before_it_is_handed_off():
               "and it says an unapproved plan is not the tier-2 case, even when away")
 
 
+def check_the_bootstrap_survives_a_directory_it_cannot_read():
+    """The manifest's bootstrap runs where a sanitised fixture never goes.
+
+    The host launches it with the user's profile as the working directory. Windows keeps legacy
+    junctions there - ``Application Data``, ``My Documents``, ``SendTo`` and the rest - that
+    pass ``os.path.isdir`` and then raise ``WinError 5`` from ``os.listdir``. An unguarded walk
+    dies on the first of them, before one byte of JSON-RPC is written, and the user is left with
+    an empty tool list, which reads as "the plugin did not register" and sends them to the wrong
+    place entirely.
+
+    The probe that used to cover this ran entirely inside a temporary HOME, which removed exactly
+    the condition that breaks production and let it stay green through a release. What is
+    asserted here is the part that does not depend on the machine: the walk stays guarded, the
+    working directory stays out of it, and nothing in there quietly acquires an operating system
+    it only works on - this package is published to macOS and Linux as well.
+    """
+    servers = json.loads((ROOT / "servers.mcp.json").read_text(encoding="utf-8"))
+    args = servers["mcpServers"]["kaggle"]["args"]
+    code = args[args.index("-c") + 1]
+    entry = (ROOT / "mcp" / "agent_server.py").read_text(encoding="utf-8")
+
+    check("os.listdir" not in code,
+          "the bootstrap never walks a directory by hand, which is what died on a legacy junction")
+    check("glob.glob" in code,
+          "it walks with glob, whose directory walk swallows OSError on every platform alike")
+    check("os.getcwd()" not in code,
+          "it never searches the working directory, which the host sets to the user profile")
+
+    # These four are literal prefixes on purpose. glob's '*' and '**' do not match dot-directories,
+    # so a root folded into a wildcard would stop seeing ~/.minimax at all. Spelled out, because
+    # the only thing holding that property is the spelling.
+    for root in ("~/.minimax/plugins", "~/.mavis/plugins",
+                 "~/.minimax/v2/plugin-cache", "~/.minimax/v2/plugin-import"):
+        check(root in code, f"the bootstrap names the root {root} literally")
+    check(all(part in entry for part in ('".minimax"', '".mavis"', '"plugin-cache"', '"plugin-import"')),
+          "those four are roots the entry module searches as well, so the two agree on where to look")
+
+    for name in ("ntpath", "winreg", "os.uname", "sys.platform"):
+        check(name not in code, f"the bootstrap is not tied to one platform by {name}")
+    check("\\" not in code, "no backslash path literal, for the platforms that do not use one")
+    # A drive letter is a letter, a colon, then a separator. Plain "[A-Za-z]:" also matches a
+    # one-letter lambda parameter, which is not a drive letter and would fail for no reason.
+    check(re.search(r"[A-Za-z]:[\\/]", code) is None, "and no drive letter either")
+
+    probe = (ROOT / "tools" / "probe_marketplace_layout.py").read_text(encoding="utf-8")
+    check("def test_real_home_launch" in probe,
+          "the probe launches the bootstrap in the real profile, not only in a temporary HOME")
+    check("skipped" in probe and "def skip(" in probe,
+          "and it reports a case this machine cannot exercise, instead of passing it quietly")
+
+
 def check_the_package_survives_a_marketplace_install():
     """A local install and a Marketplace install do not have the same shape on disk.
 
@@ -3804,10 +3855,13 @@ def check_the_package_survives_a_marketplace_install():
     directory name. A Marketplace user therefore got a server that never started, and the
     symptom is an empty tool list, which reads as "the plugin did not register".
 
-    The bootstrap is also run under ``python -c``, where ``runpy.run_path(..., run_name=
-    '__main__')`` cannot work: the interpreter's ``__main__`` has no spec and sys.path[0] is the
-    package's own directory. That raised before a single tool was registered, so it is asserted
-    here rather than left to the shape of the code.
+    The bootstrap's job is narrower than this module's. It only has to find a file to hand over
+    to, and it has to do that without raising: the host launches it under ``python -c`` with the
+    user's profile as the working directory, and a profile holds legacy junctions whose
+    ``os.listdir`` raises ``WinError 5``. A directory it cannot read is skipped, never fatal.
+    What counts as this plugin - the manifest, its ``name``, the server module - is decided here,
+    in one place, so a second opinion written into a one-line manifest string cannot drift from
+    it.
     """
     entry = (ROOT / "mcp" / "agent_server.py").read_text(encoding="utf-8")
     servers = json.loads((ROOT / "servers.mcp.json").read_text(encoding="utf-8"))
@@ -3818,14 +3872,13 @@ def check_the_package_survives_a_marketplace_install():
     check("plugin-import" in entry, "the entry module knows the imported-plugin root")
     check("plugin-cache" in code, "the bootstrap knows the marketplace cache root too")
     check("plugin-import" in code, "the bootstrap knows the imported-plugin root too")
-    check("os.path.join(b,n,m)" in code, "the bootstrap descends two levels, not one")
+    check("**" in code and "recursive=True" in code,
+          "the bootstrap reaches the marketplace depth, not one level")
 
     check("PLUGIN_NAME" in entry and 'get("name")' in entry,
           "the package is identified by its manifest name, not by a directory name")
-    check("run_name='__main__'" not in code,
-          "the bootstrap does not ask runpy for a __main__ module that python -c cannot provide")
     check("exec(compile(" in code and "'__name__':'__main__'" in code,
-          "the bootstrap executes the entry with an explicit __name__")
+          "the bootstrap runs the entry with __name__ set, so its main block actually fires")
 
     # bin/kaggle-cli.sh is a Python file with a shebang and carries no executable bit, so a
     # documented `./bin/kaggle-cli.sh` fails with permission denied on the machine that installs.
@@ -4050,6 +4103,7 @@ def main() -> int:
     check_data_stays_on_kaggle()
     check_wave_two_is_single_threaded()
     check_the_plan_is_reviewed_before_it_is_handed_off()
+    check_the_bootstrap_survives_a_directory_it_cannot_read()
     check_the_package_survives_a_marketplace_install()
     check_the_cli_is_offered_not_just_reported()
     check_the_waves_ask_what_to_search()

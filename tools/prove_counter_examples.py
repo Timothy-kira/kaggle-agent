@@ -579,7 +579,11 @@ def _(ks, js):
         text = path.read_text(encoding="utf-8")
         if "29 tools" not in text:
             raise AssertionError("fixture is stale: the README no longer says '29 tools'")
-        path.write_text(text.replace("29 tools", "31 tools", 1), encoding="utf-8", newline="")
+        # Every occurrence, not the first. The README says the count twice - the headline and
+        # the file table - and replacing only one left the other in place, so `"29 tools" in
+        # readme` was still true and this case could not go red. A counter-example that has
+        # quietly stopped reproducing is worse than no counter-example: it reads like coverage.
+        path.write_text(text.replace("29 tools", "31 tools"), encoding="utf-8", newline="")
     return not _catches("check_the_readme_counts_what_the_package_contains", _break,
                         "tool count is the one the server actually serves")
 
@@ -1041,6 +1045,51 @@ def _(ks, js):
 def _(ks, js):
     return not _catches("check_vendored_content_is_scanned", _vendored_binary,
                         "unreadable as UTF-8")
+
+
+# ------------------------------------------------- the manifest bootstrap
+#
+# The check is a static read of servers.mcp.json, so it is the half of this that can be broken
+# without a Windows profile in front of it. The other half - actually launching the old bootstrap
+# in the real profile and watching it die - lives in probe_marketplace_layout as a negative
+# control, because that is the only place the real profile is reachable.
+
+_OLD_BOOTSTRAP = (
+    "import os,sys;_n=os.path.join('mcp','agent_server.py');"
+    "_r=[p for p in (os.environ.get('PLUGIN_ROOT',''),os.getcwd()) if p]+"
+    "[os.path.expanduser(p) for p in ('~/.minimax/plugins','~/.mavis/plugins',"
+    "'~/.minimax/v2/plugin-cache','~/.minimax/v2/plugin-import')];"
+    "_ls=lambda b:(os.listdir(b) if os.path.isdir(b) else []);"
+    "_ok=lambda d:(lambda m:os.path.isfile(m) and 'kaggle-agent' in "
+    "open(m,encoding='utf-8').read())(os.path.join(d,'.minimax-plugin','plugin.json'));"
+    "_p=next((os.path.join(x,_n) for b in _r for x in [b]+[os.path.join(b,n) for n in _ls(b)]"
+    "+[os.path.join(b,n,m) for n in _ls(b) for m in _ls(os.path.join(b,n))] if _ok(x)),None);"
+    "_p is None and sys.exit('kaggle-agent: cannot locate '+_n+'; tried '+', '.join(_r));"
+    "sys.path.insert(0,os.path.dirname(_p));"
+    "exec(compile(open(_p,encoding='utf-8').read(),_p,'exec'),"
+    "{'__name__':'__main__','__file__':_p,'__package__':None})"
+)
+
+
+def _bootstrap_walks_by_hand(root):
+    """Put the pre-fix manifest back: no guard, and the working directory is a root again."""
+    path = root / "servers.mcp.json"
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    args = cfg["mcpServers"]["kaggle"]["args"]
+    args[args.index("-c") + 1] = _OLD_BOOTSTRAP
+    path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+
+@case("the manifest's bootstrap walking directories by hand again",
+      "check_plugin names an unguarded walk, a bootstrap that reads the working directory, and "
+      "a walk that stopped using glob - the exact three things that left every Windows user "
+      "with an empty tool list")
+def _(ks, js):
+    return not _catches("check_the_bootstrap_survives_a_directory_it_cannot_read",
+                        _bootstrap_walks_by_hand,
+                        "never walks a directory by hand",
+                        "it walks with glob",
+                        "never searches the working directory")
 
 
 @case("a __pycache__ left in a vendored folder by running an upstream script",

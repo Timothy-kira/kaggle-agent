@@ -16,6 +16,21 @@ Identity is read from the package's own manifest. Matching the directory name wo
 impossible (it is a hash) and unsafe (any sibling directory could claim the name), so a package
 counts as ours only when its ``.minimax-plugin/plugin.json`` names this plugin and its server
 module is actually there.
+
+This module owns that decision, and it is the only place that makes it. The manifest also
+carries a one-line bootstrap, because the manifest cannot reference a path, and that line has
+to find a file to hand over to before any of this runs. It used to search the working directory
+too, which the Desktop host sets to the user's profile - and a profile holds legacy junctions
+whose ``os.listdir`` raises. It now searches the roots above, walks them with ``glob`` because
+that swallows ``OSError`` where a hand-rolled walk does not, and leaves identity to
+:func:`is_package`. Two copies of this search drifted apart once already, and the one that
+shipped was the broken one.
+
+One property of that walk is worth writing down: ``glob``'s ``*`` and ``**`` do not match
+dot-directories, while :func:`candidates` below uses ``os.listdir`` and does. Neither layout
+needs them - ``PLUGIN_ROOTS`` are literal prefixes and the segments ``**`` has to match are
+``kaggle-agent``, ``official`` and ``sha256-tree-<hash>`` - so a root folded into a wildcard
+would be the thing that breaks it.
 """
 
 from __future__ import annotations
