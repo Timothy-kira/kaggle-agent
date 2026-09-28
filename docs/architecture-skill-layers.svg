@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="814" viewBox="0 0 1120 814" role="img" aria-label="Seventeen skills, four layers">
+<rect width="1120" height="814" fill="#FFFFFF"/>
+<text x="40.0" y="46.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="27" font-weight="650" fill="#000000" text-anchor="start" opacity="1.0">Seventeen skills, four layers</text>
+<text x="40.0" y="76.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">A category is a grouping you read; an edge is a dependency the checker enforces.</text>
+<rect x="40.0" y="112.0" width="1040.0" height="116.0" rx="9" fill="#F2F5F7" stroke="#D55E00" stroke-width="1.6"/>
+<rect x="40" y="112" width="6" height="116" fill="#D55E00"/>
+<text x="62.0" y="142.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="18" font-weight="660" fill="#D55E00" text-anchor="start" opacity="1.0">identity</text>
+<text x="62.0" y="166.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">Who am I acting as,</text>
+<text x="62.0" y="183.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">and which quota pays?</text>
+<text x="62.0" y="212.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">yields: quota pays for</text>
+<rect x="268.0" y="153.0" width="87.0" height="34.0" rx="6" fill="#FFFFFF" stroke="#D55E00" stroke-width="1.1"/>
+<text x="311.5" y="175.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">kaggle-cli</text>
+<rect x="365.0" y="153.0" width="168.4" height="34.0" rx="6" fill="#FFFFFF" stroke="#D55E00" stroke-width="1.1"/>
+<text x="449.2" y="175.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">kaggle-account-switch</text>
+<rect x="543.4" y="153.0" width="198.0" height="34.0" rx="6" fill="#FFFFFF" stroke="#D55E00" stroke-width="1.1"/>
+<text x="642.4" y="175.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">account-rename-visualizer</text>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.0" markerHeight="7.0" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#D55E00"/></marker></defs>
+<line x1="62.0" y1="228.0" x2="62.0" y2="246.0" stroke="#D55E00" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="40.0" y="250.0" width="1040.0" height="116.0" rx="9" fill="#F2F5F7" stroke="#009E73" stroke-width="1.6"/>
+<rect x="40" y="250" width="6" height="116" fill="#009E73"/>
+<text x="62.0" y="280.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="18" font-weight="660" fill="#009E73" text-anchor="start" opacity="1.0">research</text>
+<text x="62.0" y="304.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">What is this competition,</text>
+<text x="62.0" y="321.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">and what should I build?</text>
+<text x="62.0" y="350.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">yields: plan becomes a run</text>
+<rect x="268.0" y="291.0" width="212.8" height="34.0" rx="6" fill="#FFFFFF" stroke="#009E73" stroke-width="1.1"/>
+<text x="374.4" y="313.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">kaggle-competition-research</text>
+<rect x="490.8" y="291.0" width="138.8" height="34.0" rx="6" fill="#FFFFFF" stroke="#009E73" stroke-width="1.1"/>
+<text x="560.2" y="313.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">approach-decision</text>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.0" markerHeight="7.0" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#009E73"/></marker></defs>
+<line x1="62.0" y1="366.0" x2="62.0" y2="384.0" stroke="#009E73" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="40.0" y="388.0" width="1040.0" height="116.0" rx="9" fill="#F2F5F7" stroke="#0072B2" stroke-width="1.6"/>
+<rect x="40" y="388" width="6" height="116" fill="#0072B2"/>
+<text x="62.0" y="418.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="18" font-weight="660" fill="#0072B2" text-anchor="start" opacity="1.0">experiment</text>
+<text x="62.0" y="442.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">How do I run it, watch it,</text>
+<text x="62.0" y="459.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">and learn from it?</text>
+<text x="62.0" y="488.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">yields: tree becomes the doc</text>
+<rect x="268.0" y="407.5" width="138.8" height="34.0" rx="6" fill="#FFFFFF" stroke="#0072B2" stroke-width="1.1"/>
+<text x="337.4" y="429.5" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">experiment-launch</text>
+<rect x="416.8" y="407.5" width="94.4" height="34.0" rx="6" fill="#FFFFFF" stroke="#0072B2" stroke-width="1.1"/>
+<text x="464.0" y="429.5" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">log-monitor</text>
+<rect x="521.2" y="407.5" width="175.8" height="34.0" rx="6" fill="#FFFFFF" stroke="#0072B2" stroke-width="1.1"/>
+<text x="609.1" y="429.5" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">log-monitor-visualizer</text>
+<rect x="707.0" y="407.5" width="153.6" height="34.0" rx="6" fill="#FFFFFF" stroke="#0072B2" stroke-width="1.1"/>
+<text x="783.8" y="429.5" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">rsi-experiment-tree</text>
+<rect x="870.6" y="407.5" width="153.6" height="34.0" rx="6" fill="#FFFFFF" stroke="#0072B2" stroke-width="1.1"/>
+<text x="947.4" y="429.5" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">scientific-plotting</text>
+<rect x="268.0" y="450.5" width="124.0" height="34.0" rx="6" fill="#FFFFFF" stroke="#0072B2" stroke-width="1.1"/>
+<text x="330.0" y="472.5" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">ablation-design</text>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.0" markerHeight="7.0" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0072B2"/></marker></defs>
+<line x1="62.0" y1="504.0" x2="62.0" y2="522.0" stroke="#0072B2" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="40.0" y="526.0" width="1040.0" height="116.0" rx="9" fill="#F2F5F7" stroke="#CC79A7" stroke-width="1.6"/>
+<rect x="40" y="526" width="6" height="116" fill="#CC79A7"/>
+<text x="62.0" y="556.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="18" font-weight="660" fill="#CC79A7" text-anchor="start" opacity="1.0">collab</text>
+<text x="62.0" y="580.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">How does this survive</text>
+<text x="62.0" y="597.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">into the next session?</text>
+<text x="62.0" y="626.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">yields: run becomes a result</text>
+<rect x="268.0" y="567.0" width="64.8" height="34.0" rx="6" fill="#FFFFFF" stroke="#CC79A7" stroke-width="1.1"/>
+<text x="300.4" y="589.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">handoff</text>
+<rect x="342.8" y="567.0" width="94.4" height="34.0" rx="6" fill="#FFFFFF" stroke="#CC79A7" stroke-width="1.1"/>
+<text x="390.0" y="589.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">github-auth</text>
+<rect x="447.2" y="567.0" width="109.2" height="34.0" rx="6" fill="#FFFFFF" stroke="#CC79A7" stroke-width="1.1"/>
+<text x="501.8" y="589.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">presence-mode</text>
+<rect x="566.4" y="567.0" width="131.4" height="34.0" rx="6" fill="#FFFFFF" stroke="#CC79A7" stroke-width="1.1"/>
+<text x="632.1" y="589.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">evidence-sources</text>
+<rect x="707.8" y="567.0" width="124.0" height="34.0" rx="6" fill="#FFFFFF" stroke="#CC79A7" stroke-width="1.1"/>
+<text x="769.8" y="589.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">genui-scenarios</text>
+<rect x="841.8" y="567.0" width="131.4" height="34.0" rx="6" fill="#FFFFFF" stroke="#CC79A7" stroke-width="1.1"/>
+<text x="907.5" y="589.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="400" fill="#000000" text-anchor="middle" opacity="1.0">technical-report</text>
+<text x="40.0" y="690.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="17" font-weight="650" fill="#000000" text-anchor="start" opacity="1.0">Enforced, not described</text>
+<line x1="40.0" y1="702.0" x2="1080.0" y2="702.0" stroke="#D8DEE3" stroke-width="1"/>
+<text x="40.0" y="732.0" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="640" fill="#0072B2" text-anchor="start" opacity="1.0">relationships.json</text>
+<text x="280.0" y="732.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">every skill, every edge, and the live state those edges gate on</text>
+<text x="40.0" y="760.0" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="640" fill="#0072B2" text-anchor="start" opacity="1.0">categories/*.md</text>
+<text x="280.0" y="760.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">tables rendered from that file - check_plugin fails when they drift</text>
+<text x="40.0" y="788.0" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="640" fill="#0072B2" text-anchor="start" opacity="1.0">1537 assertions</text>
+<text x="280.0" y="788.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">an edge described only in prose can rot; one declared and checked cannot</text>
+</svg>

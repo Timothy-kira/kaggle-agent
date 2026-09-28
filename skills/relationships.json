@@ -1,5 +1,5 @@
 {
-  "version": "1.28.0",
+  "version": "1.29.0",
   "comment": "Single source of truth for how the skills, agents and required sources in this package relate, AND for the live state those relationships are gated on. The per-category 'Bound edges' tables in each INDEX.md are RENDERED from this file, and tools/check_plugin.py fails the build when they drift. Edit this file, then re-run the checker, or it will tell you exactly which table is stale.",
   "state": {
     "_comment": "Live state, declared here and read through its own tool. The graph does not store the values - it points at the readers - so it cannot drift from reality. Read it all with kaggle_presence action='status', which reports the graph state and the ask-or-auto answer together. Anything unreadable fails toward asking: the cost of a wrong 'ask' is a pause, the cost of a wrong 'auto' is an unattended irreversible action.",

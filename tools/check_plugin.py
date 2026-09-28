@@ -3859,6 +3859,40 @@ def check_the_package_survives_a_marketplace_install():
     check("(Windows)" in cli_skill and "macOS" in cli_skill,
           "the skill says which entry point is which platform's")
 
+    # A section that lives only inside the server is unreadable exactly when it is needed, which
+    # is when the server did not start. The repair for the POSIX gap is written into the skill
+    # because a skill loads from the package on disk.
+    check("## When no tool answers at all" in cli_skill,
+          "the CLI skill carries the section that survives a server that never started")
+    check('ln -sf "$(command -v python3)" ~/.local/bin/python' in cli_skill,
+          "and it carries the exact command that fixes a python3-only machine")
+    check("## Tools" in cli_skill, "the new section did not displace the tool table")
+
+    # The figures are generated, so they are checked like everything else. A pasted picture cannot
+    # be diffed or asserted on, and a README pointing at a missing file is just a broken link.
+    for name in ("architecture-launch-path", "architecture-rsi-tree", "architecture-skill-layers"):
+        svg = ROOT / "docs" / f"{name}.svg"
+        check(svg.is_file(), f"{name}.svg ships with the package")
+        if svg.is_file():
+            check(svg.read_text(encoding="utf-8").rstrip().endswith("</svg>"),
+                  f"{name}.svg is a whole document, not a truncated one")
+        check(f"docs/{name}.svg" in readme, f"the README actually shows {name}")
+    check((ROOT / "tools" / "draw_architecture.py").is_file(),
+          "the figures are redrawn by a script rather than pasted as binaries")
+
+    zh = ROOT / "README.zh-CN.md"
+    check(zh.is_file(), "the Chinese README ships alongside the English one")
+    if zh.is_file():
+        zh_text = zh.read_text(encoding="utf-8")
+        check("人机协作在 Kaggle 取得竞赛研究成果的环境" in zh_text,
+              "and it carries the tagline the Chinese page is for")
+        check("29 个工具" in zh_text and "17 个技能" in zh_text,
+              "and it counts the same tools and skills the English page does")
+    check("human–agent competition research on Kaggle" in readme,
+          "the English README carries the English half of that sentence")
+    check("docs/architecture-rsi-tree.svg" in readme and "## RSI for Science" in readme,
+          "the experiment tree is introduced as RSI for Science, with the figure beside it")
+
     probe = ROOT / "tools" / "probe_marketplace_layout.py"
     check(probe.is_file(), "the marketplace layout probe ships with the package")
 

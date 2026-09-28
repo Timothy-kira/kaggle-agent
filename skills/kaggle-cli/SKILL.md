@@ -67,6 +67,27 @@ under any known plugin root - `~/.minimax/plugins/kaggle-agent` for a local inst
 `~/.minimax/v2/plugin-cache/official/sha256-tree-<hash>` for a Marketplace one - and runs
 `mcp/agent_server.py`, which resolves this server from there.
 
+## When no tool answers at all
+
+A skill loads from the package on disk, not from the running server, so this section is readable
+even when the server never started - which is exactly when it is needed.
+
+Find out which of the two things is missing before proposing anything. The host prints a startup
+error naming the interpreter it tried to run, and that name is the answer.
+
+| What you see | What it means | What to do |
+|---|---|---|
+| Tool list empty, and the host mentions `python` not found | `servers.mcp.json` launches the server as `python`; this machine only has `python3` | macOS/Linux: `mkdir -p ~/.local/bin && ln -sf "$(command -v python3)" ~/.local/bin/python`, then start a new session. Windows: nothing to do, a normal Python install provides `python`. |
+| Server starts, every call returns 127 | The interpreter was found and the Kaggle CLI is not installed for it | `kaggle_sources action="doctor"`; if the CLI is what is missing, ask the user before installing it |
+| `kaggle_auth_status` answers | Nothing is wrong | - |
+
+Do not edit the installed `servers.mcp.json` to make the error go away. The next update rewrites
+it. The fix that survives is the one on the machine.
+
+`python3 -B mcp/agent_server.py` starts the server by hand and prints whatever the startup error
+is, which beats reading it out of a panel.
+
+
 ## Tools
 
 | Tool | Use it for |

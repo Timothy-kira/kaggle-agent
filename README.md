@@ -1,50 +1,15 @@
 # Kaggle Agent
 
-A MiniMax Code plugin that turns Kaggle into **composable tools and workflows** instead of a
-place you paste commands into: competition research that actually opens the sources, runs that
-report the accelerator they really got, and an experiment tree that remembers what was already
-refuted so the next iteration does not pay for it twice.
+**The environment for human–agent competition research on Kaggle** — 人机协作在 Kaggle 取得竞赛研究成果的环境.
+
+English · [中文](README.zh-CN.md)
+
+A MiniMax Code plugin that turns Kaggle into a working environment rather than a place you paste
+commands into: competition research that actually opens the sources, runs that report the
+accelerator they really got, and an experiment tree that remembers what was already refuted so
+the next iteration does not pay for it twice.
 
 **29 tools · 17 skills · 2 optional dependencies (plotting only).**
-
-Every tool runs without them. Figures are the one thing that needs a library, and the plotting
-skill checks for it before it draws anything and offers to install on your word — never silently.
-
----
-
-## Install
-
-**From the Marketplace** — search for *Kaggle Agent* in the plugin panel and install it. From
-the CLI that is `mcode plugin add kaggle-agent@official`.
-
-**From a repository** — the plugin panel can also add a plugin straight from a GitHub
-repository; point it at `https://github.com/Timothy-kira/kaggle-agent`.
-
-Either route registers the package; neither builds it. The MCP server is Python standard
-library only, so there is nothing to `pip install` to make the server start.
-
-| Requirement | Why |
-|---|---|
-| `python` on PATH | `servers.mcp.json` launches the server as `python`, so that exact name has to resolve. `python --version` is the check. |
-| `pip install kaggle` | The tools that shell out to the Kaggle CLI need it. |
-
-On macOS and Linux a machine that ships `python3` only has no `python`, and the symptom is a
-plugin that installs cleanly and then exposes **no tools at all**. An empty tool list means
-the interpreter was not found, not that the plugin failed to register; the fix is a `python`
-on PATH, because an edit to the installed manifest is overwritten by the next update.
-
-Figures are the one thing that draws on a library: `numpy` and `matplotlib`, which the plotting
-skill checks for before it draws anything and offers to install on your word — never silently.
-`kaggle_sources action="doctor"` says whether a figure can be produced on this machine right now.
-
-### Credentials
-
-No token, key, or account name is committed here, and the repository is scanned for them on
-every validation run. The plugin reads credentials from your environment or from
-`~/.kaggle-agent/accounts.json`, and a token you paste into the conversation is saved to your own
-store — never written into a skill, a manifest, a log, a chart, or a handoff. A store found at
-the previous location (`~/.kaggle-cli/accounts.json`) is copied across the first time it is
-read, and left in place.
 
 ---
 
@@ -52,22 +17,49 @@ read, and left in place.
 
 | | |
 |---|---|
-| **Tools** | 29 — quotas, kernels, competitions, accounts, the experiment tree, the evidence store, plotting, presence |
+| **Tools** | 29 — quotas, kernels, competitions, accounts, the RSI experiment tree, the evidence store, plotting, presence |
 | **Skills** | 17 — grouped as identity, research, experiment, collab |
 | **Subagents** | none — both halves of a research sweep run in the main thread |
-| **Dependencies** | none at runtime beyond optional plotting (`numpy`, `matplotlib`); `git` and `kaggle-cli` are optional and detected, not required |
+| **Runtime dependencies** | none. The server is Python standard library only. `numpy` and `matplotlib` are needed for figures and nothing else, and the plotting skill checks before it draws and offers to install on your word. The Kaggle CLI itself is probed once at startup and, if absent, is offered through the same install path — never installed without you saying yes. |
+
+---
+
+## Architecture
+
+### How a call reaches the tools
+
+![How a call reaches the tools](docs/architecture-launch-path.svg)
+
+The host starts one stdio process and speaks JSON-RPC on its stdout. It does not expand
+`${PLUGIN_ROOT}` and does not promise a working directory, so the manifest carries a one-line
+bootstrap that locates the package at runtime — and two install shapes have to look the same
+locally and in the Marketplace cache.
+
+| | |
+|---|---|
+| `mcp/agent_server.py` | the self-locating entry. A local install is `<root>/kaggle-agent`; a Marketplace install is cached under a content hash, further down. Neither is matched on a directory name, because a hash directory is not a name. |
+| `mcp/kaggle_server.py` | protocol and dispatch for 29 tools. Every Kaggle tool resolves credentials, then asks for the CLI command — a value cached per process, so it is probed once rather than once per call. |
+| `mcp/credentials.py` | multi-account store. `token_for()` reads without writing, which is what makes a per-call `account=` safe. |
+| `mcp/experiment_tree.py` | the RSI tree. |
+| `mcp/deps.py` | what this machine can do, and the one route that may install something. |
+
+The other ten modules cover evidence, handoff, GitHub sync, log monitoring, plots, presence, search
+selection and structured input.
 
 ### The four categories
+
+![Seventeen skills, four layers](docs/architecture-skill-layers.svg)
+
+A category is a grouping you read; an edge is a dependency the checker enforces. The full graph
+lives in [`skills/relationships.json`](skills/relationships.json) and is rendered into
+[`skills/README.md`](skills/README.md).
 
 | Category | The question it answers | Skills |
 |---|---|---|
 | **identity** | Who am I acting as, and which quota pays? | `kaggle-cli`, `kaggle-account-switch`, `account-rename-visualizer` |
 | **research** | What is this competition, and what do I build? | `kaggle-competition-research`, `approach-decision` |
 | **experiment** | How do I run it, watch it, and learn from it? | `experiment-launch`, `log-monitor`, `log-monitor-visualizer`, `rsi-experiment-tree`, `scientific-plotting`, `ablation-design` |
-| **collab** | How does the work outlive this session, and when should I ask? | `handoff`, `github-auth`, `presence-mode`, `evidence-sources`, `genui-scenarios` |
-
-The full index — which skill binds to which, and the graph that enforces it — is
-[`skills/README.md`](skills/README.md).
+| **collab** | How does the work outlive this session, and when should I ask? | `handoff`, `github-auth`, `presence-mode`, `evidence-sources`, `genui-scenarios`, `technical-report` |
 
 ### Try asking
 
@@ -77,6 +69,77 @@ The full index — which skill binds to which, and the graph that enforces it �
 - *"Track my ablation experiments in a tree."*
 - *"Watch this run's log and tell me when it errors."*
 - *"Write a handoff so another agent can pick this up."*
+
+---
+
+## Install
+
+**From the Marketplace** — search for *Kaggle Agent* in the plugin panel and install it. From the
+CLI: `mcode plugin add kaggle-agent@official`.
+
+**From a repository** — the plugin panel can also add a plugin straight from a GitHub repository;
+point it at `https://github.com/Timothy-kira/kaggle-agent`.
+
+Either route registers the package; neither builds it.
+
+### Before the first call
+
+| Requirement | Why |
+|---|---|
+| Python reachable **as `python`** | `servers.mcp.json` launches the server as `python`, so that exact name has to resolve. `python --version` is the check. |
+| The Kaggle CLI | The tools shell out to it. If it is missing, `kaggle_sources action="doctor"` says so and offers to install it once you agree. |
+
+**On macOS and Linux**, a machine that ships `python3` only has no `python`, and the symptom is a
+plugin that installs cleanly and then exposes **no tools at all**. An empty tool list means the
+interpreter was not found, not that the plugin failed to register. One line fixes it:
+
+```bash
+mkdir -p ~/.local/bin && ln -sf "$(command -v python3)" ~/.local/bin/python
+```
+
+Edit the installed manifest instead and the next update overwrites it. If the server still does not
+come up, `python3 -B mcp/agent_server.py` starts it by hand and shows the error.
+
+Both entry points under `bin/` are Python files with a shebang and no executable bit, invoked
+through the interpreter — `python3 bin/kaggle-cli.sh`, `python3 bin/run-mcp.sh` — so one command
+works on every platform and a packaged file mode never has to survive a checkout.
+
+### Credentials
+
+No token, key or account name is committed here, and the repository is scanned for them on every
+validation run. Credentials resolve from your environment or from `~/.kaggle-agent/accounts.json`,
+and a token you paste into the conversation is saved to your own store — never written into a
+skill, a manifest, a log, a chart, or a handoff. A store at the previous location
+(`~/.kaggle-cli/accounts.json`) is copied across on first read and left in place.
+
+---
+
+## RSI for Science
+
+![RSI for Science: the experiment tree](docs/architecture-rsi-tree.svg)
+
+`kaggle_experiment_tree` is the core of the package: a read-gated, validated DAG **and** a replay
+simulator. *RSI* here is recursive self-improvement for science — the loop is the point, and it only
+becomes a loop if the memory survives the session.
+
+- **The gate is real.** `action="read"` returns a revision; `record` refuses a stale or missing one.
+  Prose that says "check the current state first" gets skipped. A revision number does not.
+- **A node must declare its failure layer** when it is reverted, so "this didn't work" becomes a
+  claim about *where* it broke.
+- **Replay scores your own history** under a candidate exploration policy, and `compare` always
+  includes the policy you are running — so a recommendation can never be worse than the status quo.
+  A replay is an estimate, not a measurement; it says what to try, not what will win.
+- **Parent selection is non-greedy** (`score + progress + novelty`, with visit cooling) so a locally
+  promising branch cannot starve the search.
+- **Per-criterion effective cost.** A gain on one criterion that quietly costs you two others is
+  visible as such, because the four cost flags are kept per criterion rather than flattened into
+  one boolean.
+- **Provenance is mandatory.** A node needs a linked source or an explicit `evidence:"local-only"`.
+  A claim with no evidence behind it has to say so out loud.
+- **`action="audit-report"` checks the finished prose against the ledger.** It refuses mechanically
+  when a `mayNotClaim` sentence has been copied in, or when the tree claims an artifact that is not
+  on disk. It **drives and never acquits**: a figure the tree holds proves evidence exists, never
+  that it supports the sentence.
 
 ---
 
@@ -99,35 +162,33 @@ The full index — which skill binds to which, and the graph that enforces it �
 
 ---
 
-## What the experiment tree actually does
+## Validation
 
-This is the part that is not a template. `kaggle_experiment_tree` is a read-gated, validated
-DAG **and** a replay simulator.
+```bash
+python tools/check_plugin.py
+```
 
-- **The gate is real.** `action="read"` returns a revision; `record` refuses a stale or missing
-  one. Prose that says "check the current state first" gets skipped. A revision number does not.
-- **A node must declare its failure layer** when it is reverted, so "this didn't work" becomes a
-  claim about *where* it broke.
-- **Replay scores your own history** under a candidate exploration policy, and `compare` always
-  includes the policy you are running — so the recommendation can never be worse than the status
-  quo. A replay is an estimate, not a measurement; it says what to try, not what will win.
-- **Parent selection is non-greedy** (`score + progress + novelty`, with visit cooling) so a
-  locally promising branch cannot starve the search.
-- **Per-criterion effective cost.** A gain on one criterion that quietly costs you two others is
-  visible as such, because the four cost flags are kept per criterion rather than flattened into
-  one boolean.
-- **Provenance is mandatory.** A node needs a linked source or an explicit `evidence:"local-only"`.
-  A claim with no evidence behind it has to say so out loud.
-- **`action="audit-report"` checks the finished prose against the ledger.** It refuses mechanically
-  when a `mayNotClaim` sentence has been copied in, or when the tree claims an artifact that is not
-  on disk — a refusal is arithmetic, so no model is asked. It never *acquits*: a figure in the
-  report that the tree does hold proves the evidence exists, never that it supports the sentence,
-  so the reviewer packet carries file paths and an instruction not to accept any summary.
+Around 1500 assertions covering the manifest, the skill graph and its rendered index, the tree
+mechanics, the evidence chain, the plotting engine's backend, the secrets scan, and a live drive of
+the MCP server over the wire. It is the reason the claims in the skills are claims rather than
+intentions: a relationship described only in prose can rot, and one declared in the graph and
+checked cannot.
 
-`scientific-plotting` closes the loop: six chart types drawn with numpy + matplotlib, against a
-palette that was measured rather than chosen — the bundled auditor shipped in the repo is how the
-five colours were cleared for contrast and greyscale, and a delta without an interval is not a
-result.
+Every file under a skill's `assets/`, `references/` or `scripts/` came from someone else, and all of
+them are scanned for prompt-injection patterns on every run — with no allowlist, so a vendored file
+added later is covered without anyone remembering. A clean scan is a floor rather than a verdict, and
+the report says so rather than implying the content was cleared.
+
+Seven probes drive the real thing rather than reading it: the transport, the ablation cycle, the
+plot cycle, the claim audit, the monitor cycle, account scope, and the Marketplace layout — which
+starts this package's own bootstrap against a Marketplace-shaped directory tree and asks the server
+to answer `initialize`. Each probe is proved able to fail: five different breaks turn the layout
+probe red, and the transport probe fails when a case gets no reply at all.
+
+The checks include the failures this package actually had. `check_publishable` asserts that no
+manifest path is excluded by `.gitignore`, that every gitignore directory rule is anchored, and
+that no publishable file contains a credential — because a file once sat on disk, declared in the
+manifest and linked from the graph, while the repository was short of it.
 
 ---
 
@@ -141,40 +202,22 @@ skills/                       17 skills, flat as the manifest requires
   categories/                 the layering, as readable pages
   _shared/                    GenUI foundation, forked once
   relationships.json          the single source of truth for how skills connect
-tools/check_plugin.py         the enforcement layer
+docs/                         the architecture figures, generated by tools/draw_architecture.py
+tools/                        the enforcement layer
 ```
 
-Layering lives in `relationships.json` and `skills/categories/`, not in directory nesting — a
-category is a grouping you read, and an edge is a dependency the checker enforces.
-
----
-
-## Validation
-
-```bash
-python tools/check_plugin.py
-```
-
-Around 1400 assertions covering the manifest, the skill graph and its rendered index, the tree
-mechanics, the evidence chain, the plotting engine's backend, the secrets scan, and a live drive of
-the MCP server over the wire. It is the reason the claims in the skills are claims rather than
-intentions: a relationship described only in prose can rot, and one declared in the graph and
-checked cannot.
-
-Every file under a skill's `assets/`, `references/` or `scripts/` came from someone else, and all
-of them are scanned for prompt-injection patterns on every run — with no allowlist, so a vendored
-file added later is covered without anyone remembering. A clean scan is a floor rather than a
-verdict, and the report says so rather than implying the content was cleared.
-
-The checks include the failure this package actually had. Every check reads the working tree,
-so a file can sit on disk, be declared in the manifest, be linked from the graph — and still be
-missing from the repository, because `.gitignore` matched it. The unanchored rule that did it has
-been rooted, and `check_publishable` now asserts that no manifest path is excluded, that every
-gitignore directory rule is anchored, and that no publishable file contains a credential.
+The figures are generated from code rather than drawn by hand, so the prose and the picture move
+together and a check can require that they exist. `python tools/draw_architecture.py` redraws them.
 
 ---
 
 ## Attribution
+
+Built with [MiniMax Code](https://www.minimaxi.com): most of the code in this repository was
+written by the agent alongside its owner, and every commit carries a `Co-Authored-By: MiniMax
+Code` trailer. GitHub's Contributors panel lists only commit emails that belong to a GitHub
+account, and `noreply@minimax.io` is not one, so that attribution is visible in the commit history
+rather than in that panel. It is a property of how GitHub resolves a co-author, not an omission.
 
 `ablation-design` adapts the experimental-design and uncertainty-and-units material from the
 MIT-licensed [K-Dense-AI/claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)
