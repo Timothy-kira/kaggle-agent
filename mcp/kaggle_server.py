@@ -79,8 +79,23 @@ SUBPROCESS_TIMEOUT = 900  # kernels push downloads the notebook; give it room
 MAX_RUN_SECONDS = 43200  # 12h, the platform ceiling for one notebook run
 
 
-def _kaggle_command() -> list[str] | None:
-    """How to invoke the Kaggle CLI from this process.
+_KAGGLE_CMD: list[str] | None = None
+_KAGGLE_CMD_PROBED = False
+
+
+def _reset_kaggle_command_cache() -> None:
+    """Forget the probe, so the next call asks again.
+
+    Called after an install, and by the tests. A cached "there is no CLI" is exactly the
+    answer that stops being true the moment the user agrees to `pip install kaggle`, so this
+    is the one moment in the process where the cache is dropped.
+    """
+    global _KAGGLE_CMD, _KAGGLE_CMD_PROBED
+    _KAGGLE_CMD, _KAGGLE_CMD_PROBED = None, False
+
+
+def _probe_kaggle_command() -> list[str] | None:
+    """Ask each candidate interpreter whether it can import the Kaggle CLI.
 
     Deliberately never does ``import kaggle`` in this process: importing that package runs
     its CLI entry point, which prints an authentication prompt to stdout and would corrupt
@@ -108,6 +123,22 @@ def _kaggle_command() -> list[str] | None:
         if probe.returncode == 0:
             return [exe, "-m", "kaggle"]
     return None
+
+
+def _kaggle_command(force: bool = False) -> list[str] | None:
+    """How to invoke the Kaggle CLI, probed once per process and cached after that.
+
+    Every Kaggle tool funnels through this, so re-probing costs a subprocess per candidate
+    interpreter on every single call to relearn something that cannot have changed since the
+    process started. The cache exists so the answer is asked once, up front, and reused from
+    there; `force` and :func:`_reset_kaggle_command_cache` are the only ways to ask again.
+    """
+    global _KAGGLE_CMD, _KAGGLE_CMD_PROBED
+    if _KAGGLE_CMD_PROBED and not force:
+        return list(_KAGGLE_CMD) if _KAGGLE_CMD else None
+    _KAGGLE_CMD = _probe_kaggle_command()
+    _KAGGLE_CMD_PROBED = True
+    return list(_KAGGLE_CMD) if _KAGGLE_CMD else None
 
 
 # --------------------------------------------------------------------- accelerators
@@ -1283,7 +1314,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.27.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.28.0"}
 
 
 def run_kaggle(args: list[str], account: str = "") -> tuple[int, str, str]:
@@ -1312,8 +1343,15 @@ def run_kaggle(args: list[str], account: str = "") -> tuple[int, str, str]:
         )
     cmd = _kaggle_command()
     if cmd is None:
+        # The most likely first call on a freshly installed plugin, so it gets the same
+        # detect-then-offer path the plotting backend has instead of a bare pip command the
+        # user has to recognise as theirs to run.
         return 127, "", (
-            "The Kaggle CLI is not installed for this interpreter. Install it with: pip install kaggle"
+            "The Kaggle CLI is not installed for this interpreter, so no Kaggle tool can run. "
+            "Check what this machine has with kaggle_sources action=\"doctor\". If the CLI is "
+            "the thing that is missing, ask the user before installing it - it changes their "
+            "Python environment - and once they have agreed: kaggle_sources action=\"install\" "
+            "packages='[\"kaggle\"]'"
         )
     env = {**os.environ, "KAGGLE_API_TOKEN": token}
     try:
@@ -3574,7 +3612,16 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             p = deps.probe()
             types = deps.available_chart_types()
             ready = bool(p.get("plottingReady"))
-            if ready:
+            cli_ok = bool(p.get("kaggleCliReady"))
+            if not cli_ok:
+                # Leads, because it decides whether any Kaggle tool works at all, and the
+                # plotting table below is a footnote until this is settled.
+                head = ["the Kaggle CLI is NOT installed - every Kaggle tool is unavailable:",
+                        f"    {p.get('error', 'kaggle CLI missing')}",
+                        "  next step (ask the user first - it changes their environment):",
+                        f"    {p.get('install', '')}",
+                        ""]
+            elif ready:
                 head = [f"plotting is ready now: {p['engine']['backend']}",
                         f"  chart types available: {', '.join(types['ready'])}"]
             else:
@@ -3611,12 +3658,17 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 return text_response(
                     "kaggle_sources install", 2, "",
                     'action="install" needs packages: a JSON array in one string, e.g. '
-                    '["matplotlib","numpy"]. Do not call this to "just try it" - '
+                    '["kaggle"] to make the tools work at all, or ["matplotlib","numpy"] '
+                    'for figures. Do not call this to "just try it" - '
                     "ask the user first; it changes their Python environment.",
                 )
             res = deps.install([str(x) for x in pkgs])
             if not res.get("ok"):
                 return text_response("kaggle_sources install", 3, "", res.get("message", ""))
+            # The install is the one moment a cached "there is no CLI" stops being true, so
+            # it is the one moment the probe is asked again.
+            if "kaggle" in {str(x) for x in pkgs}:
+                _reset_kaggle_command_cache()
             return text_response("kaggle_sources install", 0,
                                  f"installed: {', '.join(res['installed']) or '(none)'}\n"
                                  f"already present: {', '.join(res['alreadyPresent']) or '(none)'}\n"

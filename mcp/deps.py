@@ -82,6 +82,27 @@ INSTALLABLE = {name: {"why": "the plotting backend - figures are drawn with it",
                for name in BACKEND}
 INSTALLABLE.update(OPTIONAL)
 
+# The Kaggle CLI goes through the same flow, and it is not optional in the way the
+# extras are: every Kaggle tool shells out to it, so without it the package does
+# nothing at all. It is deliberately kept out of BACKEND, because a missing figure and
+# a missing CLI are different failures with different fixes and only one of them is
+# cosmetic.
+CLI_PACKAGES = ("kaggle",)
+CLI_HINT = (
+    'kaggle_sources action="install" packages=\'["kaggle"]\'  '
+    "(pip install kaggle does the same thing)"
+)
+INSTALLABLE.update({
+    "kaggle": {
+        "why": "the Kaggle CLI - every Kaggle tool shells out to it, so without it "
+               "none of them run",
+        "unlocks": ["every-kaggle-tool"],
+        "sizeHint": "~7 MB",
+    },
+})
+
+CLI_VERSION_PROBE = ("import importlib.metadata as m; print(m.version('kaggle'))")
+
 # The engine's own capability list, so "what can I do right now" is answerable without anyone
 # having to read the source.
 ENGINE = {
@@ -116,6 +137,45 @@ def _version(name: str) -> Optional[str]:
         return None
 
 
+def cli_ready(timeout: int = 30) -> bool:
+    """Whether ``sys.executable -m kaggle`` can run here.
+
+    Asked in a throwaway subprocess and never by importing: importing the kaggle package
+    runs its CLI entry point, which prints an authentication prompt to stdout, and this
+    process speaks JSON-RPC on stdout. An import-based probe would corrupt the very stream
+    it is trying to measure.
+    """
+    try:
+        finished = subprocess.run(
+            [sys.executable, "-c", "import kaggle, sys; sys.exit(0)"],
+            capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return finished.returncode == 0
+
+
+def _cli_version(timeout: int = 30) -> str:
+    """The installed kaggle version.
+
+    Read from the distribution metadata rather than from ``kaggle.__version__``, and in a
+    subprocess rather than here. Importing the package prints a full sign-in walkthrough to
+    stdout before it says anything else, so a version read that way comes back as a paragraph of
+    "Authentication required to call the Kaggle API" with the number buried at the end - and
+    this field is shown to a person, not just compared.
+    """
+    try:
+        finished = subprocess.run([sys.executable, "-c", CLI_VERSION_PROBE],
+                                  capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return (finished.stdout or "").strip() or "unknown"
+
+
+def _present(name: str) -> bool:
+    """Is `name` usable here? The CLI is asked in a subprocess; the rest are imported."""
+    return cli_ready() if name in CLI_PACKAGES else _installed(name)
+
+
 def probe() -> dict[str, Any]:
     """Report the environment. Read-only; installs nothing, ever.
 
@@ -126,12 +186,15 @@ def probe() -> dict[str, Any]:
     """
     present, missing = {}, {}
     for name, meta in INSTALLABLE.items():
-        if _installed(name):
-            present[name] = {"version": _version(name), **meta}
+        if _present(name):
+            found = _cli_version() if name in CLI_PACKAGES else _version(name)
+            present[name] = {"version": found, **meta}
         else:
             missing[name] = meta
     absent_backend = [n for n in BACKEND if n in missing]
+    absent_cli = [n for n in CLI_PACKAGES if n in missing]
     ready = not absent_backend
+    cli_ok = not absent_cli
     out: dict[str, Any] = {
         "python": sys.version.split()[0],
         "executable": sys.executable,
@@ -140,8 +203,24 @@ def probe() -> dict[str, Any]:
         "present": present,
         "missing": missing,
         "plottingReady": ready,
+        "kaggleCliReady": cli_ok,
+        "toolsReady": cli_ok,
     }
-    if ready:
+    if not cli_ok:
+        # The CLI outranks the backend in the report. Both are "install it", but a missing
+        # figure leaves a working plugin, and a missing CLI does not - so the report that
+        # decides what to say first cannot depend on which one the reader happened to scroll to.
+        out["code"] = "kaggle_cli_missing"
+        out["error"] = ("the Kaggle CLI is not installed for this interpreter, so every "
+                        "Kaggle tool is unavailable until it is")
+        out["install"] = CLI_HINT
+        out["nextStep"] = (
+            "Ask the user before running this - it changes their Python environment. Once they "
+            "have agreed: " + CLI_HINT
+        )
+        out["note"] = ("This outranks the plotting table below: a missing figure is a missing "
+                       "figure, and a missing CLI is a package that does nothing.")
+    elif ready:
         out["note"] = ("the plotting backend is present; the remaining packages only add chart "
                        "types and deeper statistics, and nothing here blocks a figure")
     else:
@@ -184,21 +263,25 @@ def install(names: list[str], timeout: int = 600) -> dict[str, Any]:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return {"ok": False, "code": "timeout",
-                "message": f"pip did not finish within {timeout}s; plotting is unaffected"}
+                "message": f"pip did not finish within {timeout}s; nothing was installed and no "
+                            f"other capability was affected"}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "code": "pip_failed", "message": f"{type(exc).__name__}: {exc}"}
 
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-4:]
         return {"ok": False, "code": "pip_failed",
-                "message": "pip failed; plotting is unaffected by this",
+                "message": "pip failed; nothing was installed and no other capability was affected",
                 "detail": "\n".join(tail)}
+    cli_now = cli_ready()
     return {
         "ok": True,
         "installed": todo,
         "alreadyPresent": already,
         "versions": {n: _version(n) for n in todo},
         "plottingReady": not absent_backend_after(todo),
+        "kaggleCliReady": cli_now,
+        "toolsReady": cli_now,
         "note": ("the backend is importable now, so the next chart call will draw. Installing it "
                  "does not change any figure this package already produced."),
     }

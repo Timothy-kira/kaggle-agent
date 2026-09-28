@@ -1,0 +1,6 @@
+# This package is checked out on macOS and Linux as well as Windows, and core.autocrlf=true
+# rewrites a shebang into "python3\r" - which the kernel hands to /usr/bin/env, which then
+# reports a bad interpreter and the file simply will not run. These two entry points are the
+# only files where a stray carriage return is a functional break rather than a cosmetic one,
+# because Python itself reads CRLF source without complaint everywhere else in the package.
+*.sh text eol=lf

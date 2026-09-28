@@ -139,4 +139,5 @@ notebook needs into it before pushing.
   specific `ref`) rather than re-running the same broad query.
 - A push that is accepted still has to be started; confirm with `kaggle_kernels_status`.
 - `kaggle auth login` in the upstream CLI is browser-based and interactive; this plugin's
-  `kaggle-cli.cmd login` is the non-interactive path for a token.
+  `kaggle-cli.cmd login` (Windows) and `python3 bin/kaggle-cli.sh login` (macOS, Linux)
+  are the non-interactive paths for a token.

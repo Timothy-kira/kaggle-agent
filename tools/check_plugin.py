@@ -3841,12 +3841,141 @@ def check_the_package_survives_a_marketplace_install():
     check("mcode plugin add kaggle-agent@official" in readme,
           "the README tells an installed user how the plugin gets there")
 
+    # A manual entry point existed for one platform only, so the other one had nothing to run by
+    # hand when a tool misbehaved. It is a Python file with a shebang, like kaggle-cli.sh, and
+    # finds the package without depending on the working directory.
+    manual = ROOT / "bin" / "run-mcp.sh"
+    check(manual.is_file(), "there is a POSIX entry point for driving the server by hand")
+    if manual.is_file():
+        text = manual.read_text(encoding="utf-8")
+        check("import agent_server" in text and "agent_server.serve()" in text,
+              "and it is the Python entry point, not a shell wrapper that would need an exec bit")
+        check("os.path.abspath(__file__)" in text, "it locates the package rather than the cwd")
+
+    # Naming one platform's entry point as if it were the only one is how a POSIX user ends up
+    # told to run a .cmd file.
+    check("kaggle-cli.sh" in servers["mcpServers"]["kaggle"]["description"],
+          "the server description names the shell entry point too, not only the .cmd one")
+    check("(Windows)" in cli_skill and "macOS" in cli_skill,
+          "the skill says which entry point is which platform's")
+
     probe = ROOT / "tools" / "probe_marketplace_layout.py"
     check(probe.is_file(), "the marketplace layout probe ships with the package")
 
     transport = (ROOT / "tools" / "probe_transport.py").read_text(encoding="utf-8")
     check("PROBE_TRANSPORT_OK" in transport and "PROBE_TRANSPORT_FAILED" in transport,
           "the transport probe can report failure, not only success")
+
+
+def check_the_cli_is_offered_not_just_reported():
+    """The Kaggle CLI gets the same detect-then-offer path the plotting backend already had.
+
+    A missing figure is a missing figure; a missing CLI leaves every tool in the package unable
+    to run, and until this existed the only install flow in the codebase talked about matplotlib
+    - so the one hard prerequisite was the one with no route. Nothing here installs anything.
+    What is asserted is that the report names the CLI, carries the command, and asks first.
+    """
+    import deps as _d
+
+    check("kaggle" in _d.INSTALLABLE, "the CLI is installable through the same action")
+    check(tuple(_d.CLI_PACKAGES) == ("kaggle",), "the CLI is its own category, not a backend package")
+
+    p = _d.probe()
+    check("kaggleCliReady" in p and "toolsReady" in p,
+          "the report separates 'can this machine draw' from 'can this package do anything'")
+    check(bool(p["toolsReady"]) == bool(p["kaggleCliReady"]),
+          "toolsReady and kaggleCliReady cannot disagree")
+
+    # Forcing the CLI to look absent while the backend stays present is the case that decides
+    # the report: it is the one a freshly installed plugin lands in.
+    real = _d.cli_ready
+    _d.cli_ready = lambda timeout=30: False
+    try:
+        missing = _d.probe()
+    finally:
+        _d.cli_ready = real
+    check(missing["kaggleCliReady"] is False and missing["toolsReady"] is False,
+          "with no CLI, the package reports that no tool works")
+    check(missing["code"] == "kaggle_cli_missing", "the missing CLI is what the report names")
+    check('["kaggle"]' in missing.get("install", ""), "the report carries the command that fixes it")
+    check("ask the user" in missing.get("nextStep", "").lower(),
+          "and the report asks before changing the environment")
+    check(missing["plottingReady"] == p["plottingReady"],
+          "a missing CLI is not reported as a plotting problem")
+
+    # Detecting it must not be an import. The kaggle package prints a sign-in walkthrough to
+    # stdout when imported, and this process speaks JSON-RPC on stdout.
+    seen: list[str] = []
+    real_installed = _d._installed
+    _d._installed = lambda name: (seen.append(name), real_installed(name))[1]
+    try:
+        _d._present("kaggle")
+        _d._present("numpy")
+    finally:
+        _d._installed = real_installed
+    check("kaggle" not in seen,
+          "detecting the CLI never imports the package, which would print to stdout")
+    check("numpy" in seen, "the libraries are still detected by import")
+
+    version = _d._cli_version()
+    check(bool(re.fullmatch(r"\d+(\.\d+)*", version or "")),
+          f"the version field is a number, not the CLI's sign-in text ({version[:60]!r})")
+
+    # Ask once, reuse from then on. Every Kaggle tool funnels through this, and a probe that
+    # re-ran per call would cost a subprocess per tool call in a package with two dozen of them.
+    import kaggle_server as _ks
+    real_run = _ks.subprocess.run
+    probes: list[list] = []
+
+    def counting(cmd, *a, **kw):
+        probes.append(list(cmd) if isinstance(cmd, (list, tuple)) else [cmd])
+        return real_run(cmd, *a, **kw)
+
+    _ks.subprocess.run = counting
+    try:
+        _ks._reset_kaggle_command_cache()
+        first = _ks._kaggle_command()
+        after_first = len(probes)
+        repeats = [_ks._kaggle_command() for _ in range(3)]
+        check(after_first >= 1, f"the first call really probes ({after_first} candidate interpreter(s))")
+        check(len(probes) == after_first,
+              f"later calls reuse it rather than probing again ({len(probes) - after_first} extra)")
+        check(repeats == [first] * 3, "and every call gets the same answer")
+        _ks._kaggle_command(force=True)
+        check(len(probes) > after_first, "force=True re-asks on purpose")
+        after_force = len(probes)
+        _ks._kaggle_command()
+        check(len(probes) == after_force, "and caches that answer too")
+
+        # The machine without the CLI is the one that would otherwise pay the most, since a
+        # missing package is what every candidate interpreter gets asked about.
+        real_probe = _ks._probe_kaggle_command
+        misses: list[int] = []
+
+        def failing() -> list[str] | None:
+            misses.append(1)
+            return None
+
+        _ks._probe_kaggle_command = failing
+        try:
+            _ks._reset_kaggle_command_cache()
+            absent = [_ks._kaggle_command() for _ in range(4)]
+        finally:
+            _ks._probe_kaggle_command = real_probe
+        check(absent == [None] * 4, "a machine without the CLI is still told so, on every call")
+        check(len(misses) == 1,
+              f"and the 'no CLI' answer is cached too, not re-derived per call ({len(misses)} probes)")
+
+        _ks._reset_kaggle_command_cache()
+        _ks._kaggle_command()
+        check(len(misses) >= 1, "resetting the cache re-asks, which is what an install has to do")
+    finally:
+        _ks.subprocess.run = real_run
+        _ks._reset_kaggle_command_cache()
+
+    server = (ROOT / "mcp" / "kaggle_server.py").read_text(encoding="utf-8")
+    check('action=\\"doctor\\"' in server,
+          "the 127 path points at doctor rather than only naming pip")
 
 
 def main() -> int:
@@ -3888,6 +4017,7 @@ def main() -> int:
     check_wave_two_is_single_threaded()
     check_the_plan_is_reviewed_before_it_is_handed_off()
     check_the_package_survives_a_marketplace_install()
+    check_the_cli_is_offered_not_just_reported()
     check_the_waves_ask_what_to_search()
     check_reading_the_code_is_a_chain_not_a_vow()
     check_the_code_sweep_states_its_proxy_and_its_gotchas()
