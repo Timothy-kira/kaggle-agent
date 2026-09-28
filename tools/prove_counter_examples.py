@@ -881,17 +881,30 @@ def _(ks, js):
                         "appears exactly once", "'## Bound edges' section")
 
 
-@case("the manifest author back to a bare string",
-      "the manifest check reports a string author - the one shape none of the 37 plugins in "
-      "MiniMax-AI/MiniMax-Code-Plugins uses")
+@case("the manifest author back to an object",
+      "the manifest check reports a non-string author - the shape all 37 plugins in "
+      "MiniMax-AI/MiniMax-Code-Plugins use, and the one submission PLUGIN-202609290158 "
+      "was rejected for")
 def _(ks, js):
     def _break(root):
         path = root / ".minimax-plugin" / "plugin.json"
         cfg = json.loads(path.read_text(encoding="utf-8"))
         author = cfg.get("author")
-        cfg["author"] = author.get("name") if isinstance(author, dict) else str(author)
+        cfg["author"] = {"name": author} if isinstance(author, str) else author
         path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    return not _catches("check_manifest", _break, "author is an object with a name")
+    return not _catches("check_manifest", _break, "author is a non-empty string")
+
+
+@case("a fourth example query",
+      "the manifest check reports more than 3 exampleQueries - the ceiling the submission "
+      "guide states, which no schema error would have caught")
+def _(ks, js):
+    def _break(root):
+        path = root / ".minimax-plugin" / "plugin.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["exampleQueries"] = list(cfg.get("exampleQueries") or []) + ["退订 this run"]
+        path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    return not _catches("check_manifest", _break, "at most 3 exampleQueries")
 
 
 @case("the manifest declaring a darkIcon again",

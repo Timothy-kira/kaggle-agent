@@ -290,13 +290,25 @@ def check_manifest():
                   "category", "exampleQueries", "icon", "apps", "mcpServers", "skills"):
         check(field in data, f"plugin.json has '{field}'")
     check(data.get("apps") == [], "plugin.json 'apps' is empty (local runtime ignores Apps)")
-    # Observed convention, not a published rule: of the 37 manifests in
-    # MiniMax-AI/MiniMax-Code-Plugins, none writes author as a bare string - all of them use an
-    # object with a name. The portable spec allows either. A manifest that reads like its
-    # published neighbours is the one least likely to meet a gate nobody has written down.
+    # SCHEMA_INVALID(.minimax-plugin/plugin.json.author), submission PLUGIN-202609290158: the
+    # Marketplace validator wants a string here, and the submission guide's own manifest example
+    # writes "author": "Acme". All 37 manifests in MiniMax-AI/MiniMax-Code-Plugins write an object
+    # instead, and following them is what the previous submission did. The repository is a set of
+    # examples; the guide and the validator are the specification, and when they disagree the
+    # examples are the ones that are wrong. Changing author back to a string because its neighbours
+    # use objects is a submission finding out at their gate what the gate can be checked against here.
     author = data.get("author")
-    check(isinstance(author, dict) and bool(author.get("name")),
-          f"author is an object with a name, the shape every published plugin uses ({author!r})")
+    check(isinstance(author, str) and bool(author.strip()),
+          f"author is a non-empty string, the shape the Marketplace validator accepts ({author!r})")
+    # exampleQueries: 0-3 条真实示例，每条非空且最多 4,096 个字符 (submission guide, manifest field
+    # table). Not caught by SCHEMA_INVALID - the schema has no ceiling on this array, so the only
+    # thing standing between ten queries and a reviewer is a check written here.
+    queries = data.get("exampleQueries")
+    check(isinstance(queries, list) and len(queries) <= 3,
+          f"plugin.json has at most 3 exampleQueries ({len(queries) if isinstance(queries, list) else queries!r})")
+    check(isinstance(queries, list)
+          and all(isinstance(q, str) and q.strip() and len(q) <= 4096 for q in queries),
+          "every exampleQuery is a non-empty string of at most 4096 characters")
     check(bool(data.get("mcpServers")) or bool(data.get("skills")),
           "plugin.json declares at least one real capability")
     check(re.match(r"^\d+\.\d+\.\d+$", str(data.get("version", ""))) is not None,
