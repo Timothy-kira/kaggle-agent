@@ -822,6 +822,25 @@ def _icon_dark_is_a_copy(root):
     shutil.copyfile(root / "icon.png", root / "icon-dark.png")
 
 
+def _manifest_declares_a_dark_icon(root):
+    """Put the field the Marketplace validator is refusing back into the manifest.
+
+    The old fixture for this guarantee made icon-dark.png a byte-identical copy, which was a
+    real defect worth catching. The field itself is now rejected outright - declaring it is what
+    fails a submission - so the guarantee has moved up a layer and the fixture has to move with
+    it. A counter-example that keeps its old break after the guarantee changed is a counter-
+    example that silently stops reproducing, which is worse than not having one.
+    """
+    path = root / ".minimax-plugin" / "plugin.json"
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    ordered = {}
+    for key, value in cfg.items():
+        ordered[key] = value
+        if key == "icon":
+            ordered["darkIcon"] = "icon-dark.png"
+    path.write_text(json.dumps(ordered, indent=2) + "\n", encoding="utf-8")
+
+
 def _orphan_function(root):
     """Reproduce P3: a module-level function with no caller and no declaration.
 
@@ -862,11 +881,25 @@ def _(ks, js):
                         "appears exactly once", "'## Bound edges' section")
 
 
-@case("icon-dark.png replaced by a copy of icon.png",
-      "a byte-identical darkIcon is reported as decorative")
+@case("the manifest author back to a bare string",
+      "the manifest check reports a string author - the one shape none of the 37 plugins in "
+      "MiniMax-AI/MiniMax-Code-Plugins uses")
 def _(ks, js):
-    return not _catches("check_manifest", _icon_dark_is_a_copy,
-                        "a different image from icon")
+    def _break(root):
+        path = root / ".minimax-plugin" / "plugin.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        author = cfg.get("author")
+        cfg["author"] = author.get("name") if isinstance(author, dict) else str(author)
+        path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    return not _catches("check_manifest", _break, "author is an object with a name")
+
+
+@case("the manifest declaring a darkIcon again",
+      "the manifest check reports a declared darkIcon, which the Marketplace validator is "
+      "refusing right now and which a previous submission was rejected over")
+def _(ks, js):
+    return not _catches("check_manifest", _manifest_declares_a_dark_icon,
+                        "does not declare darkIcon")
 
 
 @case("a module-level function nobody calls and nobody declared",
