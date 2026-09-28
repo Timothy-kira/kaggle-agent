@@ -213,12 +213,6 @@ together and a check can require that they exist. `python tools/draw_architectur
 
 ## Attribution
 
-Built with [MiniMax Code](https://www.minimaxi.com): most of the code in this repository was
-written by the agent alongside its owner, and every commit carries a `Co-Authored-By: MiniMax
-Code` trailer. GitHub's Contributors panel lists only commit emails that belong to a GitHub
-account, and `noreply@minimax.io` is not one, so that attribution is visible in the commit history
-rather than in that panel. It is a property of how GitHub resolves a co-author, not an omission.
-
 `ablation-design` adapts the experimental-design and uncertainty-and-units material from the
 MIT-licensed [K-Dense-AI/claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)
 project. The method was taken; the dependency-heavy scripts were not. Original MIT licence and

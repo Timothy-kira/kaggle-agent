@@ -198,11 +198,6 @@ tools/                        强制层
 
 ## 出处
 
-本仓库由 [MiniMax Code](https://www.minimaxi.com) 参与构建 —— 仓库里大部分代码由 Agent 与作者
-共同写成，每条提交都带 `Co-Authored-By: MiniMax Code` trailer。GitHub 的 Contributors 面板只列出
-属于某个 GitHub 账号的提交邮箱，而 `noreply@minimax.io` 不是一个 GitHub 账号，所以这份署名出现在
-提交历史里，而不会出现在那个面板里。这是 GitHub 解析 co-author 的方式，不是遗漏。
-
 `ablation-design` 改编自 MIT 许可的
 [K-Dense-AI/claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)
 项目里的实验设计与不确定性材料。取的是方法，没有取那些依赖繁重的脚本。原始 MIT 许可和上游
