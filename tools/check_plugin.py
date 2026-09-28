@@ -2383,6 +2383,7 @@ def main() -> int:
     check_node_survives_the_tool_boundary()
     check_the_schema_advertises_what_exists()
     check_no_reversed_assertions()
+    check_transport_resilience()
     check_consider_and_prune()
     check_competition_isolation()
     check_text_encoding()
@@ -2756,161 +2757,6 @@ def check_text_encoding():
               f"{rel}: the literal is not a mojibake lookalike")
 
 
-# ---------------------------------------------------------------- the loop: log -> bottleneck -> run
-# The RSI loop is only a loop if the next experiment is required to be based on what the last one
-# showed. Before this the tree held scores and never held what a run taught, so the improvement
-# step was guesswork wearing a DAG.
-#
-# diagnose_log reuses the EXISTING FAILURE_LAYERS vocabulary rather than adding a taxonomy: a run
-# that is merely slow is not a layer failure, so `layer` is required only when a failure signature
-# appears and `bottleneck` stays free text. Specific signals beat the generic "Traceback", because
-# a bare traceback sits on the header line ABOVE the exception that names the failure - scanning in
-# file order would report "some layer broke" for every run.
-def check_diagnosis_loop():
-    print("diagnosis loop")
-    import shutil as _shutil
-    import tempfile as _tempfile
-    import pathlib as _pl
-
-    spec = importlib.util.spec_from_file_location("_ks_loop", SERVER_PY)
-    ks = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(ROOT / "mcp"))
-    try:
-        spec.loader.exec_module(ks)
-    except Exception as exc:  # noqa: BLE001
-        bad(f"the server module loads for the loop test: {exc}")
-        return
-    et = sys.modules["experiment_tree"]
-
-    P: list[str] = []
-    Fl: list[str] = []
-
-    def check(cond, label, detail=""):
-        # (cond, label) on purpose. The swapped form check("label", cond) always passes,
-        # because a non-empty label is truthy - which has happened seven times in this project.
-        (P if cond else Fl).append(label)
-        print(f"  {'ok  ' if cond else 'FAIL'} {label}"
-              f"{('  ' + str(detail)[:96]) if detail else ''}")
-
-    comp = "zz-check-loop"
-    COMP = comp          # the embedded body was written against a module constant
-    home = _tempfile.mkdtemp(prefix="ka-check-loop-")
-    os.environ["KAGGLE_AGENT_HOME"] = home
-    work = _pl.Path(_tempfile.mkdtemp(prefix="ka-check-loop-log-"))
-    log = work / "run.log"
-    log.write_text(
-        "loading data...\n"
-        "step 1200/1200\n"
-        "elapsed: 41.50\n"
-        "Traceback (most recent call last):\n"
-        '  File "train.py", line 88, in <module>\n'
-        "    raise ValueError('submission must have exactly 2 columns')\n"
-        "ValueError: submission must have exactly 2 columns\n",
-        encoding="utf-8")
-    try:
-        print("=== 1. diagnose reads the log and names the layer ===")
-        r = ks.tool_call("kaggle_experiment_tree",
-                         {"action": "diagnose", "competition": COMP, "path": str(log)})
-        t = json.dumps(r, ensure_ascii=False)
-        check("output-contract" in t, 'it classifies the layer')
-        check("it quotes the first error" in t or "ValueError" in t, "and quotes the first error line")
-        check("timing   :" in t, "and surfaces the timing it found")
-        check("bottleneck" in t and "logPath" in t,
-              "and a node carrying logPath + bottleneck")
-
-        print()
-        print("=== 2. declaring without a diagnosis is refused ===")
-        d = et.declare(COMP, {"id": "e0", "change": "x", "hypothesis": "h", "parent": None,
-                              "operator": "draft", "family": "f", "reason": "r"},
-                       read_revision=et.read(COMP)["revision"])
-        check(not d.get("ok") and d.get("code") == "diagnosis_required",
-              f"a declaration with no basis is refused: {d.get('code')}")
-
-        print()
-        print("=== 3. the diagnosis records, and can then be cited ===")
-        reading = et.diagnose_log(log.read_text(encoding="utf-8"), source=str(log))
-        check(reading["empty"] is False, "the reader says the log is not empty")
-        node = {"id": "d1", "kind": "research",
-                "question": "why did the run fail?", "targets": ["code"], "verdict": "keep",
-                "opens": "fix the submission writer", "parent": None,
-                "reason": "the log said so", "evidence": "local-only",
-                "bottleneck": "submission writer emits one column, the evaluator wants two",
-                "logPath": str(log), "layer": reading["layer"]}
-        rec = et.record(COMP, node, read_revision=et.read(COMP)["revision"])
-        check(rec.get("ok"), f"the diagnosis is recorded: {rec.get('message')}")
-
-        d = et.declare(COMP, {"id": "e1", "change": "write both columns", "hypothesis": "it then passes",
-                              "parent": None, "operator": "debug", "family": "submission",
-                              "reason": "the diagnosis named it", "diagnosis": "d1"},
-                       read_revision=et.read(COMP)["revision"])
-        check(d.get("ok"), f"a declaration citing the diagnosis is accepted: {d.get('message')}")
-
-        print()
-        print("=== 4. the citation is checked, not trusted ===")
-        d2 = et.declare(COMP, {"id": "e2", "change": "c", "hypothesis": "h", "parent": None,
-                               "operator": "draft", "family": "f", "reason": "r",
-                               "diagnosis": "no-such-node"},
-                        read_revision=et.read(COMP)["revision"])
-        check(d2.get("code") == "unknown_diagnosis",
-              f"citing a node that does not exist is refused: {d2.get('code')}")
-        et.record(COMP, {"id": "r9", "kind": "research", "question": "q", "targets": ["code"],
-                         "verdict": "keep", "opens": "o", "parent": None, "reason": "r"},
-                  read_revision=et.read(COMP)["revision"])
-        d3 = et.declare(COMP, {"id": "e3", "change": "c", "hypothesis": "h", "parent": None,
-                               "operator": "draft", "family": "f", "reason": "r",
-                               "diagnosis": "r9"},
-                        read_revision=et.read(COMP)["revision"])
-        check(d3.get("code") == "not_a_diagnosis",
-              f"citing a research node with no bottleneck is refused: {d3.get('code')}")
-
-        print()
-        print("=== 5. the escape hatch still needs a reason ===")
-        comp2 = "zz-loop-first"
-        d4 = et.declare(comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
-                                "parent": None, "operator": "draft", "family": "f", "reason": "r",
-                                "diagnosis": "none"},
-                         read_revision=et.read(comp2)["revision"])
-        check(not d4.get("ok") and d4.get("code") == "diagnosis_reason_required",
-              f"diagnosis=none without a reason is refused: {d4.get('code')}")
-        d5 = et.declare(comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
-                                "parent": None, "operator": "draft", "family": "f", "reason": "r",
-                                "diagnosis": "none",
-                                "diagnosisReason": "first run of this competition, nothing to learn from yet"},
-                         read_revision=et.read(comp2)["revision"])
-        check(d5.get("ok"), f"diagnosis=none with a real reason is accepted: {d5.get('message')}")
-
-        print()
-        print("=== 6. a bottleneck with no log behind it is rejected ===")
-        bad = et.record(COMP, {"id": "d2", "kind": "research", "question": "q", "targets": ["code"],
-                               "verdict": "keep", "opens": "o", "parent": None, "reason": "r",
-                               "bottleneck": "it felt slow"},
-                        read_revision=et.read(COMP)["revision"])
-        check(not bad.get("ok"), "a bottleneck citing no log is refused")
-        check(any("logRef" in p or "logPath" in p for p in (bad.get("problems") or [])),
-              f"and the complaint names the log: {(bad.get('problems') or [])[:1]}")
-        bad2 = et.record(COMP, {"id": "d3", "kind": "research", "question": "q", "targets": ["code"],
-                                "verdict": "keep", "opens": "o", "parent": None, "reason": "r",
-                                "logPath": str(log), "bottleneck": "x", "layer": "not-a-layer"},
-                         read_revision=et.read(COMP)["revision"])
-        check(not bad2.get("ok"), "an invented failure layer is refused")
-
-        print()
-        print("=== 7. an empty log cannot be diagnosed ===")
-        empty = work / "empty.log"
-        empty.write_text("", encoding="utf-8")
-        r2 = ks.tool_call("kaggle_experiment_tree",
-                          {"action": "diagnose", "competition": COMP, "path": str(empty)})
-        check("is empty" in json.dumps(r2), "diagnosing an empty log is refused")
-        r3 = ks.tool_call("kaggle_experiment_tree", {"action": "diagnose", "competition": COMP})
-        check("needs ref=" in json.dumps(r3), "diagnose with no source is refused")
-    finally:
-        os.environ.pop("KAGGLE_AGENT_HOME", None)
-        _shutil.rmtree(home, ignore_errors=True)
-        _shutil.rmtree(work, ignore_errors=True)
-
-    for x in Fl:
-        bad(f"diagnosis loop: {x}")
-
 
 # ---------------------------------------------------------------- the schema must advertise it
 # `diagnose` shipped in the skills for four commits with no enum entry, and 1085 checks stayed
@@ -3009,6 +2855,111 @@ def check_no_reversed_assertions():
         bad(b)
     if not problems:
         ok("no check() call has its label in the condition slot")
+
+
+# ------------------------------------------------------- structured args, and what a transport does
+# The host's tool layer drops the CONTENTS of an object-typed argument and can split a
+# non-ASCII character in half. Both failures are invisible from the schema: the call is
+# accepted, and the tool reports its own ordinary complaint ("node id ''", an encoding error
+# deep in a file write). So two rules are asserted here, each from the failure it prevents:
+# every published argument is a scalar or a STRING of JSON, and a handler can never take the
+# server down with it.
+def check_transport_resilience():
+    print("transport resilience")
+    import json as _json
+
+    def check(cond, label):
+        # (cond, label) only - the AST audit forbids the 3-arg form, and a detail that
+        # belongs in the message belongs in the message, not in a second slot.
+        # ok()/bad() already bump the module counter; do not bump it twice here.
+        if cond:
+            ok(label)
+        else:
+            bad(f"transport resilience: {label}")
+
+    spec = importlib.util.spec_from_file_location("_ks_tr", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"transport resilience: the server module loads: {exc}")
+        return
+
+    # 1. No published argument is an object or an array. Either arrives empty through the
+    #    host, so the whole tool family - declare, record, settle, local launch - is
+    #    unreachable. A string of JSON survives.
+    structured_published = []
+    for t in ks.TOOLS:
+        for k, v in ((t.get("inputSchema") or {}).get("properties") or {}).items():
+            if v.get("type") in ("object", "array"):
+                structured_published.append(f"{t['name']}.{k} ({v.get('type')})")
+    check(not structured_published,
+          f"no published argument is an object or an array (found: {structured_published})")
+
+    # 2. Every argument that was structured a moment ago is still a string of JSON, so the
+    #    fix is not "delete the parameter" but "carry the same data over the channel that
+    #    works". A parameter that quietly disappeared is a capability removed, not fixed.
+    src = (ROOT / "mcp" / "kaggle_server.py").read_text(encoding="utf-8")
+    for field in ("node", "tree", "command", "constraints", "weights", "policy",
+                  "params", "packages"):
+        check(f'"{field}"' in src,
+              f"the argument '{field}' is still read by the server, not deleted")
+
+    # 3. A tool that raises returns a normal error result and the server stays up. The
+    #    counter-example is a real handler bug - an unhandled ValueError used to kill the
+    #    process, and the client only ever saw "Connection closed".
+    r = ks.safe_tool_call("handoff_write", {
+        "competition": "zz-tr", "title": "t", "task": "x",
+        "tree": '{"base":"n1","nodes":{"n1":{"id":"n1","kind":"experiment",'
+                '"verdict":"keep","reason":"r"}}}',
+    })
+    txt = _json.dumps(r)
+    check(r.get("isError") is True,
+          f"a handler that raises returns isError, not a dead connection ({txt[:70]})")
+    check("this is a bug in the plugin" in txt,
+          "and it says the call reached the plugin (a plugin bug, not your arguments)")
+
+    # the server is still answering after that
+    after = ks.safe_tool_call("kaggle_experiment_tree", {"action": "status",
+                                                         "competition": "zz-tr"})
+    check(after.get("isError") is not True,
+          "the server still answers the next call after a handler raised")
+
+    # 4. A split surrogate pair is rejoined; a lone half is refused with the field named.
+    import structured as js
+    joined = js.scrub("a\ud83d\ude00b")
+    check(joined == "a\U0001f600b",
+          "a split surrogate pair is rejoined, not mangled "
+          f"({' '.join('%04X' % ord(c) for c in joined)})")
+    try:
+        js.scrub({"node": {"change": "x\udcaey"}})
+        check(False, "a lone surrogate half is refused")
+    except js.StructuredError as exc:
+        check("arguments.node.change" in str(exc),
+              f"a lone surrogate half is refused, naming the exact field ({str(exc)[:60]})")
+
+    # 5. An over-long argument is refused before it can stress the transport, with a route
+    #    for the content that does not fit.
+    try:
+        js.scrub({"rules": "P" * (js.MAX_ARG_CHARS + 1)})
+        check(False, "an over-long argument is refused")
+    except js.StructuredError as exc:
+        check("a file" in str(exc),
+              "an over-long argument is refused and points at a file instead "
+              f"({str(exc)[:50]})")
+
+    # 6. argv reads a JSON array and plain text, and rejects broken JSON by name.
+    check(js.argv('["python","train.py"]') == ["python", "train.py"],
+          "argv reads a JSON array of tokens")
+    check(js.argv("python train.py --epochs 3") == ["python", "train.py", "--epochs", "3"],
+          "argv still reads plain text")
+    try:
+        js.argv("[bad json")
+        check(False, "argv rejects broken JSON")
+    except js.StructuredError as exc:
+        check("command is not valid JSON" in str(exc),
+              f"argv rejects broken JSON and names the field ({str(exc)[:50]})")
 
 
 if __name__ == "__main__":

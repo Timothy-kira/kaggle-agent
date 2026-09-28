@@ -54,6 +54,26 @@ kaggle_experiment_tree action="read" competition="<competition>"
 This returns the base, the kept chain, the refuted list, the research nodes, and a
 `readRevision`. **`record` refuses a missing or stale `readRevision`.**
 
+## How to send a node: one JSON string
+
+`node` is published as a **string**, and you pass the whole node as one JSON value in it:
+
+```
+kaggle_experiment_tree action="record" competition="<slug>" read_revision=<n>
+  node='{"id":"e1","kind":"experiment","parent":"n1","change":"...","hypothesis":"...", "metric":{"name":"score","parent":0.31,"result":0.35,"delta":0.04},"operator":"improve","family":"...","verdict":"keep","reason":"...","evidence":"local-only"}'
+```
+
+This is not a style preference. The desktop host's tool layer **empties an object- or
+array-typed argument** before the plugin sees it — the call succeeds, and the tool then
+complains about its own ordinary validation (`node id ''`). Over plain MCP stdio the very
+same node arrives whole, so the loss is in the transport, not here. A string of JSON is the
+one shape that survives, so structured data travels as one string everywhere in this plugin
+(`node`, `tree`, `command`, `weights`, `policy`, `params`, `packages`, `constraints`).
+
+Keep the string **ASCII**. A transport can also split a non-ASCII character in half, which
+arrives as a lone surrogate; the tool refuses it and names the field rather than writing
+damaged text into the tree. Any long or non-ASCII content belongs in a file you pass by path.
+
 That is the whole loop, enforced rather than requested: once a node lands, the tree has changed,
 so the next node cannot be planned from the version you remember. Planning the second experiment
 requires reading the tree again.
@@ -138,7 +158,7 @@ line, and any timing it found, and it says when the log is **empty** rather than
 Record that node, and then **every declaration must cite it**:
 
 ```
-kaggle_experiment_tree action="declare" ... node={..., "diagnosis": "d3"}
+kaggle_experiment_tree action="declare" ... node='{..., "diagnosis": "d3"}'
 ```
 
 | You cite | What happens |
@@ -261,7 +281,7 @@ belongs in the plan's known-limits, not in a claim of solved.
 ## Selecting the next node is not "take the highest score"
 
 ```
-kaggle_experiment_tree action="select" weights={"workers": 2}
+kaggle_experiment_tree action="select" weights='{"workers": 2}'
 ```
 
 Greedy score-maximising selection concentrates the search on the incumbent and discards branches
@@ -290,8 +310,8 @@ selected: it stays as evidence so it is never repeated, but it cannot win again.
 
 ```
 kaggle_experiment_tree action="round_close" read_revision=<from the read>
-kaggle_experiment_tree action="replay"   policy={"id": "greedy", "params": {...}}
-kaggle_experiment_tree action="compare"  policy=[<candidates...>]
+kaggle_experiment_tree action="replay"   policy='{"id": "greedy", "params": {...}}'
+kaggle_experiment_tree action="compare"  policy='[<candidates...>]'
 ```
 
 Closing a round archives the current tree into `rounds[]` — **that archive is the replay pool**.

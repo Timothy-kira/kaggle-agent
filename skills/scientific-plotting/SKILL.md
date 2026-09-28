@@ -33,8 +33,11 @@ reports the environment, what is present, and what each absent package would buy
 nothing. If the user *wants* the extra chart types:
 
 ```
-kaggle_sources action="install" packages=["matplotlib"]
+kaggle_sources action="install" packages='["matplotlib"]'
 ```
+
+`packages` is a JSON array in one string — the host's tool layer empties a real array
+argument before the plugin sees it.
 
 — **only after they have said yes.** Until then, everything below works.
 

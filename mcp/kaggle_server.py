@@ -69,6 +69,7 @@ import logmonitor  # noqa: E402
 import presence  # noqa: E402
 import searchengine  # noqa: E402
 import sources as srclib  # noqa: E402
+import structured as jsonarg  # noqa: E402  (structured args may arrive as JSON text)
 
 PROTOCOL_VERSION = "2024-11-05"
 MAX_OUTPUT = 20000
@@ -555,16 +556,23 @@ TOOLS: list[dict[str, Any]] = [
                 "kernels": {"type": "string", "description": "Notebook refs this work uses."},
                 "quota_at_write": {"type": "string", "description": "Quota as of writing, so the next agent knows the budget."},
                 "constraints": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Gotchas the next agent must not rediscover the hard way.",
+                    "type": "string",
+                    "description": (
+                        "Gotchas the next agent must not rediscover the hard way, as a JSON "
+                        "array in one string: [\"the CLI account is not the MCP account\"]. "
+                        "Send it as text, not as an array: the host's tool layer empties a "
+                        "real array argument before it reaches this server."
+                    ),
                 },
                 "tree": {
-                    "type": "object",
+                    "type": "string",
                     "description": (
-                        "Optional RSI experiment tree ({base, nodes}). Merged into the tree on disk "
-                        "and is the source of truth for the base node, its metric and the refuted "
-                        "list, so pass it whenever the experiment state changed."
+                        "Optional RSI experiment tree ({base, nodes}) as a JSON object in one "
+                        "string, e.g. {\"base\":\"e1\",\"nodes\":{}}. Merged into the tree on "
+                        "disk and is the source of truth for the base node, its metric and the "
+                        "refuted list, so pass it whenever the experiment state changed. Send "
+                        "it as text: the host's tool layer empties a real object argument "
+                        "before it reaches this server."
                     ),
                 },
             },
@@ -648,9 +656,14 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "command": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "argv tokens, e.g. [\"python\",\"train.py\",\"--epochs\",\"3\"]",
+                    "type": "string",
+                    "description": (
+                        "The run as a JSON array of argv tokens in one string, e.g. "
+                        "[\"python\",\"train.py\",\"--epochs\",\"3\"]. Plain text is accepted "
+                        "too and split on whitespace, which is fine unless an argument itself "
+                        "contains a space. Send it as text: the host's tool layer empties a "
+                        "real array argument before it reaches this server."
+                    ),
                 },
                 "cwd": {"type": "string", "description": "Working directory. Defaults to the cwd."},
                 "log_path": {
@@ -880,10 +893,6 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "For action='consider': why you expect it to matter.",
                 },
-                "node": {
-                    "type": "string",
-                    "description": "For action='prune': the id of the research node to delete.",
-                },
                 "declared": {
                     "type": "string",
                     "description": (
@@ -892,11 +901,14 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                 },
                 "policy": {
-                    "type": "object",
+                    "type": "string",
                     "description": (
-                        "For replay/compare: a policy or list of policies, each {id, label, params}. "
-                        "params takes weights{score,progress,novelty,temperature}, betaCost, "
-                        "betaParallel, workers, maxRounds. Policies are DATA; nothing is executed."
+                        "For replay/compare: a policy, or a JSON array of policies, as JSON text "
+                        "in one string. Each is {id, label, params}, where params takes "
+                        "weights{score,progress,novelty,temperature}, betaCost, betaParallel, "
+                        "workers, maxRounds. Policies are DATA; nothing is executed. Send it as "
+                        "text: the host's tool layer empties a real object argument before it "
+                        "reaches this server."
                     ),
                 },
                 "held_out": {
@@ -919,13 +931,20 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                 },
                 "node": {
-                    "type": "object",
+                    "type": "string",
                     "description": (
-                        "The node to record. kind='experiment' needs: parent, change (one line, "
-                        "no 'and'), hypothesis, metric{name,parent,result,delta}, verdict, reason, "
-                        "artifacts. kind='research' needs: parent, question, targets (a list of "
-                        "forum/code/web/paper/model/dataset/rules/leaderboard), verdict, reason, "
-                        "opens (what this makes possible for a later experiment)."
+                        "For action='record'/'declare'/'settle': the node as a JSON object in one "
+                        "string, e.g. {\"id\":\"e1\",\"kind\":\"experiment\",\"parent\":\"n1\","
+                        "\"change\":\"...\",\"hypothesis\":\"...\",\"metric\":{\"name\":\"score\","
+                        "\"parent\":0.31,\"result\":0.35,\"delta\":0.04},\"verdict\":\"keep\","
+                        "\"reason\":\"...\"}. kind='experiment' needs: parent, change (one line, "
+                        "no 'and'), hypothesis, metric{name,parent,result,delta}, verdict, "
+                        "reason, artifacts. kind='research' needs: parent, question, targets (a "
+                        "list of forum/code/web/paper/model/dataset/rules/leaderboard), verdict, "
+                        "reason, opens (what this makes possible for a later experiment). For "
+                        "action='prune': just the research node's id, e.g. r2. Send the object as "
+                        "text: the host's tool layer empties a real object argument before it "
+                        "reaches this server."
                     ),
                 },
                 "new_base": {
@@ -933,16 +952,23 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Node id to promote to base when this node is kept, if it should advance.",
                 },
                 "weights": {
-                    "type": "object",
+                    "type": "string",
                     "description": (
-                        "For action='select': optional weights for score / progress / novelty / "
-                        "temperature, plus workers to size the returned batch. Defaults follow "
-                        "arXiv 2607.28568 sec. 5.2."
+                        "For action='select': weights for score / progress / novelty / "
+                        "temperature, plus workers to size the returned batch, as a JSON object "
+                        "in one string, e.g. {\"score\":1,\"workers\":3}. Defaults follow "
+                        "arXiv 2607.28568 sec. 5.2, so omit it entirely to take those. Send it "
+                        "as text: the host's tool layer empties a real object argument before it "
+                        "reaches this server."
                     ),
                 },
                 "params": {
-                    "type": "object",
-                    "description": "For action='policy' create: the policy parameters to register.",
+                    "type": "string",
+                    "description": (
+                        "For action='policy' create: the policy parameters to register, as a "
+                        "JSON object in one string. Send it as text: the host's tool layer "
+                        "empties a real object argument before it reaches this server."
+                    ),
                 },
                 "policy_action": {
                     "type": "string",
@@ -1029,9 +1055,12 @@ TOOLS: list[dict[str, Any]] = [
                 "needs_extract": {"type": "boolean",
                                   "description": "For search: only sources nobody has quoted yet."},
                 "packages": {
-                    "type": "array", "items": {"type": "string"},
-                    "description": ("For action='install': optional packages. ONLY call this after the "
-                                    "user has agreed - plotting works without any of them."),
+                    "type": "string",
+                    "description": ("For action='install': optional packages, as a JSON array in "
+                                    "one string, e.g. [\"matplotlib\",\"numpy\"]. ONLY call this "
+                                    "after the user has agreed - plotting works without any of "
+                                    "them. Send it as text: the host's tool layer empties a real "
+                                    "array argument before it reaches this server."),
                 },
             },
             "required": [],
@@ -1092,7 +1121,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.20.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.21.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -1142,6 +1171,56 @@ def text_response(cmd: str, code: int, out: str, err: str) -> dict[str, Any]:
         half = MAX_OUTPUT // 2
         text = f"{text[:half]}\n... [{len(text) - MAX_OUTPUT} chars cut] ...\n{text[-half:]}"
     return {"content": [{"type": "text", "text": text}], "isError": code != 0}
+
+
+# `node` carries two different things, and both have to fit through the one parameter the
+# host can carry. 'record', 'declare' and 'settle' want the node itself; 'prune' wants an
+# id. So the id is not a second parameter - it is the other reading of the same string.
+NODE_JSON_EXAMPLE = (
+    'e.g. {"id":"e1","kind":"experiment","parent":"n1","change":"...","hypothesis":"...",'
+    '"metric":{"name":"score","parent":0.31,"result":0.35,"delta":0.04},"verdict":"keep",'
+    '"reason":"..."} - one JSON object in one string'
+)
+
+
+def _node_argument(value: Any) -> Optional[dict[str, Any]]:
+    """Read `node` as the node itself, or None when it is absent or only an id.
+
+    A bare id is `prune`'s shape, and passing one to 'record' is a mistake - but reporting it
+    as broken JSON would describe the wrong mistake, so this returns None and lets the caller
+    say what is actually missing. Text that starts a JSON value but fails to parse IS a
+    quoting mistake, and that message is worth delivering exactly.
+    """
+    if isinstance(value, dict):
+        return value
+    text = str(value or "").strip()
+    if not text or not text.startswith(("{", "[")):
+        return None
+    return jsonarg.structured(value, "node", dict, NODE_JSON_EXAMPLE)
+
+
+def _node_id(value: Any) -> str:
+    """Read `node` as a node id, whether the caller sent the id or the whole node."""
+    node = jsonarg.structured(value, "node", dict, NODE_JSON_EXAMPLE)
+    if node is not None:
+        return str(node.get("id") or "").strip()
+    return str(value or "").strip()
+
+
+def _policy_argument(value: Any) -> Any:
+    """Read `policy`, which is one policy or a list of them."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, list):
+        return value
+    text = str(value).strip()
+    if text.startswith("["):
+        return jsonarg.structured(
+            text, "policy", list,
+            'e.g. [{"id":"greedy","label":"greedy","params":{"workers":2}}]')
+    return jsonarg.structured(
+        text, "policy", dict,
+        'e.g. {"id":"greedy","label":"greedy","params":{"workers":2}}')
 
 
 def _accounts_text() -> str:
@@ -1605,7 +1684,12 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         ) if args.get(k) not in (None, "")}
         # The tree is what makes the document true: it supplies the base, the metric and
         # the refuted list, so it must be forwarded or the doc silently renders empty.
-        tree = args.get("tree") if isinstance(args.get("tree"), dict) else None
+        # A JSON string is the form the host can actually carry; a real object still works
+        # for a plain MCP client. A caller that sends neither must not be written a document
+        # that claims to describe a tree it never gave.
+        tree = jsonarg.structured(
+            args.get("tree"), "tree", dict,
+            'e.g. {"base":"e1","nodes":{}} - the whole tree as one JSON string')
         result = handoff.write(comp, meta, tree=tree)
         return text_response(
             f"handoff write {comp}", 0,
@@ -2142,7 +2226,10 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         if action == "select":
             sel = experiment_tree.select_next(
-                experiment_tree.load(comp), weights=args.get("weights"))
+                experiment_tree.load(comp),
+                weights=jsonarg.structured(
+                    args.get("weights"), "weights", dict,
+                    'e.g. {"score":1,"workers":3} - omit it entirely to take the defaults'))
             if not sel.get("ok"):
                 return text_response(
                     "kaggle_experiment_tree select", 3, "", sel.get("reason", "nothing to select"))
@@ -2229,7 +2316,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         if action == "replay":
             doc = experiment_tree.load(comp)
-            policy = args.get("policy")
+            policy = _policy_argument(args.get("policy"))
             policies = policy if isinstance(policy, list) else [policy]
             policies = [p for p in policies if isinstance(p, dict)]
             if not policies:
@@ -2281,7 +2368,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         if action == "compare":
             doc = experiment_tree.load(comp)
-            policies = args.get("policy")
+            policies = _policy_argument(args.get("policy"))
             candidates = policies if isinstance(policies, list) else []
             candidates = [c for c in candidates if isinstance(c, dict)]
             if not candidates:
@@ -2325,7 +2412,11 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             sub = str(args.get("policy_action") or args.get("sub") or "list")
             if sub == "create":
                 res = experiment_tree.register_policy(
-                    comp, args.get("params") or {}, label=str(args.get("label") or ""),
+                    comp,
+                    jsonarg.structured(
+                        args.get("params"), "params", dict,
+                        "e.g. {\"weights\":{\"score\":1},\"workers\":2}") or {},
+                    label=str(args.get("label") or ""),
                     note=str(args.get("note") or ""))
                 if not res.get("ok"):
                     return text_response("kaggle_experiment_tree policy create", 2, "",
@@ -2556,11 +2647,12 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             return text_response("kaggle_experiment_tree report", 0, "\n".join(lines), "")
 
         if action == "record":
-            node = args.get("node")
-            if not isinstance(node, dict):
+            node = _node_argument(args.get("node"))
+            if node is None:
                 return text_response(
                     "kaggle_experiment_tree record", 2, "",
-                    "action='record' needs node (an object describing the one node)",
+                    "action='record' needs node: the node as a JSON object in one string. "
+                    + NODE_JSON_EXAMPLE,
                 )
             rev = args.get("read_revision")
             res = experiment_tree.record(
@@ -2635,7 +2727,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         if action == "prune":
             res = experiment_tree.prune(
-                comp, str(args.get("node") or ""), str(args.get("reason") or ""),
+                comp, _node_id(args.get("node")), str(args.get("reason") or ""),
                 read_revision=(int(args["read_revision"])
                                if args.get("read_revision") is not None else None),
             )
@@ -2763,11 +2855,12 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             )
 
         if action in ("declare", "settle"):
-            node = args.get("node")
-            if not isinstance(node, dict):
+            node = _node_argument(args.get("node"))
+            if node is None:
                 return text_response(
                     f"kaggle_experiment_tree {action}", 2, "",
-                    f"action={action!r} needs node (an object describing the node)",
+                    f"action={action!r} needs node: the node as a JSON object in one string. "
+                    + NODE_JSON_EXAMPLE,
                 )
             rev = args.get("read_revision")
             if action == "declare":
@@ -2821,18 +2914,14 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         # A local run used to have no entry point at all: the agent composed a shell command and
         # ran it, so there was nowhere for monitoring to attach itself. This is the symmetric
         # counterpart to kaggle_kernel_launch 閳?same declaration gate, same automatic log target 閳?        # so "nothing is watching this run" stops being a consequence of which engine you chose.
-        command = args.get("command")
-        if isinstance(command, str):
-            parts = command.split()
-        elif isinstance(command, list) and command:
-            parts = [str(c) for c in command]
-        else:
+        parts = jsonarg.argv(args.get("command"))
+        if not parts or not parts[0]:
             return text_response(
                 "kaggle local launch", 2, "",
-                "command is required (a list of argv tokens, or one string)",
+                'command is required: a JSON array of argv tokens in one string, e.g. '
+                '["python","train.py","--epochs","3"], or plain text such as '
+                '"python train.py --epochs 3"',
             )
-        if not parts or not parts[0]:
-            return text_response("kaggle local launch", 2, "", "command is empty")
 
         lcomp = str(args.get("competition") or "").strip()
         ldecl = str(args.get("declares") or "").strip()
@@ -3062,16 +3151,19 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 "",
                 "Nothing here is required to draw a figure, and nothing is installed unless the "
                 "user explicitly agrees. If they want the extra chart types: "
-                "kaggle_sources action=\"install\" packages=[...]",
+                "kaggle_sources action=\"install\" packages='[\"matplotlib\"]'",
             ]
             return text_response("kaggle_sources doctor", 0, "\n".join(lines), "")
 
         if action == "install":
-            pkgs = args.get("packages")
-            if not isinstance(pkgs, list) or not pkgs:
+            pkgs = jsonarg.structured(
+                args.get("packages"), "packages", list,
+                'e.g. ["matplotlib","numpy"] - a JSON array in one string')
+            if not pkgs:
                 return text_response(
                     "kaggle_sources install", 2, "",
-                    "action='install' needs packages=[...]. Do not call this to 'just try it' - "
+                    'action="install" needs packages: a JSON array in one string, e.g. '
+                    '["matplotlib","numpy"]. Do not call this to "just try it" - '
                     "ask the user first; it changes their Python environment.",
                 )
             res = deps.install([str(x) for x in pkgs])
@@ -3274,6 +3366,36 @@ def error(req_id: Any, code: int, message: str) -> None:
     sys.stdout.flush()
 
 
+def safe_tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Run one tool call and turn any escape into a normal error result.
+
+    An exception that reaches the dispatch loop kills the process, and the client sees
+    `MCP error -32000: Connection closed` - a transport symptom with no cause attached. Every
+    other tool then looks broken too, because the server they shared is gone. A rejected node,
+    a malformed argument, a failed assertion in a library: all of them are answers, and the
+    answer has to arrive.
+
+    `MemoryError` and `KeyboardInterrupt` are deliberately not caught; the first means the
+    machine is out of memory and the second means someone asked it to stop.
+    """
+    try:
+        return tool_call(name, jsonarg.scrub(args))
+    except jsonarg.StructuredError as exc:
+        return {"content": [{"type": "text", "text": f"$ {name}\nFAILED (exit 2)\n{exc}"}],
+                "isError": True}
+    except Exception as exc:  # noqa: BLE001 - a tool must not be able to kill the server
+        import traceback
+        tb = traceback.format_exc(limit=6).strip()
+        return {
+            "content": [{"type": "text", "text": (
+                f"$ {name}\nFAILED (exit 3)\n{type(exc).__name__}: {exc}\n\n"
+                f"this is a bug in the plugin, not in your arguments - the call reached it "
+                f"and it fell over. The server is still up, so the next call works. The "
+                f"trace below names the line.\n{tb}")}],
+            "isError": True,
+        }
+
+
 def main() -> int:
     for raw in sys.stdin:
         raw = raw.strip()
@@ -3305,7 +3427,8 @@ def main() -> int:
         elif method == "tools/list":
             respond(req_id, {"tools": TOOLS})
         elif method == "tools/call":
-            respond(req_id, tool_call(str(params.get("name", "")), params.get("arguments") or {}))
+            respond(req_id, safe_tool_call(str(params.get("name", "")),
+                                           params.get("arguments") or {}))
         elif req_id is None:
             pass  # any other notification
         else:
