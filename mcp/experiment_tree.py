@@ -747,6 +747,59 @@ def source_exists(source_id: str) -> bool:
         return False
 
 
+LIST_NODE_FIELDS = ("targets", "sources", "criteria")
+# Values that mean "no parent". The MCP transport has been observed to drop a null entirely,
+# and a caller who sends a bare false, or the string "none", means the same thing.
+NO_PARENT = ("", "none", "null", "unset", "false")
+
+
+def _normalize_list(value: Any) -> list[Any]:
+    """Accept the shapes a round trip through the tool boundary actually produces.
+
+    A list sent as ["code"] has been observed arriving as a bare string, and a list sent inside
+    an object arriving one level deeper than it was sent. A contract that breaks on that is not
+    a contract. The node is repaired on the way in rather than rejected, because a node an
+    agent cannot record is an experiment it cannot run.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        flat: list[Any] = []
+        for item in value:
+            if isinstance(item, list):
+                flat.extend(item)
+            else:
+                flat.append(item)
+        return flat
+    if isinstance(value, tuple):
+        return _normalize_list(list(value))
+    return [value]
+
+
+def normalize_node(node: Any) -> Any:
+    """Make a node survive the tool boundary. Idempotent."""
+    if not isinstance(node, dict):
+        return node
+    out = dict(node)
+    # targets is a list of strings; sources and criteria are lists of OBJECTS, and coercing
+    # those to str would destroy the very references the repair is meant to preserve. The
+    # evidence-chain checks caught that one.
+    for field in LIST_NODE_FIELDS:
+        if field in out:
+            items = _normalize_list(out[field])
+            out[field] = [x if isinstance(x, str) else str(x) for x in items] \
+                if field == "targets" else items
+    parent = out.get("parent")
+    if parent is not None and not isinstance(parent, str):
+        out["parent"] = None if parent is False or parent == 0 else str(parent)
+    if isinstance(out.get("parent"), str) and out["parent"].strip().lower() in NO_PARENT:
+        out["parent"] = None
+    metric = out.get("metric")
+    if isinstance(metric, dict) and isinstance(metric.get("metric"), dict):
+        out["metric"] = metric["metric"]          # the same accidental nesting
+    return out
+
+
 def validate(tree: dict[str, Any]) -> list[str]:
     """Return every structural problem. Empty list means it is sound.
 
@@ -926,7 +979,11 @@ def validate(tree: dict[str, Any]) -> list[str]:
                             f"{', '.join(RESEARCH_TARGETS)}"
                         )
             elif targets is not None:
-                problems.append(f"{where}: targets must be a list")
+                problems.append(
+                    f"{where}: targets must be a list, but a "
+                    f"{type(targets).__name__} arrived ({targets!r}). Send a plain string "
+                    f"like \"code\" or a list; both are accepted."
+                )
             # A research node that read a run's log is a diagnosis, and then it must say which
             # log. Without that it is an opinion wearing a citation, and the next experiment
             # would be "informed" by something nobody can re-read.
@@ -1040,6 +1097,7 @@ def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]
     the literal "none" with a reason. That is the link which makes the loop a loop: without it the
     tree holds scores and never holds what the runs taught.
     """
+    node = normalize_node(node)
     if not isinstance(node, dict):
         return {"ok": False, "code": "bad_node", "message": "node must be an object"}
 
@@ -1124,6 +1182,7 @@ def settle(competition: str, declared: str, node: dict[str, Any],
         return {"ok": False, "code": "already_settled",
                 "message": f"declaration {declared!r} already has a result node; declare a new "
                            f"experiment rather than settling this one twice"}
+    node = normalize_node(node)
     if not isinstance(node, dict):
         return {"ok": False, "code": "bad_node", "message": "node must be an object"}
     prepared = dict(node)
@@ -1341,6 +1400,7 @@ def record(competition: str, node: dict[str, Any], read_revision: Optional[int],
             "tree": read(competition),
         }
 
+    node = normalize_node(node)
     if not isinstance(node, dict):
         return {"ok": False, "code": "bad_node", "message": "node must be an object"}
 

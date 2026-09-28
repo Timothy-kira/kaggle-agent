@@ -157,6 +157,28 @@ Specific failure signals beat the generic `Traceback` when classifying, because 
 sits on the header line *above* the exception that actually names the failure. Scanning in file
 order would report "some layer broke" for every run.
 
+### If an action is missing, the session is stale, not the skill
+
+The runtime publishes the tool schema when it connects and does **not** re-read it for the life
+of a session. So after a package upgrade, a skill can document an action the bound tool does not
+have, and the error is a schema rejection on the `action` field — which reads like the feature
+never existed.
+
+Check in one call:
+
+```
+kaggle_experiment_tree action="status"
+```
+
+The last line prints the **server version** the session is actually bound to. If it is behind the
+package on disk, restart the session. Do **not** work around it by taking the escape hatch — using
+`diagnosis: "none"` to get past a gate you are actually failing is the one move that turns a
+version problem into a silently weaker record.
+
+Two shapes the tool boundary is known to hand over, both repaired on the way in, so neither needs
+hand-holding: a list sent as `["code"]` can arrive as the bare string `"code"` or one level too
+deep, and `parent` can arrive absent, as `false`, or as `"none"`. All of them work.
+
 ## Every node records which operator produced it
 
 Four atomic operators, from OpenMLE (arXiv 2607.28568): `draft` · `improve` · `debug` ·

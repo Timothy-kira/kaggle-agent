@@ -1065,7 +1065,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.18.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.19.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -2393,6 +2393,13 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 lines.append("\nproblems:")
                 lines += [f"  - {p}" for p in st["problems"]]
             lines += ["", st["staticChecksOnly"]]
+            # The version belongs here. A skill can document an action the INSTALLED tool schema
+            # does not have, because the runtime publishes that schema at handshake and does not
+            # re-read it for the life of the session. One cheap call that prints the version turns
+            # "the action is missing" from a mystery into a known stale session.
+            lines += ["", f"server version: {SERVER_INFO.get('version')}   "
+                          f"(if a documented action is missing, this session is bound to an older "
+                          f"schema - restart the session to pick up the current one)"]
             return text_response("kaggle_experiment_tree status", 0, "\n".join(lines), "")
 
         if action == "record":

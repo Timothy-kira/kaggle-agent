@@ -2336,6 +2336,378 @@ def _publishable_text_files() -> list[Path]:
         out.append(f)
     return sorted(out)
 
+def main() -> int:
+    check_manifest()
+    check_servers()
+    check_skill_frontmatter()
+    check_relationships()
+    check_browses_floor()
+    check_presence_reach()
+    check_graph_state()
+    check_tree_enforcement()
+    check_search_widening()
+    check_replay_semantics()
+    check_monotone_policy()
+    check_efc_accounting()
+    check_failure_layer_and_anchor()
+    check_undo_and_rounds()
+    check_migration_v2_to_v3()
+    check_decision_coupling()
+    check_tree_ownership()
+    check_runtime_behaviour()
+    check_evidence_chain()
+    check_plotting_is_self_contained()
+    check_evidence_graph_binding()
+    check_skill_index()
+    check_widget_binding()
+    check_no_secrets()
+    check_no_stale_names()
+    check_version_sync()
+    check_data_stays_on_kaggle()
+    check_browser_is_search_only()
+    check_research_preflight()
+    check_launch_gate()
+    check_launch_attaches_monitoring()
+    check_local_run_is_monitored()
+    check_monitor_uses_the_builtin_cron()
+    check_diagnosis_loop()
+    check_node_survives_the_tool_boundary()
+    check_consider_and_prune()
+    check_competition_isolation()
+    check_text_encoding()
+    check_publishable()
+    print()
+    if failures:
+        print(f"{len(failures)} failure(s) out of {checks} checks:")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+    print(f"all {checks} checks passed")
+    return 0
+
+
+# The RSI loop is only a loop if the next experiment is required to be based on
+# what the last one showed. Before this the tree held scores and never held what
+# a run taught, so the improvement step was guesswork wearing a DAG.
+#
+# diagnose_log reuses the EXISTING FAILURE_LAYERS vocabulary rather than adding a
+# taxonomy: a run that is merely slow is not a layer failure, so `layer` is required
+# only when a failure signature appears, and `bottleneck` stays free text. Specific
+# signals beat the generic "Traceback", because a bare traceback sits on the header
+# line ABOVE the exception that names the failure.
+
+def check_diagnosis_loop():
+    print("diagnosis loop")
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import pathlib as _pl
+
+    spec = importlib.util.spec_from_file_location("_ks_loop", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the server module loads for the diagnosis loop test: {exc}")
+        return
+    et = sys.modules["experiment_tree"]
+    # An embedded body may bind the name `bad` to a local; keep the module-level
+    # reporter under a name nothing in the body can shadow.
+    _report_failure = globals()["bad"]   # globals(), not `bad`: the embedded body
+    # binds `bad` as a local of THIS function, so a bare name would be unbound here
+
+    P: list[str] = []
+    Fl: list[str] = []
+
+    def check(cond, label, detail=""):
+        # (cond, label) on purpose. The swapped form check("label", cond) always passes,
+        # because a non-empty label is truthy - which has happened seven times in this project.
+        (P if cond else Fl).append(label)
+        # Bump the module counter too, or a passing assertion here is invisible in the
+        # headline total and the suite looks like it checks nothing.
+        globals()["checks"] += 1
+        print(f"  {'ok  ' if cond else 'FAIL'} {label}"
+              f"{('  ' + str(detail)[:90]) if detail else ''}")
+
+    comp = "zz-check-" + "_ks_loop"
+    COMP = comp          # the embedded body was written against a module constant
+    home = _tempfile.mkdtemp(prefix="ka-_ks_loop-")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    work = _pl.Path(_tempfile.mkdtemp(prefix="ka-_ks_loop-work-"))
+    log = Path(work, "run.log")     # the embedded body refers to this name
+    log.write_text(
+        "loading data...\n"
+        "step 1200/1200\n"
+        "elapsed: 41.50\n"
+        "Traceback (most recent call last):\n"
+        '  File "train.py", line 88, in <module>\n'
+        "    raise ValueError('submission must have exactly 2 columns')\n"
+        "ValueError: submission must have exactly 2 columns\n",
+        encoding="utf-8")
+    try:
+        print("=== 1. diagnose reads the log and names the layer ===")
+        r = ks.tool_call("kaggle_experiment_tree",
+                         {"action": "diagnose", "competition": COMP, "path": str(log)})
+        t = json.dumps(r, ensure_ascii=False)
+        check("failure layer: output-contract" in t, "it classifies the layer",
+              "output-contract" in t)
+        check("it quotes the first error" in t or "ValueError" in t, "and quotes the first error line")
+        check("timing   :" in t, "and surfaces the timing it found")
+        check("bottleneck" in t and "logPath" in t,
+              "and a node carrying logPath + bottleneck")
+
+        print()
+        print("=== 2. declaring without a diagnosis is refused ===")
+        d = et.declare(COMP, {"id": "e0", "change": "x", "hypothesis": "h", "parent": None,
+                              "operator": "draft", "family": "f", "reason": "r"},
+                       read_revision=et.read(COMP)["revision"])
+        check(not d.get("ok") and d.get("code") == "diagnosis_required",
+              f"a declaration with no basis is refused: {d.get('code')}")
+
+        print()
+        print("=== 3. the diagnosis records, and can then be cited ===")
+        reading = et.diagnose_log(log.read_text(encoding="utf-8"), source=str(log))
+        check(reading["empty"] is False, "the reader says the log is not empty")
+        node = {"id": "d1", "kind": "research",
+                "question": "why did the run fail?", "targets": ["code"], "verdict": "keep",
+                "opens": "fix the submission writer", "parent": None,
+                "reason": "the log said so", "evidence": "local-only",
+                "bottleneck": "submission writer emits one column, the evaluator wants two",
+                "logPath": str(log), "layer": reading["layer"]}
+        rec = et.record(COMP, node, read_revision=et.read(COMP)["revision"])
+        check(rec.get("ok"), f"the diagnosis is recorded: {rec.get('message')}")
+
+        d = et.declare(COMP, {"id": "e1", "change": "write both columns", "hypothesis": "it then passes",
+                              "parent": None, "operator": "debug", "family": "submission",
+                              "reason": "the diagnosis named it", "diagnosis": "d1"},
+                       read_revision=et.read(COMP)["revision"])
+        check(d.get("ok"), f"a declaration citing the diagnosis is accepted: {d.get('message')}")
+
+        print()
+        print("=== 4. the citation is checked, not trusted ===")
+        d2 = et.declare(COMP, {"id": "e2", "change": "c", "hypothesis": "h", "parent": None,
+                               "operator": "draft", "family": "f", "reason": "r",
+                               "diagnosis": "no-such-node"},
+                        read_revision=et.read(COMP)["revision"])
+        check(d2.get("code") == "unknown_diagnosis",
+              f"citing a node that does not exist is refused: {d2.get('code')}")
+        et.record(COMP, {"id": "r9", "kind": "research", "question": "q", "targets": ["code"],
+                         "verdict": "keep", "opens": "o", "parent": None, "reason": "r"},
+                  read_revision=et.read(COMP)["revision"])
+        d3 = et.declare(COMP, {"id": "e3", "change": "c", "hypothesis": "h", "parent": None,
+                               "operator": "draft", "family": "f", "reason": "r",
+                               "diagnosis": "r9"},
+                        read_revision=et.read(COMP)["revision"])
+        check(d3.get("code") == "not_a_diagnosis",
+              f"citing a research node with no bottleneck is refused: {d3.get('code')}")
+
+        print()
+        print("=== 5. the escape hatch still needs a reason ===")
+        comp2 = "zz-loop-first"
+        d4 = et.declare(comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
+                                "parent": None, "operator": "draft", "family": "f", "reason": "r",
+                                "diagnosis": "none"},
+                         read_revision=et.read(comp2)["revision"])
+        check(not d4.get("ok") and d4.get("code") == "diagnosis_reason_required",
+              f"diagnosis=none without a reason is refused: {d4.get('code')}")
+        d5 = et.declare(comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
+                                "parent": None, "operator": "draft", "family": "f", "reason": "r",
+                                "diagnosis": "none",
+                                "diagnosisReason": "first run of this competition, nothing to learn from yet"},
+                         read_revision=et.read(comp2)["revision"])
+        check(d5.get("ok"), f"diagnosis=none with a real reason is accepted: {d5.get('message')}")
+
+        print()
+        print("=== 6. a bottleneck with no log behind it is rejected ===")
+        bad = et.record(COMP, {"id": "d2", "kind": "research", "question": "q", "targets": ["code"],
+                               "verdict": "keep", "opens": "o", "parent": None, "reason": "r",
+                               "bottleneck": "it felt slow"},
+                        read_revision=et.read(COMP)["revision"])
+        check(not bad.get("ok"), "a bottleneck citing no log is refused")
+        check(any("logRef" in p or "logPath" in p for p in (bad.get("problems") or [])),
+              f"and the complaint names the log: {(bad.get('problems') or [])[:1]}")
+        bad2 = et.record(COMP, {"id": "d3", "kind": "research", "question": "q", "targets": ["code"],
+                                "verdict": "keep", "opens": "o", "parent": None, "reason": "r",
+                                "logPath": str(log), "bottleneck": "x", "layer": "not-a-layer"},
+                         read_revision=et.read(COMP)["revision"])
+        check(not bad2.get("ok"), "an invented failure layer is refused")
+
+        print()
+        print("=== 7. an empty log cannot be diagnosed ===")
+        empty = work / "empty.log"
+        empty.write_text("", encoding="utf-8")
+        r2 = ks.tool_call("kaggle_experiment_tree",
+                          {"action": "diagnose", "competition": COMP, "path": str(empty)})
+        check("is empty" in json.dumps(r2), "diagnosing an empty log is refused")
+        r3 = ks.tool_call("kaggle_experiment_tree", {"action": "diagnose", "competition": COMP})
+        check("needs ref=" in json.dumps(r3), "diagnose with no source is refused")
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+        _shutil.rmtree(work, ignore_errors=True)
+
+    for x in Fl:
+        _report_failure(f"diagnosis loop: {x}")
+
+
+# The tool boundary mangles shapes. An agent reported that `targets` could not be
+# recorded: ["code"], ["forum","code"] and omitting it all produced "targets must
+# be a list". That is not a caller error - the runtime hands the node over with the
+# list collapsed to a bare string, or one level deeper than it was sent. A contract
+# that breaks on that is not a contract, and a node an agent cannot record is an
+# experiment it cannot run.
+
+def check_node_survives_the_tool_boundary():
+    print("node survives the tool boundary")
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import pathlib as _pl
+
+    spec = importlib.util.spec_from_file_location("_ks_boundary", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the server module loads for the node survives the tool boundary test: {exc}")
+        return
+    et = sys.modules["experiment_tree"]
+    # An embedded body may bind the name `bad` to a local; keep the module-level
+    # reporter under a name nothing in the body can shadow.
+    _report_failure = globals()["bad"]   # globals(), not `bad`: the embedded body
+    # binds `bad` as a local of THIS function, so a bare name would be unbound here
+
+    P: list[str] = []
+    Fl: list[str] = []
+
+    def check(cond, label, detail=""):
+        # (cond, label) on purpose. The swapped form check("label", cond) always passes,
+        # because a non-empty label is truthy - which has happened seven times in this project.
+        (P if cond else Fl).append(label)
+        # Bump the module counter too, or a passing assertion here is invisible in the
+        # headline total and the suite looks like it checks nothing.
+        globals()["checks"] += 1
+        print(f"  {'ok  ' if cond else 'FAIL'} {label}"
+              f"{('  ' + str(detail)[:90]) if detail else ''}")
+
+    comp = "zz-check-" + "_ks_boundary"
+    COMP = comp          # the embedded body was written against a module constant
+    home = _tempfile.mkdtemp(prefix="ka-_ks_boundary-")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    work = _pl.Path(_tempfile.mkdtemp(prefix="ka-_ks_boundary-work-"))
+    log = Path(work, "run.log")     # the embedded body refers to this name
+    log.write_text(
+        "loading data...\n"
+        "step 1200/1200\n"
+        "elapsed: 41.50\n"
+        "Traceback (most recent call last):\n"
+        '  File "train.py", line 88, in <module>\n'
+        "    raise ValueError('submission must have exactly 2 columns')\n"
+        "ValueError: submission must have exactly 2 columns\n",
+        encoding="utf-8")
+    def research(**over):
+        n = {"id": "d1", "kind": "research", "question": "what dominated the run",
+             "targets": ["code"], "verdict": "keep", "opens": "the next experiment",
+             "parent": None, "reason": "the log said so", "evidence": "local-only",
+             "bottleneck": "data loading is 70% of the run",
+             "logPath": str(log)}
+        n.update(over)
+        return n
+
+    def rev():
+        return et.read(COMP)["revision"]
+
+    try:
+        print("=== the shapes that actually arrive ===")
+        cases = [
+            ("a real list", research(), "d1"),
+            ("a BARE STRING where a list was sent", research(id="d2", targets="code"), "d2"),
+            ("a list nested one level too deep", research(id="d3", targets=[["code"]]), "d3"),
+            ("a tuple", research(id="d4", targets=("code",)), "d4"),
+            ("parent sent as the string 'none'", research(id="d5", parent="none"), "d5"),
+            ("parent sent as false", research(id="d6", parent=False), "d6"),
+            ("parent absent entirely", {k: v for k, v in research(id="d7").items() if k != "parent"}, "d7"),
+            ("metric nested one level too deep",
+             {"id": "e1", "kind": "experiment", "change": "c", "hypothesis": "h", "parent": None,
+              "operator": "draft", "family": "f", "reason": "r", "evidence": "local-only",
+              "verdict": "keep",
+              "metric": {"metric": {"name": "s", "parent": None, "result": 1.0, "delta": 0.1,
+                                    "rank": 1, "rankSource": "lb"}}}, "e1"),
+        ]
+        for label, node, nid in cases:
+            r = et.record(COMP, node, read_revision=rev())
+            check(r.get("ok"), f"{label}", r.get("message"))
+
+        print()
+        print("=== the shape is repaired, not merely tolerated ===")
+        n = et.load(COMP)
+        stored = n["tree"]["nodes"]
+        check((stored.get("d2") or {}).get("targets") == ["code"], "a bare string became a one-item list",
+              (stored.get("d2") or {}).get("targets"))
+        check((stored.get("d3") or {}).get("targets") == ["code"], "a nested list was flattened",
+              (stored.get("d3") or {}).get("targets"))
+        check((stored.get("d5") or {}).get("parent") is None, "parent 'none' became null")
+        check((stored.get("d6") or {}).get("parent") is None, "parent false became null")
+        check((stored.get("d7") or {}).get("parent") is None,
+              "an absent parent stays harmless (it is no longer required)")
+        check(((stored.get("e1") or {}).get("metric") or {}).get("name") == "s",
+          "the nested metric was unwrapped")
+
+        print()
+        print("=== normalize_node is idempotent ===")
+        once = et.normalize_node(research(targets="code", parent="none"))
+        twice = et.normalize_node(once)
+        check(once == twice, "normalizing twice changes nothing")
+
+        print()
+        print("=== it does not hide a genuinely wrong value ===")
+        r = et.record(COMP, research(id="d8", targets="not-a-real-target"),
+                      read_revision=rev())
+        check(not r.get("ok"), "a target outside the vocabulary is still rejected")
+        check(any("not one of" in x for x in (r.get("problems") or [])),
+              "and the complaint names the vocabulary")
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+        _shutil.rmtree(work, ignore_errors=True)
+
+    for x in Fl:
+        _report_failure(f"node survives the tool boundary: {x}")
+
+
+# ---------------------------------------------------------------- text encoding
+# A UTF-8 file round-tripped through a Windows PowerShell pipeline comes back as DIFFERENT
+# characters, not as an error: Get-Content -Raw decodes with the system codepage (GBK here)
+# and the next write re-encodes the result, so every CJK string in the file silently becomes
+# other CJK strings of similar width. It reached the published repository across four commits
+# before it was found, in a single retired-agent name, and 1053 checks stayed green because
+# nothing looked at the bytes.
+#
+# The tell is a code point comparison, never a console rendering: the console will happily
+# display corrupted characters as if they were the intended ones.
+BOM = b"\xef\xbb\xbf"
+ENCODING_SUFFIXES = {".py", ".md", ".json", ".sh", ".cmd", ".txt", ".yml", ".yaml"}
+# Literals whose exact characters matter, compared by code point. A mojibake round trip
+# produces same-width wrong characters, so a length check cannot see it.
+EXACT_LITERALS = [
+    ("tools/check_plugin.py", "Kaggle \u641c\u7d22", "\u641c\u7d22"),
+    ("skills/competition-browser-agent.md", "\u641c\u7d22", "\u641c\u7d22"),
+]
+
+
+def _publishable_text_files() -> list[Path]:
+    out = []
+    for f in ROOT.rglob("*"):
+        if not f.is_file() or f.suffix.lower() not in ENCODING_SUFFIXES:
+            continue
+        parts = set(f.parts)
+        if ".git" in parts or "__pycache__" in parts:
+            continue
+        out.append(f)
+    return sorted(out)
+
 
 def check_text_encoding():
     print("text encoding")
@@ -2531,55 +2903,6 @@ def check_diagnosis_loop():
 
     for x in Fl:
         bad(f"diagnosis loop: {x}")
-
-
-def main() -> int:
-    check_manifest()
-    check_servers()
-    check_skill_frontmatter()
-    check_relationships()
-    check_browses_floor()
-    check_presence_reach()
-    check_graph_state()
-    check_tree_enforcement()
-    check_search_widening()
-    check_replay_semantics()
-    check_monotone_policy()
-    check_efc_accounting()
-    check_failure_layer_and_anchor()
-    check_undo_and_rounds()
-    check_migration_v2_to_v3()
-    check_decision_coupling()
-    check_tree_ownership()
-    check_runtime_behaviour()
-    check_evidence_chain()
-    check_plotting_is_self_contained()
-    check_evidence_graph_binding()
-    check_skill_index()
-    check_widget_binding()
-    check_no_secrets()
-    check_no_stale_names()
-    check_version_sync()
-    check_data_stays_on_kaggle()
-    check_browser_is_search_only()
-    check_research_preflight()
-    check_launch_gate()
-    check_launch_attaches_monitoring()
-    check_local_run_is_monitored()
-    check_monitor_uses_the_builtin_cron()
-    check_consider_and_prune()
-    check_competition_isolation()
-    check_diagnosis_loop()
-    check_text_encoding()
-    check_publishable()
-    print()
-    if failures:
-        print(f"{len(failures)} failure(s) out of {checks} checks:")
-        for f in failures:
-            print(f"  - {f}")
-        return 1
-    print(f"all {checks} checks passed")
-    return 0
 
 
 if __name__ == "__main__":
