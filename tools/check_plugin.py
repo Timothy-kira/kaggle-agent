@@ -3845,6 +3845,42 @@ def check_the_bootstrap_survives_a_directory_it_cannot_read():
           "and it reports a case this machine cannot exercise, instead of passing it quietly")
 
 
+def check_the_manifest_name_survives_the_marketplace():
+    """The submission form has one field that is easy to fill with the wrong string.
+
+    Publishing asks for a plugin name in a form, and that field takes the machine name from
+    ``plugin.json`` - the form says so in as many words, and its own example is
+    ``k12-course-learning``. ``displayName`` is what a user reads in the market and is the string
+    that feels like the plugin's name to anyone holding the form open. A first submission that
+    puts ``Kaggle Agent`` in that field is rejected as an invalid name, and nothing inside the
+    package was wrong.
+
+    The rejection lands on the reviewer rather than here, and it costs a round trip, so the rule
+    is asserted locally: lowercase kebab-case, bounded length, and - the one that actually bites -
+    not equal to the display name.
+    """
+    manifest, err = parse_json(MANIFEST)
+    if not manifest:
+        check(False, f"the manifest parses, so its name can be checked ({err})")
+        return
+    name = manifest.get("name") or ""
+    display = manifest.get("displayName") or ""
+
+    check(bool(re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name)),
+          f"the manifest name is lowercase kebab-case, which is what the form accepts ({name!r})")
+    check(0 < len(name) <= 64, f"and it is a sane length for a marketplace identifier ({len(name)})")
+    check(name != display,
+          f"the machine name is not the display name - the form takes the first, and pasting the "
+          f"second is what a submission gets rejected for ({display!r})")
+    check(display and display != name.lower(),
+          "and the display name is a real human-facing label, not a second spelling of the same id")
+
+    # The name is the install handle, so the README has to print the string people type.
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    check(f"{name}@official" in readme,
+          f"the README shows the install command, which carries the name {name!r} verbatim")
+
+
 def check_the_package_survives_a_marketplace_install():
     """A local install and a Marketplace install do not have the same shape on disk.
 
@@ -4104,6 +4140,7 @@ def main() -> int:
     check_wave_two_is_single_threaded()
     check_the_plan_is_reviewed_before_it_is_handed_off()
     check_the_bootstrap_survives_a_directory_it_cannot_read()
+    check_the_manifest_name_survives_the_marketplace()
     check_the_package_survives_a_marketplace_install()
     check_the_cli_is_offered_not_just_reported()
     check_the_waves_ask_what_to_search()

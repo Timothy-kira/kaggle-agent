@@ -1092,6 +1092,22 @@ def _(ks, js):
                         "never searches the working directory")
 
 
+@case("the manifest name replaced by the display name",
+      "the marketplace name check refuses a name that is not lowercase kebab-case and that "
+      "merely repeats displayName - the paste mistake a first submission actually makes, "
+      "because the form's name field is the one string in the package that is not on screen")
+def _(ks, js):
+    def _break(root):
+        path = root / ".minimax-plugin" / "plugin.json"
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg["name"] = cfg["displayName"]
+        path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    return not _catches("check_the_manifest_name_survives_the_marketplace", _break,
+                        "lowercase kebab-case",
+                        "not the display name",
+                        "carries the name")
+
+
 @case("a __pycache__ left in a vendored folder by running an upstream script",
       "build residue is excluded from the vendored set, so running a script does not redden the build")
 def _(ks, js):
