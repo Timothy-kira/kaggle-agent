@@ -4,11 +4,6 @@
 
 English · [中文](README.zh-CN.md)
 
-A MiniMax Code plugin that turns Kaggle into a working environment rather than a place you paste
-commands into: competition research that actually opens the sources, runs that report the
-accelerator they really got, and an experiment tree that remembers what was already refuted so
-the next iteration does not pay for it twice.
-
 **29 tools · 17 skills · 2 optional dependencies (plotting only).**
 
 ---
