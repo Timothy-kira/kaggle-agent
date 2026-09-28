@@ -2384,6 +2384,8 @@ def main() -> int:
     check_the_schema_advertises_what_exists()
     check_no_reversed_assertions()
     check_transport_resilience()
+    check_the_monitor_watches_content()
+    check_a_node_keeps_its_recipe()
     check_consider_and_prune()
     check_competition_isolation()
     check_text_encoding()
@@ -2960,6 +2962,191 @@ def check_transport_resilience():
     except js.StructuredError as exc:
         check("command is not valid JSON" in str(exc),
               f"argv rejects broken JSON and names the field ({str(exc)[:50]})")
+
+
+# ------------------------------------------------------- a monitor that watches, and a node that remembers
+# A ladder that only counts ticks cannot tell "the run has printed nothing for an hour" from
+# "the run died in the first minute": the difference is in the log, and a clock never reads the
+# log. And a log that cannot be read was treated as a reason to stop watching, which throws away
+# runs that were fine. So: the content decides the cadence, and an unreadable log is a route to
+# be repaired rather than an ending. Both are asserted here from the failure they prevent.
+def check_the_monitor_watches_content():
+    print("the monitor watches content")
+    import json as _json
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    def check(cond, label):
+        if cond:
+            ok(label)
+        else:
+            bad(f"the monitor watches content: {label}")
+
+    spec = importlib.util.spec_from_file_location("_ks_mon", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the monitor watches content: the server module loads: {exc}")
+        return
+    lm = sys.modules["logmonitor"]
+
+    home = _tempfile.mkdtemp(prefix="ka-check-monitor-")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    try:
+        # 1. The rules are DATA, not code: a user can watch for their own field.
+        check(all(r.get("name") and r.get("pattern") for r in lm.WATCH_RULES),
+              "every default watch rule has a name and a pattern")
+        check({r["act"] for r in lm.WATCH_RULES} <= {"report", "wake"},
+              f"rules act only as report or wake ({sorted({r['act'] for r in lm.WATCH_RULES})})")
+
+        # 2. A moved log tightens; a quiet one relaxes; a moved one again tightens. This is
+        #    the whole claim: the cadence is a function of the content, not of the tick count.
+        first = lm.observe("epoch 1/100 val_loss 0.9")
+        check(first["action"] == "tighten",
+              f"a first read tightens the cadence (got {first['action']})")
+        again = lm.observe("epoch 2/100 val_loss 0.8")
+        check(again["changed"] and again["action"] == "tighten",
+              "a log that moved tightens again")
+        same = lm.observe("epoch 2/100 val_loss 0.8")
+        check(not same["changed"] and same["action"] == "hold",
+              f"one quiet read holds the cadence (got {same['action']})")
+        quiet = lm.observe("epoch 2/100 val_loss 0.8")
+        check(quiet["steady"] and quiet["action"] == "relax",
+              f"two quiet reads relax it (got {quiet['action']})")
+        rung_after_quiet = lm.note_tick(action="relax")["rung"]
+        woken = lm.observe("epoch 3/100 val_loss 0.7")
+        back = lm.note_tick(action=woken["action"])["rung"]
+        check(back == 0 and rung_after_quiet > 0,
+              f"a run that wakes up is watched closely again (rung {rung_after_quiet} -> {back})")
+
+        # 3. A heartbeat line that re-matches on an unchanged log must NOT re-tighten: that is
+        #    the timer-by-another-name this replaced, and it is the easy mistake.
+        for _ in range(3):
+            held = lm.observe("epoch 3/100 val_loss 0.7")
+        check(held["action"] != "tighten",
+              f"a re-matched heartbeat on an unchanged log does not re-tighten "
+              f"(got {held['action']})")
+
+        # 4. Error / terminal / decision are reported on sight, and carry the line.
+        err = lm.observe("Traceback (most recent call last):\n  ValueError: boom")
+        check(err["report"] and err["report"][0]["name"] == "error",
+              "an error in the log is reported")
+        check("ValueError" in _json.dumps(err),
+              "and the report carries the line that matched, not just a flag")
+        term = lm.observe("Run complete")
+        check(term["report"] and term["report"][0]["name"] == "terminal",
+              "a terminal state is reported")
+        dec = lm.observe("overwrite? [y/n]")
+        check(dec["report"] and dec["report"][0]["name"] == "decision",
+              "a prompt needing the user is reported")
+
+        # 5. An unreadable log is a route to repair: the tool walks routes and remembers one.
+        steps = []
+        for i in range(lm.MAX_ATTEMPTS):
+            res = lm.attempt(f"failure {i}", ok=False, kind="kaggle")
+            steps.append(res["exhausted"])
+        check(steps[-1] is True,
+              f"the repair loop ends by saying every route failed (exhausted={steps[-1]})")
+        check(all(s is False for s in steps[:-1]),
+              "and it does not give up before the routes are actually tried")
+        rec = lm.attempt("worked", ok=True, recipe="status", kind="kaggle")
+        check(rec["recovered"] and rec["lastRecipe"]["step"] == "status",
+              "the route that worked is remembered for the next run")
+        shown = lm.describe()
+        check("readable via" in _json.dumps(shown) or shown["lastRecipe"],
+              "and get/describe report it, so the next run starts from it")
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+
+
+def check_a_node_keeps_its_recipe():
+    print("a node keeps its recipe")
+    import json as _json
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    def check(cond, label):
+        if cond:
+            ok(label)
+        else:
+            bad(f"a node keeps its recipe: {label}")
+
+    spec = importlib.util.spec_from_file_location("_ks_rcp", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"a node keeps its recipe: the server module loads: {exc}")
+        return
+    et = sys.modules["experiment_tree"]
+
+    home = _tempfile.mkdtemp(prefix="ka-check-recipe-")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    comp = "zz-recipe"
+    try:
+        # 1. A recipe arrives as JSON text, the only shape the host can carry, and survives.
+        got = et.normalize_node(
+            {"recipe": _json.dumps({"engine": "local",
+                                    "command": ["python", "train.py"]})})
+        check(got["recipe"]["engine"] == "local" and got["recipe"]["command"] == ["python", "train.py"],
+              f"a recipe given as JSON text is normalized ({got.get('recipe')})")
+        # and a real object is still accepted, so a plain MCP client is not locked out
+        obj = et.normalize_node({"recipe": {"engine": "kaggle", "ref": "me/slug"}})
+        check(obj["recipe"]["ref"] == "me/slug",
+              "a recipe given as a real object is accepted too")
+
+        # 2. A recipe that says nothing about how the run started is refused: it looks
+        #    reusable and is not, which is worse than absent.
+        tree = et.load(comp)
+        tree["tree"] = {"base": None, "nodes": {"e1": {
+            "id": "e1", "kind": "experiment", "parent": None, "change": "c", "hypothesis": "h",
+            "metric": {"name": "s", "parent": 0.0, "result": 0.1, "delta": 0.1, "rank": 1,
+                       "rankSource": "local"},
+            "verdict": "keep", "reason": "r", "operator": "draft", "family": "f",
+            "evidence": "local-only", "recipe": {"engine": "", "command": [], "raw": "junk"}}}}
+        problems = et.validate(tree)
+        check(any("recipe" in p for p in problems),
+              f"an empty recipe is refused ({problems[:1]})")
+
+        # 3. A declaration without a recipe inherits its parent's - the reuse default.
+        good = {"id": "n1", "kind": "experiment", "parent": None, "change": "first",
+                "hypothesis": "runs",
+                "metric": {"name": "s", "parent": 0.0, "result": 0.1, "delta": 0.1, "rank": 1,
+                           "rankSource": "local"},
+                "verdict": "keep", "reason": "seed", "operator": "draft", "family": "base",
+                "evidence": "local-only",
+                "recipe": {"engine": "local", "command": ["python", "train.py"]}}
+        t = et.load(comp)
+        t["tree"] = {"base": None, "nodes": {}}
+        t["revision"] = 0
+        et.save(comp, t)
+        rec = et.record(comp, good, read_revision=0)
+        check(rec.get("ok"), f"the seeded node with a real recipe is accepted ({rec.get('message')})")
+        rev = et.read(comp)["revision"]
+        decl = {"id": "n2", "kind": "experiment", "parent": "n1", "change": "more",
+                "hypothesis": "better", "reason": "push it", "operator": "improve",
+                "family": "tuning", "diagnosis": "none", "diagnosisReason": "baseline only"}
+        res = et.declare(comp, decl, read_revision=rev)
+        check(res.get("ok"), f"the child declaration is accepted ({res.get('message')})")
+        n2 = (et.load(comp).get("tree") or {}).get("nodes", {}).get("n2") or {}
+        check((n2.get("recipe") or {}).get("command") == ["python", "train.py"],
+              f"and it inherited the parent's recipe ({n2.get('recipe')})")
+        check(n2.get("recipeInheritedFrom") == "n1",
+              f"and says where it came from ({n2.get('recipeInheritedFrom')})")
+
+        # 4. read surfaces the runnable command, so reuse needs no archaeology.
+        roll = et.latest_recipes(comp)
+        check("local" in roll and roll["local"]["recipe"]["command"] == ["python", "train.py"],
+              f"read/rollup reports how to run it now ({roll})")
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
 
 
 if __name__ == "__main__":

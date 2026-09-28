@@ -725,20 +725,29 @@ TOOLS: list[dict[str, Any]] = [
             "Configure how experiment logs are watched. action='get' is what a monitoring "
             "subagent calls at the TOP OF EVERY POLL CYCLE to learn the current fetch interval - "
             "it re-reads from disk each time, so a change made while it runs takes effect on the "
-            "next cycle with no restart. action='set' changes the interval and bumps a revision "
-            "number, so you can confirm a change landed. action='target' registers a Kaggle kernel "
-            "ref or a local log file to watch; action='clear' stops watching."
+            "next cycle with no restart. action='observe' is the other half of every cycle: feed "
+            "it the log you just read and it decides whether that tick is news and how soon the "
+            "next one comes, so the watch follows the run instead of the clock. action='attempt' "
+            "records whether a fetch worked; when it did not, it hands back the next route to try "
+            "and, once one works, the step to keep on the node. action='set' changes the interval "
+            "and bumps a revision number, so you can confirm a change landed. action='target' "
+            "registers a Kaggle kernel ref or a local log file to watch; action='clear' stops "
+            "watching."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["get", "tick", "set", "status", "target", "clear", "reset"],
+                    "enum": ["get", "tick", "observe", "attempt", "set", "status", "target",
+                             "clear", "reset"],
                     "default": "get",
                     "description": (
-                        "get = read current config (call every cycle); set = change the interval; "
-                        "status = human-readable summary; target/clear/reset = manage watches."
+                        "get = read current config (call every cycle); observe = read the log "
+                        "just fetched and decide what it means; attempt = record a fetch that "
+                        "failed and get the next route to try, or confirm one that worked; "
+                        "tick = advance the cadence; set = change the interval; status = "
+                        "human-readable summary; target/clear/reset = manage watches."
                     ),
                 },
                 "interval_seconds": {
@@ -747,6 +756,44 @@ TOOLS: list[dict[str, Any]] = [
                         f"New fetch interval in seconds, for action='set'. "
                         f"Clamped to {15}-{logmonitor.MAX_INTERVAL_SECONDS} and snapped to a "
                         f"{logmonitor.STEP_SECONDS}s step."
+                    ),
+                },
+                "text": {
+                    "type": "string",
+                    "description": (
+                        "For action='observe': the log you just read, or its tail. The last few "
+                        "thousand characters is plenty - the interesting line is almost never "
+                        "the first one. Keep it ASCII; long or non-ASCII content belongs in a "
+                        "file you pass by path."
+                    ),
+                },
+                "verdict": {
+                    "type": "string",
+                    "enum": ["tighten", "relax", "hold"],
+                    "description": (
+                        "For action='tick': what action='observe' concluded. The cadence follows "
+                        "the log rather than the clock, so pass it every cycle - 'tighten' after "
+                        "a moved log, 'relax' once it has been quiet, 'hold' if it has not "
+                        "settled yet."
+                    ),
+                },
+                "ok": {
+                    "type": "boolean",
+                    "description": (
+                        "For action='attempt': true if this fetch actually read the log. A "
+                        "successful read after failures reports which route worked, so it can be "
+                        "recorded on the node and reused."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "For action='attempt' with ok=false: what the read hit.",
+                },
+                "recipe": {
+                    "type": "string",
+                    "description": (
+                        "For action='attempt' with ok=true: the route that worked (a step name "
+                        "like 'status' or 'logs'), so the next run starts from it."
                     ),
                 },
                 "kind": {
@@ -1121,7 +1168,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.21.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.22.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -1934,9 +1981,22 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     ident = t.get("ref") or t.get("path") or "(unknown)"
                     body += f"  - {t.get('kind')}: {ident}\n"
                 body += (
-                    "\nnotify the main agent only on: error in log, run terminal "
-                    "(stopped/ended/completed), or a decision that needs the user."
+                    "\nreport to the main agent only on: "
+                    + ", ".join(f"{r['name']} ({r['act']})" for r in data["watch"])
+                    + "."
                 )
+                if data["attempts"]:
+                    done = ", ".join(t["step"] for t in data["tried"]) or "(none)"
+                    body += (
+                        f"\nthe last {data['attempts']} fetch attempt(s) could not read the log "
+                        f"({done}). The next route to try is given by action=\"attempt\"; "
+                        f"there are {len(data['recipes'].get('kaggle', []))} in all."
+                    )
+                if data["lastRecipe"]:
+                    body += (
+                        f"\nthis target is readable via '{data['lastRecipe'].get('step')}' - "
+                        f"reuse that first next time."
+                    )
                 lad = logmonitor.ladder_state(data)
                 body += (
                     f"\ncadence: rung {lad['rung'] + 1} of {lad['of']} - currently "
@@ -1973,21 +2033,80 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     body += "\nthe value was unchanged, so no monitoring subagent will see a change.\n"
                 return text_response("kaggle_log_monitor set", 0, body, "")
 
+            if action == "observe":
+                # The tick hands back what it actually read. This is what turns a timer into
+                # a monitor: the log's own content decides whether this tick is news and how
+                # soon the next one comes, instead of the clock doing it blind.
+                text = str(args.get("text") or "")
+                if not text.strip():
+                    return text_response(
+                        "kaggle_log_monitor observe", 2, "",
+                        "action='observe' needs text: the log you just read, or its tail. "
+                        "Passing the last few thousand characters is plenty.",
+                    )
+                res = logmonitor.observe(text)
+                body = [
+                    f"log moved since the last tick: {res['changed']}"
+                    f"   quiet checks: {res['stillChecks']}",
+                    f"cadence verdict: {res['action']}",
+                ]
+                if res["fired"]:
+                    body.append("\nmatched:")
+                    for f in res["fired"]:
+                        body.append(f"  {f['name']} ({f['act']}): {f['line']}")
+                else:
+                    body.append("\nno rule matched - the run is going quietly.")
+                if res["report"]:
+                    names = ", ".join(f["name"] for f in res["report"])
+                    body.append(
+                        f"\nREPORT THESE to the main agent ({names}) and, if the run is over, "
+                        f"record or settle the node and delete this cron."
+                    )
+                else:
+                    body.append(
+                        f"\nnothing worth interrupting anyone for. Re-arm with action=\"tick\" "
+                        f"verdict={res['action']!r} and exit quietly."
+                    )
+                return text_response("kaggle_log_monitor observe", 0, "\n".join(body), "")
+
+            if action == "attempt":
+                # An unreadable log is a reason to try a different route to the same bytes,
+                # not a reason to give up on the run. The route that works is remembered so
+                # it can be written onto the node and reused.
+                ok = args.get("ok") is True
+                res = logmonitor.attempt(
+                    reason=str(args.get("reason") or ""), ok=ok,
+                    recipe=str(args.get("recipe") or ""),
+                    kind=str(args.get("kind") or "kaggle"))
+                body = [res["effective"]]
+                if res.get("recovered"):
+                    body.append(
+                        f"\nafter {res['attempts']} failure(s), this read the log: "
+                        f"record it on the node so the next run starts from it.")
+                if res.get("exhausted"):
+                    body.append(
+                        "\nthis is the terminal condition for the WATCH, not for the run: the "
+                        "run may still be fine. Say the log could not be read, delete the "
+                        "cron, and leave the reason on the node.")
+                return text_response("kaggle_log_monitor attempt", 0, "\n".join(body), "")
+
             if action == "tick":
                 # The loop's heartbeat contract: call this after each check, and it hands back
                 # the schedule to re-arm with. The ladder lives in the tool rather than in the
                 # prompt, because a rung an agent has to remember is a rung it will not take.
-                res = logmonitor.note_tick()
+                # `action` carries what observe concluded, so the cadence follows the log.
+                res = logmonitor.note_tick(action=str(args.get("verdict") or ""))
                 body = (
                     f"tick {res['ticks']}   rung {res['rung'] + 1} of "
                     f"{len(logmonitor.LADDER_SECONDS)}"
                     f"   ({', '.join(logmonitor.LADDER_LABELS)})\n"
                     f"re-arm the scheduled task with {res['rearmWithLabel']} "
-                    f"({res['rearmWithSeconds']}s)"
+                    f"({res['rearmWithSeconds']}s)\n"
+                    f"because: {res['why']}"
                     + ("\nsteady state - the run is plainly just running; leave it here"
                        if res["atSteadyState"] else "")
-                    + "\n\nthis watch deletes itself on an error, a terminal state, or two "
-                      "consecutive unreadable ticks."
+                    + "\n\nthis watch deletes itself on a report from action=\"observe\", or "
+                      "when action=\"attempt\" says every route to the log has failed."
                 )
                 return text_response("kaggle_log_monitor tick", 0, body, "")
 
@@ -2048,7 +2167,8 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         return text_response(
             "kaggle_log_monitor", 2, "",
-            f"unknown action: {action} (use get, set, status, target, clear or reset)",
+            f"unknown action: {action} (use get, observe, attempt, tick, set, status, target, "
+            f"clear or reset)",
         )
 
     if name == "kaggle_presence":
@@ -2207,6 +2327,17 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 body += (f"\nnote: you asked for {ident['slug']!r} and this tree belongs to "
                          f"{ident['competition']!r}. If those are the same competition, register "
                          f"the name with action=\"alias\" so both resolve here.")
+            # The working recipe, so the next run reuses the version that ran rather than
+            # re-deriving the command. A declaration inherits this automatically; it is shown
+            # here so the agent can also update it deliberately.
+            for engine, entry in (tree.get("recipes") or {}).items():
+                rcp = entry.get("recipe") or {}
+                cmd = rcp.get("command") or []
+                how = (" ".join(cmd) if cmd
+                       else (f"ref {rcp.get('ref')}" if rcp.get("ref") else "(no command)"))
+                body += (f"\nhow to run it now ({engine}, from {entry.get('node')}): {how}"
+                         + ("\n  inherited from the parent; pass your own recipe on declare to "
+                            "change it" if entry.get("inherited") else ""))
             for f in ident.get("forks") or []:
                 body += (f"\nFORK: {f.get('competition')} also claims {ident.get('slug')!r} "
                          f"with {f.get('nodes')} nodes at {f.get('dir')}. Two histories of one "

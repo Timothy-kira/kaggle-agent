@@ -102,6 +102,72 @@ def _(ks, js):
         return True
 
 
+@case("cadence driven by the tick count instead of the log",
+      "a re-matched heartbeat on an unchanged log does not re-tighten")
+def _(ks, js):
+    import logmonitor as lm
+    # The counter-example is arithmetic: a counter that tightens every tick is exactly the
+    # timer this replaced. Watch the same unchanged log three times.
+    verdicts = [lm.observe("epoch 3/100 val_loss 0.7")["action"] for _ in range(3)]
+    return all(v == "tighten" for v in verdicts)
+
+
+@case("a heartbeat line that re-matches, as a pure clock would",
+      "a log that moved tightens again")
+def _(ks, js):
+    import logmonitor as lm
+    # Only meaningful if observe still records a digest: ask whether an UNCHANGED log can
+    # ever look changed. If it can, the monitor is lying about the run being active.
+    lm.observe("epoch 1/100")
+    second = lm.observe("epoch 1/100")
+    return second["changed"]  # claiming "moved" on identical bytes is the failure
+
+
+@case("give up on the first unreadable log",
+      "the repair loop ends by saying every route failed")
+def _(ks, js):
+    import logmonitor as lm
+    res = lm.attempt("404", ok=False, kind="kaggle")
+    return res["exhausted"]  # exhausted on the FIRST failure is giving up, not repairing
+
+
+@case("a declaration that forgets its parent's recipe",
+      "and it inherited the parent's recipe")
+def _(ks, js):
+    import experiment_tree as et
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+    home = _tempfile.mkdtemp(prefix="ka-ce-recipe-")
+    old = _os.environ.get("KAGGLE_AGENT_HOME")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    try:
+        comp = "ce-recipe"
+        t = et.load(comp)
+        t["tree"] = {"base": None, "nodes": {}}
+        t["revision"] = 0
+        et.save(comp, t)
+        base = {"id": "n1", "kind": "experiment", "parent": None, "change": "first",
+                "hypothesis": "runs",
+                "metric": {"name": "s", "parent": 0.0, "result": 0.1, "delta": 0.1,
+                           "rank": 1, "rankSource": "local"},
+                "verdict": "keep", "reason": "seed", "operator": "draft", "family": "base",
+                "evidence": "local-only",
+                "recipe": {"engine": "local", "command": ["python", "train.py"]}}
+        et.record(comp, base, read_revision=0)
+        rev = et.read(comp)["revision"]
+        et.declare(comp, {"id": "n2", "kind": "experiment", "parent": "n1",
+                          "change": "more", "hypothesis": "better", "reason": "push",
+                          "operator": "improve", "family": "tuning",
+                          "diagnosis": "none", "diagnosisReason": "baseline only"},
+                   read_revision=rev)
+        n2 = (et.load(comp).get("tree") or {}).get("nodes", {}).get("n2") or {}
+        return not n2.get("recipe")  # no inherited recipe is the failure
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+
+
 def main():
     ks = load("ks_ce", ROOT / "mcp" / "kaggle_server.py")
     js = load("js_ce", ROOT / "mcp" / "structured.py")

@@ -74,6 +74,24 @@ Keep the string **ASCII**. A transport can also split a non-ASCII character in h
 arrives as a lone surrogate; the tool refuses it and names the field rather than writing
 damaged text into the tree. Any long or non-ASCII content belongs in a file you pass by path.
 
+## A node keeps the recipe that ran it
+
+A `recipe` is how the run was actually launched, kept on the node so the next one starts from
+the version that worked instead of re-deriving the command:
+
+```
+"recipe": {"engine": "local", "command": ["python", "train.py", "--epochs", "3"]}
+```
+
+**A declaration that does not name its own recipe inherits its parent's.** Reuse is the
+default and changing it is deliberate, because the interesting experiments change one thing —
+and the recipe is how you change exactly one thing in how the run is launched. `read` prints
+`how to run it now`, and `validate` refuses a recipe that says nothing about how the run
+started: a recipe the next run cannot use is a note, and notes do not belong on a node.
+
+When a log is only readable by a non-obvious route, the working step belongs here too
+(`"step": "status"`), so the next run does not rediscover it.
+
 That is the whole loop, enforced rather than requested: once a node lands, the tree has changed,
 so the next node cannot be planned from the version you remember. Planning the second experiment
 requires reading the tree again.

@@ -1,6 +1,6 @@
 ---
 name: log-monitor
-description: "Use when an experiment or notebook run is producing logs that need watching - on Kaggle or locally - and the user wants it tracked instead of the main agent polling. Uses MiniMax Code's built-in scheduled task (定时任务 / cron self) as the heartbeat, because a subagent is one turn and cannot wait: it reports and returns. Covers the tick body, re-reading the fetch interval every tick so a GUI change applies live, and the only three conditions that justify interrupting the main agent - an error in the log, the run reaching a terminal state, or a decision that needs the user - plus the rule that the cron deletes itself on any of them. Also covers when NOT to set up monitoring at all, and the sleep-the-machine caveat."
+description: "Use when an experiment or notebook run is producing logs that need watching - on Kaggle or locally - and the user wants it tracked instead of the main agent polling. The watch follows the run rather than a clock: each tick feeds the log it read to kaggle_log_monitor action='observe', and the log's own content decides whether the tick is news and how soon the next one comes, so a run that wakes up is watched closely again. An unreadable log is treated as a route problem - action='attempt' hands back the next way to read it and remembers the one that works, and that route belongs on the node. Uses MiniMax Code's built-in scheduled task (定时任务 / cron self) as the heartbeat, because a subagent is one turn and cannot wait: it reports and returns. Covers the tick body, the three conditions that justify interrupting the main agent - an error in the log, the run reaching a terminal state, or a decision that needs the user - plus the rule that the cron deletes itself on any of them. Also covers when NOT to set up monitoring at all, and the sleep-the-machine caveat."
 ---
 
 # Watching a run's log without spamming anyone
@@ -110,14 +110,50 @@ tick with nothing to say from messaging anyone.
 This skill only supplies the tick body, because that part is specific to a Kaggle log:
 
 ```
-1. kaggle_log_monitor action="get"      # which targets, and where the cadence is now
-2. read the run's log. Still running, nothing wrong → exit quietly; say nothing.
-   Error in the log        → report it, settle or record the node, delete this cron.
-   Terminal state          → report the outcome, settle the node, delete this cron.
-   Log unreadable          → say so once, keep this cron for two more ticks, then delete it.
-3. kaggle_log_monitor action="tick"     # returns the interval to re-arm with
-4. cron update schedule=<that interval>
+1. kaggle_log_monitor action="get"        # targets, watch rules, cadence, repair progress
+2. read the run's log, using the route that worked last time (see below)
+   could not read it → kaggle_log_monitor action="attempt" ok=false reason="..."
+                      → it hands back the next route; take it and try again THIS tick
+   read it          → kaggle_log_monitor action="observe" text="<the tail>"
+                      → it says which rules matched and what the cadence should do
+   error / terminal / decision → report it, settle the node, delete this cron
+   nothing          → say nothing
+3. kaggle_log_monitor action="tick" verdict=<observe's verdict>
+4. cron update schedule=<the interval it returns>
 ```
+
+**A tick reads the log; it does not consult a clock to decide whether that mattered.**
+`action="observe"` is what makes that true: the log's own content decides both whether this
+tick is news and how soon the next one comes. Pass it what you read and it answers
+`changed`, names the rules that matched, and returns a verdict:
+
+| verdict | what it means | what to do |
+|---|---|---|
+| `tighten` | the log moved since the last tick — the run is doing something | watch closely, exit quietly |
+| `hold` | one quiet check; a run can go quiet mid-training | same cadence, exit quietly |
+| `relax` | quiet twice running — genuinely steady | stretch the interval, exit quietly |
+
+**A log that moved snaps the ladder back to its tightest rung.** That is the point: a run
+that wakes up in the middle of the 20-minute steady state is interesting again, and a monitor
+that keeps polling on schedule without noticing that is just a timer with logging.
+
+## An unreadable log is a route problem, not an ending
+
+The old behaviour — say it once, then delete the cron after two failures — threw away a run
+that was probably fine. A log you cannot read usually means the *route* is wrong, not the run:
+
+| route | tool | when it is the one that works |
+|---|---|---|
+| `logs` | `kaggle_kernels_logs` | the normal case |
+| `status` | `kaggle_kernels_status` | the kernel is queued or starting, so no log exists yet |
+| `output` | `kaggle_kernels_output` | outputs land before the log endpoint answers |
+| `ref` | `handoff_status` | the ref is not the one this run was launched under |
+
+`action="attempt" ok=false reason="..."` walks that list and tells you the next one. Try it in
+the same tick. When one finally works, `action="attempt" ok=true recipe="<step>"` says so —
+and **that step belongs on the node**, so the next run starts from the route that worked
+instead of rediscovering it. Only when `exhausted` is the watch over: say so plainly, delete
+the cron, and leave the reason on the node. The run itself is not over; only the watching is.
 
 **The cadence is a ladder, and it is the tool's, not yours:**
 
@@ -129,16 +165,15 @@ This skill only supplies the tick body, because that part is specific to a Kaggl
 | 4 | **10m** | it is plainly running |
 | 5 | **20m** | steady state — leave it here |
 
-`action="tick"` advances the ladder and hands back the interval to re-arm with, so the schedule
-follows the run instead of a guess you made once. A run that needs 6 hours does not need 720 reads
-of an endpoint with nothing to say; the interesting moments are at the start and at the end.
-`action="get"` shows which rung you are on. **Registering a run resets the ladder to the first
-rung**, so the next run is watched closely again.
+`action="tick" verdict=...` moves the ladder according to what the log did and hands back the
+interval to re-arm with, so the schedule follows the run instead of a guess you made once. A
+run that needs 6 hours does not need 720 reads of an endpoint with nothing to say. `action="get"`
+shows which rung you are on. **Registering a run resets the ladder to the first rung.**
 
-**Delete the cron when the run is over.** That is not tidy-up, it is the exit condition: a loop
-with no exit is a leak that bills API calls forever. Delete it on an error, on a terminal state, or
-after two consecutive unreadable ticks, and `cron list` shows you what is still watching.
-`kaggle_log_monitor action="clear"` retires the stale targets at the same time.
+**Delete the cron when the watch is over.** That is not tidy-up, it is the exit condition: a
+loop with no exit is a leak that bills API calls forever. Delete it when `observe` reports
+something, or when `attempt` says every route to the log has failed. `cron list` shows you
+what is still watching, and `kaggle_log_monitor action="clear"` retires the stale targets.
 
 **The slider still works, and it overrides the ladder.** `kaggle_log_monitor action="set"`, or the
 GUI from `log-monitor-visualizer`, changes the fetch interval a tick reads *within* its rung. The
@@ -170,8 +205,12 @@ to this conversation:
 - that it calls `kaggle_log_monitor action="get"` at the start of every cycle and sleeps the
   returned `intervalSeconds` between fetches;
 - that it must never cache the interval from its first read;
+- that after every read it calls `action="observe" text=<the tail>` and re-arms with
+  `action="tick" verdict=<what observe returned>` — the cadence follows the log, not a guess;
 - the three reporting conditions below, verbatim;
-- what to do when it cannot read the log at all.
+- that an unreadable log is a **route** problem, not an ending: call
+  `action="attempt" ok=false reason=...`, take the route it hands back, and try again; on
+  success call `action="attempt" ok=true recipe=<step>` so the working route is remembered.
 
 The subagent has no parent context. A brief that says "watch the run we discussed" produces a
 subagent that watches nothing. **And it will return when it has nothing left to report** — that is
@@ -180,7 +219,8 @@ the design, not a fault, so scope it to a bounded wait.
 ## Step 4: report only on the three conditions
 
 A tick stays silent otherwise. Not quiet in the chat - absent. Progress that is
-merely progress is not news.
+merely progress is not news. `action="observe"` decides this from the log's content, and its
+`report` list is the authority on what is worth interrupting someone for.
 
 **Report when:**
 

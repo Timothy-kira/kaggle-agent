@@ -797,6 +797,39 @@ def normalize_node(node: Any) -> Any:
     metric = out.get("metric")
     if isinstance(metric, dict) and isinstance(metric.get("metric"), dict):
         out["metric"] = metric["metric"]          # the same accidental nesting
+    recipe = _normalize_recipe(out.get("recipe"))
+    if recipe is not None:
+        out["recipe"] = recipe
+    return out
+
+
+def _normalize_recipe(value: Any) -> Optional[dict[str, Any]]:
+    """Coerce a node's recipe into {engine, command, ref, step} so reuse is mechanical.
+
+    A recipe is how a run was actually launched, kept on the node so the next run starts from
+    the version that worked instead of re-deriving the command. It is repaired on the way in
+    for the same reason a node is: a field the caller cannot get through the boundary is a
+    field that will be quietly absent on the node that needed it. Returns None when there is
+    no recipe at all - absence is fine, a broken one is not, and validate() says so.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        import json as _json
+        try:
+            value = _json.loads(value)
+        except (ValueError, TypeError):
+            return {"engine": "", "command": [], "raw": value}  # validate() will refuse it
+    if not isinstance(value, dict):
+        return {"engine": "", "command": [], "raw": value}
+    out = {
+        "engine": str(value.get("engine") or "").strip(),
+        "command": [str(c) for c in (_normalize_list(value.get("command")) or [])]
+        if value.get("command") is not None else [],
+    }
+    for key in ("ref", "step", "folder", "logPath"):
+        if value.get(key) not in (None, ""):
+            out[key] = str(value[key])
     return out
 
 
@@ -891,6 +924,20 @@ def validate(tree: dict[str, Any]) -> list[str]:
                     f"{where}: change contains '{conj}', so it is two experiments. "
                     "One node changes one thing."
                 )
+            # A recipe is optional, but a half-written one is worse than none: it looks
+            # reusable and is not. So its presence is checked, not its content's absence.
+            if "recipe" in node:
+                rcp = node.get("recipe")
+                if not isinstance(rcp, dict):
+                    problems.append(
+                        f"{where}: recipe must be an object, got {type(rcp).__name__}"
+                    )
+                elif not rcp.get("engine") and not rcp.get("command") and not rcp.get("ref"):
+                    problems.append(
+                        f"{where}: recipe says nothing about how the run was launched. Give it "
+                        "an engine and a command, or a ref - a recipe the next run cannot "
+                        "reuse is a note, and notes do not belong here."
+                    )
             metric = node.get("metric")
             if isinstance(metric, dict):
                 for field in ("name", "parent", "result", "delta"):
@@ -1051,7 +1098,35 @@ def read(competition: str) -> dict[str, Any]:
     tree["readRevision"] = tree["revision"]
     tree["nextNodeId"] = _suggest_id(tree)
     tree["path"] = tree_path(competition)
+    tree["recipes"] = latest_recipes(tree)
     return tree
+
+
+def latest_recipes(competition_or_tree: Any) -> dict[str, Any]:
+    """The most recent working recipe per engine, so a run can start from it.
+
+    "Latest" is by tree order, not by timestamp: nodes are appended, so the last node that
+    carries a recipe is the most recent thing that was actually run. Exposed as a rollup
+    because the useful question is "what command launches this competition now", and that is
+    a single answer, not something to reassemble by reading the chain.
+    """
+    tree = competition_or_tree
+    if isinstance(competition_or_tree, str):
+        tree = load(competition_or_tree)
+    if not isinstance(tree, dict):
+        return {}
+    nodes = _current(tree).get("nodes") or {}
+    out: dict[str, Any] = {}
+    for nid, node in nodes.items():
+        if not isinstance(node, dict):
+            continue
+        recipe = node.get("recipe")
+        if not isinstance(recipe, dict):
+            continue
+        engine = str(recipe.get("engine") or "").strip() or "unknown"
+        out[engine] = {"node": nid, "recipe": recipe,
+                       "inherited": node.get("recipeInheritedFrom") or None}
+    return out
 
 
 def _suggest_id(tree: dict[str, Any]) -> str:
@@ -1164,6 +1239,16 @@ def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]
     prepared["status"] = "planned"
     prepared.pop("metric", None)
     prepared.pop("verdict", None)
+    # The version that worked is the one to start from. A declaration that does not name its
+    # own recipe inherits the parent's, so the command that produced the last result is the
+    # command this run starts with - reused rather than re-derived, and changed on purpose when
+    # this run differs. That is the whole difference between a run and a re-typing of one.
+    if not prepared.get("recipe"):
+        parent_id = prepared.get("parent")
+        inherited = (nodes.get(parent_id) or {}).get("recipe") if parent_id else None
+        if isinstance(inherited, dict):
+            prepared["recipe"] = dict(inherited)
+            prepared["recipeInheritedFrom"] = parent_id
     return record(competition, prepared, read_revision)
 
 

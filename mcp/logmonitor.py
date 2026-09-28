@@ -31,8 +31,10 @@ rejected, so a refused write is never silent.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -104,11 +106,22 @@ def ladder_state(data: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
-def note_tick(data: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Record that a check happened, and report the rung to re-arm with."""
-    d = load()
+def note_tick(data: dict[str, Any] | None = None, action: str = "") -> dict[str, Any]:
+    """Record that a check happened, and report the rung to re-arm with.
+
+    ``action`` is what :func:`observe` concluded - "tighten", "relax" or "hold". Without it
+    this is pure arithmetic that drifts on its own; with it, a run that just printed something
+    goes back to being watched closely instead of sliding towards the 20-minute steady state
+    while it is in the middle of doing the interesting part.
+    """
+    d = load() if data is None else data
     before = ladder_state(d)
-    rung = min(before["rung"] + 1, len(LADDER_SECONDS) - 1)
+    if action == "tighten":
+        rung = 0
+    elif action == "relax":
+        rung = min(before["rung"] + 1, len(LADDER_SECONDS) - 1)
+    else:
+        rung = before["rung"]
     d["rung"] = rung
     d["ticks"] = before["ticks"] + 1
     d["updatedAt"] = _now()
@@ -123,6 +136,11 @@ def note_tick(data: dict[str, Any] | None = None) -> dict[str, Any]:
         "rearmWithLabel": LADDER_LABELS[rung],
         "atSteadyState": rung >= len(LADDER_SECONDS) - 1,
         "ticks": d["ticks"],
+        "action": action or "hold",
+        "why": ("the log moved, so it is being watched closely again" if action == "tighten"
+                else "the log has been quiet, so the checks can stretch out"
+                if action == "relax" else
+                "the log has not settled yet, so the cadence holds"),
     }
 
 
@@ -137,6 +155,211 @@ def reset_ladder() -> dict[str, Any]:
     return ladder_state(d)
 
 
+# ------------------------------------------------------------------ watching content, not a clock
+# The ladder alone is a clock: it knows how long it has been since the last tick and nothing
+# else. It cannot tell "the run has printed nothing for an hour" from "the run died in the
+# first minute", because the difference is in the log and the clock never reads the log.
+#
+# So the tick body feeds what it read back in here, and the content decides two things: whether
+# this tick is worth a message, and how soon the next one comes. A run that just printed
+# something is interesting again and the ladder snaps back to its tightest rung; a run that
+# printed nothing new twice running is genuinely steady and the ladder is allowed to move on.
+#
+# The rules are DATA in the config, not code, so a user can watch for their own field without
+# a plugin update - and so a wrong rule is editable rather than baked in.
+WATCH_RULES: tuple[dict[str, Any], ...] = (
+    {"name": "error", "act": "report", "pattern":
+     r"Traceback \(most recent call last\)|\bError\b|\bException\b|"
+     r"\bFAILED\b|exit code [1-9]|\bCUDA out of memory\b"},
+    {"name": "terminal", "act": "report", "pattern":
+     r"Run complete|Cell finished|Kernel (?:exited|shutdown|disconnected)|"
+     r"\bCOMPLETE\b|\bSUCCESS\b|\bKAGGLE_KERNEL_(?:COMPLETE|ERROR)\b"},
+    {"name": "decision", "act": "report", "pattern":
+     r"\?\s*$|Do you want to (?:overwrite|proceed)|waiting for (?:input|user)|"
+     r"\[y/n\]|press any key"},
+    {"name": "activity", "act": "wake", "pattern":
+     r"\bepoch\b|\bstep\s+\d|\bit/s\b|\d+/\d+|\bSaving\b|\bcheckpoint\b|"
+     r"\bval_(?:loss|acc|auc)\b|\btrain\b.*\d"},
+)
+
+# A log that has not moved for this many consecutive checks is steady, not interesting.
+# Two, not one: a run can legitimately go quiet for a while mid-training, and treating the
+# first silent tick as "steady" is how a real change gets slept through.
+STILL_CHECKS_TO_STEADY = 2
+
+# How a fetch is retried when the log cannot be read. Ordered, bounded, and explicit: the
+# agent is told which one to try next rather than inventing its own order each tick.
+FETCH_RECIPES: dict[str, tuple[dict[str, str], ...]] = {
+    "kaggle": (
+        {"step": "logs", "tool": "kaggle_kernels_logs", "hint": "fetch the run's log"},
+        {"step": "status", "tool": "kaggle_kernels_status",
+         "hint": "check the kernel state first - a queued or starting kernel has no log yet"},
+        {"step": "output", "tool": "kaggle_kernels_output",
+         "hint": "outputs sometimes land before the log endpoint answers"},
+        {"step": "ref", "tool": "handoff_status",
+         "hint": "confirm the ref is still the one this run was launched under"},
+    ),
+    "local": (
+        {"step": "read", "tool": "read", "hint": "read the log file"},
+        {"step": "nearest", "tool": "glob",
+         "hint": "the file was rotated or renamed - find the newest file beside it"},
+        {"step": "dir", "tool": "glob",
+         "hint": "list the run directory and take the newest log in it"},
+    ),
+}
+# Every route has been tried once. There is no route after the last one, so a failure on the
+# final recipe is the end - not another attempt at the same step.
+MAX_ATTEMPTS = len(FETCH_RECIPES["kaggle"])
+
+
+def _tail(text: str, limit: int = 8000) -> str:
+    """Watch the end of a log. The interesting line is almost never the first one."""
+    return text[-limit:] if len(text) > limit else text
+
+
+# A bare traceback header names nothing. The exception is on the NEXT line, which is the same
+# trap the tree's log diagnosis already documents: reporting the header is reporting "some
+# layer broke" for every run. So when the match is a traceback header, the reported line is
+# the first following line that names a cause.
+_CAUSE = re.compile(r"^[\w.]*(?:Error|Exception|Exit|Interrupt)\b|^\w+(?:Error|Exception):")
+
+
+def _report_line(body: str, start: int) -> str:
+    """The most informative line at or after a match, not merely the line that matched."""
+    rest = body[start:]
+    lines = rest.splitlines() or [rest]
+    first = lines[0].strip()
+    if "Traceback (most recent call last)" in first and len(lines) > 1:
+        for candidate in lines[1:]:
+            text = candidate.strip()
+            if text and not text.startswith(("File ", "^", " ")) and _CAUSE.match(text):
+                return f"{first} -> {text}"[:200]
+    return first[:200]
+
+
+def observe(text: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Read what the tick just fetched, and decide what it means.
+
+    Returns which rules fired, whether the log moved at all since the last tick, and what
+    the ladder should do next. The content, not the clock, is the input.
+    """
+    d = data if data is not None else load()
+    rules = d.get("watch") or [dict(r) for r in WATCH_RULES]
+    body = _tail(text or "")
+
+    fired: list[dict[str, Any]] = []
+    for rule in rules:
+        pattern = str(rule.get("pattern") or "")
+        if not pattern:
+            continue
+        try:
+            hit = re.search(pattern, body, re.IGNORECASE | re.MULTILINE)
+        except re.error:
+            continue
+        if hit:
+            fired.append({"name": rule.get("name") or "?", "act": rule.get("act") or "report",
+                          "line": _report_line(body, hit.start())})
+
+    reporting = [f for f in fired if f["act"] == "report"]
+    woke = [f for f in fired if f["act"] == "wake"]
+
+    # "Did the log move" is the question a clock cannot answer. A short hash of the tail is
+    # enough: two identical tails mean the run printed nothing new, whatever it is doing.
+    digest = hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:16]
+    before = d.get("digest")
+    changed = before != digest
+    still = 0 if changed else int(d.get("still") or 0) + 1
+
+    # The cadence is driven by ONE thing: did the log move. A run that printed something new
+    # is doing something worth watching closely; a run that printed the same bytes twice
+    # running is steady, and stretching out is not neglect, it is the whole point of the
+    # ladder. Watch rules decide whether to REPORT, never how fast to look - a heartbeat line
+    # that re-matches on an unchanged log is the same text read twice, and letting it
+    # re-tighten the ladder every tick is the timer-by-another-name this replaces.
+    if changed:
+        action = "tighten"
+    elif still >= STILL_CHECKS_TO_STEADY:
+        action = "relax"
+    else:
+        action = "hold"
+
+    d["digest"] = digest
+    d["still"] = still
+    d["lastSeen"] = _now()
+    if fired:
+        d["fired"] = [f["name"] for f in fired]
+    _write(d)
+
+    return {
+        "ok": True,
+        "fired": fired,
+        "report": [f for f in reporting],
+        "action": action,
+        "changed": changed,
+        "stillChecks": still,
+        "steady": still >= STILL_CHECKS_TO_STEADY,
+        "rung": d.get("rung", 0),
+        "ticks": d.get("ticks", 0),
+        "rules": [r.get("name") for r in rules],
+    }
+
+
+def attempt(reason: str = "", ok: bool = False, recipe: str = "",
+            kind: str = "") -> dict[str, Any]:
+    """Record one fetch, and hand back the next thing to try when it failed.
+
+    An unreadable log is not a reason to stop watching. It is a reason to try a different
+    route to the same bytes, and to remember which route worked so the next run starts
+    there instead of rediscovering it.
+    """
+    d = load()
+    table = FETCH_RECIPES.get(kind) or FETCH_RECIPES["kaggle"]
+    used = [dict(x) for x in (d.get("tried") or [])]
+    n = int(d.get("attempts") or 0)
+
+    if ok:
+        worked = recipe or (used[-1]["step"] if used else table[0]["step"])
+        d["lastRecipe"] = {"kind": kind or "kaggle", "step": worked, "recipe": recipe,
+                           "at": _now()}
+        d["attempts"] = 0
+        d["tried"] = []
+        d["updatedAt"] = _now()
+        d["revision"] = int(d.get("revision") or 0) + 1
+        _write(d)
+        return {"ok": True, "recovered": n > 0, "attempts": n, "lastRecipe": d["lastRecipe"],
+                "effective": (
+                    f"'{worked}' works for this target; record it on the node so the next "
+                    f"run starts from it instead of rediscovering it" if n else
+                    f"'{worked}' works")}
+
+    n += 1
+    step = table[min(n, len(table) - 1)]
+    used.append({"step": step["step"], "reason": reason[:200]})
+    d["attempts"] = n
+    d["tried"] = used
+    d["lastFailure"] = {"reason": reason[:200], "at": _now()}
+    d["updatedAt"] = _now()
+    d["revision"] = int(d.get("revision") or 0) + 1
+    _write(d)
+
+    exhausted = n >= MAX_ATTEMPTS
+    return {
+        "ok": True,
+        "recovered": False,
+        "attempts": n,
+        "maxAttempts": MAX_ATTEMPTS,
+        "exhausted": exhausted,
+        "next": None if exhausted else step,
+        "tried": [t["step"] for t in used],
+        "effective": (
+            "every known route to this log has failed. Say so plainly, delete the cron, and "
+            "leave the reason on the node - a monitor that cannot reach its log is not "
+            "monitoring anything" if exhausted else
+            f"the log was unreadable ({reason[:80]}). Try '{step['step']}' next: "
+            f"{step['hint']} - and if it works, record that step on the node"),
+    }
+
+
 def defaults() -> dict[str, Any]:
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -148,6 +371,18 @@ def defaults() -> dict[str, Any]:
         "rung": 0,
         "ticks": 0,
         "targets": [],
+        # What the log has to look like for this tick to matter. Stored, not hard-coded, so a
+        # user can watch for their own field without a plugin update.
+        "watch": [dict(r) for r in WATCH_RULES],
+        # The fetch that worked, and the routes already tried and failed. An unreadable log
+        # is a reason to try a different route, not a reason to stop watching.
+        "attempts": 0,
+        "tried": [],
+        "lastRecipe": None,
+        "lastFailure": None,
+        "digest": None,
+        "still": 0,
+        "fired": [],
         "notify": {
             "onError": True,
             "onTerminal": True,
@@ -188,6 +423,23 @@ def load() -> dict[str, Any]:
         data["rung"] = min(stored["rung"], len(LADDER_SECONDS) - 1)
     if isinstance(stored.get("ticks"), int) and stored["ticks"] >= 0:
         data["ticks"] = stored["ticks"]
+    if isinstance(stored.get("watch"), list):
+        rules = [r for r in stored["watch"] if isinstance(r, dict) and r.get("pattern")]
+        # An empty list is a deliberate "watch nothing in particular", so it is kept. A list
+        # that is present but unusable falls back to the defaults rather than monitoring
+        # nothing and reporting a clean run.
+        data["watch"] = rules or [dict(r) for r in WATCH_RULES]
+    for key in ("tried", "fired"):
+        if isinstance(stored.get(key), list):
+            data[key] = stored[key]
+    for key in ("attempts", "still"):
+        if isinstance(stored.get(key), int) and stored[key] >= 0:
+            data[key] = stored[key]
+    for key in ("lastRecipe", "lastFailure", "lastSeen"):
+        if isinstance(stored.get(key), dict):
+            data[key] = stored[key]
+    if isinstance(stored.get("digest"), str):
+        data["digest"] = stored["digest"]
     return data
 
 
@@ -277,9 +529,14 @@ def set_target(kind: str, ref: str = "", path: str = "") -> dict[str, Any]:
 
     data["targets"] = [t for t in data["targets"] if not same(t)] + [target]
     # A fresh run is the moment worth watching closely, so a new target restarts the
-    # ladder at its first rung rather than inheriting the last one's slack.
+    # ladder at its first rung rather than inheriting the last one's slack. It also starts
+    # with no repair history: the previous run's failed fetch routes say nothing about this one.
     data["rung"] = 0
     data["ticks"] = 0
+    data["attempts"] = 0
+    data["tried"] = []
+    data["still"] = 0
+    data["digest"] = None
     data["updatedAt"] = _now()
     _write(data)
     return {"ok": True, "target": target, "targets": data["targets"], "path": config_path()}
@@ -310,6 +567,18 @@ def describe() -> dict[str, Any]:
         "updatedAt": data["updatedAt"],
         "targets": data["targets"],
         "notify": data["notify"],
+        "ladder": ladder_state(data),
+        # What this tick should watch FOR, and where a failed fetch has got to. Without these
+        # two the subagent can only re-derive them from prose, every tick, slightly differently.
+        "watch": [{"name": r.get("name"), "act": r.get("act"),
+                   "pattern": r.get("pattern")} for r in data["watch"]],
+        "attempts": data["attempts"],
+        "maxAttempts": MAX_ATTEMPTS,
+        "tried": data["tried"],
+        "lastRecipe": data["lastRecipe"],
+        "lastFailure": data["lastFailure"],
+        "stillChecks": data["still"],
+        "recipes": {k: [s["step"] for s in v] for k, v in FETCH_RECIPES.items()},
         "minSeconds": MIN_INTERVAL_SECONDS,
         "maxSeconds": MAX_INTERVAL_SECONDS,
         "stepSeconds": STEP_SECONDS,
