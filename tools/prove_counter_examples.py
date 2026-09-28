@@ -1013,6 +1013,33 @@ def _(ks, js):
     return not _catches("check_servers", _break, "declares no credential-bearing key in env")
 
 
+@case("a wide banner instead of a square icon",
+      "the manifest check reports a non-square icon - the guide asks for a square production "
+      "icon, and a binary nobody reads in review is exactly where that regresses unnoticed")
+def _(ks, js):
+    def _break(root):
+        # A real 4x1 PNG, not a stub: the check reads the IHDR, so anything short of a valid
+        # signature would have it report "not square" for a reason that has nothing to do with
+        # the shape, and the case would pass without measuring the guarantee. Imported under
+        # their own names - an alias here made the case go red by raising NameError instead, and
+        # a crash in the break is not a detection.
+        import struct
+        import zlib
+
+        def chunk(tag, data):
+            return (struct.pack(">I", len(data)) + tag + data
+                    + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+        width, height = 256, 64
+        ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+        raw = b"".join(b"\x00" + b"\x10\x20\x30" * width for _ in range(height))
+        png = (bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+               + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw))
+               + chunk(b"IEND", b""))
+        (root / "icon.png").write_bytes(png)
+    return not _catches("check_manifest", _break, "icon is a square PNG")
+
+
 @case("a package that would ship compiled bytecode",
       "the check reports bytecode that a ZIP of this directory would carry - the guide refuses "
       "平台专属二进制, and a GitHub source never sees a file the gitignore hides, so the ZIP "

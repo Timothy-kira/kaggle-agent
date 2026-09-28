@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -365,6 +366,17 @@ def check_manifest():
     icon = ROOT / data.get("icon", "")
     check(icon.is_file() and icon.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"),
           "icon file exists with a valid image extension")
+    # §3: 建议使用清晰的方形正式图标. A recommendation, not a rule - but the icon is a binary
+    # nobody reads in review, so a swap to a banner would be invisible until the listing looked
+    # wrong in production. Holding the recommendation is cheap; the message cites the guide so a
+    # deliberate change is a one-line edit rather than a mystery.
+    if icon.is_file() and icon.suffix.lower() == ".png":
+        head = icon.read_bytes()[:24]
+        square = False
+        if head[:8] == bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]):
+            width, height = struct.unpack(">II", head[16:24])
+            square = width == height and width > 0
+        check(square, f"icon is a square PNG, the shape the guide recommends ({icon.name})")
     # The Marketplace validator refuses this field outright right now -
     # DARK_ICON_TEMPORARILY_DISABLED - so a manifest that declares it is rejected however good
     # the artwork is. That is a gate on their side, not a judgement about dark icons, and it is
