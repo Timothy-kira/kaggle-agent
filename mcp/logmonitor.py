@@ -77,6 +77,66 @@ def _snap(value: int) -> int:
     return int(round(value / step) * step)
 
 
+# The watch ladder, in seconds: close in while a run is starting and deciding whether
+# it works, then stretch out while it is plainly just running. The last rung is the
+# steady state, and it is also the cheapest.
+LADDER_SECONDS = (60, 180, 300, 600, 1200)
+LADDER_LABELS = ("1m", "3m", "5m", "10m", "20m")
+
+
+def ladder_state(data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Where the watch currently sits on the ladder, and where it goes next."""
+    d = data if data is not None else load()
+    rung = d.get("rung")
+    if not isinstance(rung, int) or rung < 0:
+        rung = 0
+    rung = min(rung, len(LADDER_SECONDS) - 1)
+    return {
+        "rung": rung,
+        "of": len(LADDER_SECONDS),
+        "labels": list(LADDER_LABELS),
+        "currentSeconds": LADDER_SECONDS[rung],
+        "currentLabel": LADDER_LABELS[rung],
+        "nextSeconds": LADDER_SECONDS[min(rung + 1, len(LADDER_SECONDS) - 1)],
+        "nextLabel": LADDER_LABELS[min(rung + 1, len(LADDER_SECONDS) - 1)],
+        "atSteadyState": rung >= len(LADDER_SECONDS) - 1,
+        "ticks": d.get("ticks") if isinstance(d.get("ticks"), int) else 0,
+    }
+
+
+def note_tick(data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Record that a check happened, and report the rung to re-arm with."""
+    d = load()
+    before = ladder_state(d)
+    rung = min(before["rung"] + 1, len(LADDER_SECONDS) - 1)
+    d["rung"] = rung
+    d["ticks"] = before["ticks"] + 1
+    d["updatedAt"] = _now()
+    d["revision"] = int(d.get("revision") or 0) + 1
+    _write(d)
+    # The re-arm interval is the rung just reached, not the one after it. The watch starts at
+    # rung 0 (1m) because that is the cadence the FIRST check should use; advancing first and
+    # then reporting the next rung along skips 3m entirely.
+    return {
+        "rung": rung,
+        "rearmWithSeconds": LADDER_SECONDS[rung],
+        "rearmWithLabel": LADDER_LABELS[rung],
+        "atSteadyState": rung >= len(LADDER_SECONDS) - 1,
+        "ticks": d["ticks"],
+    }
+
+
+def reset_ladder() -> dict[str, Any]:
+    """A new watch, or a cleared one, starts tight again."""
+    d = load()
+    d["rung"] = 0
+    d["ticks"] = 0
+    d["updatedAt"] = _now()
+    d["revision"] = int(d.get("revision") or 0) + 1
+    _write(d)
+    return ladder_state(d)
+
+
 def defaults() -> dict[str, Any]:
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -85,6 +145,8 @@ def defaults() -> dict[str, Any]:
         # acted under, so "did my change take effect?" is answerable without guessing.
         "revision": 0,
         "updatedAt": None,
+        "rung": 0,
+        "ticks": 0,
         "targets": [],
         "notify": {
             "onError": True,
@@ -122,6 +184,10 @@ def load() -> dict[str, Any]:
         for key in ("onError", "onTerminal", "onDecision"):
             if isinstance(stored["notify"].get(key), bool):
                 data["notify"][key] = stored["notify"][key]
+    if isinstance(stored.get("rung"), int) and stored["rung"] >= 0:
+        data["rung"] = min(stored["rung"], len(LADDER_SECONDS) - 1)
+    if isinstance(stored.get("ticks"), int) and stored["ticks"] >= 0:
+        data["ticks"] = stored["ticks"]
     return data
 
 
@@ -210,6 +276,10 @@ def set_target(kind: str, ref: str = "", path: str = "") -> dict[str, Any]:
         ) == target.get("ref" if kind == "kaggle" else "path")
 
     data["targets"] = [t for t in data["targets"] if not same(t)] + [target]
+    # A fresh run is the moment worth watching closely, so a new target restarts the
+    # ladder at its first rung rather than inheriting the last one's slack.
+    data["rung"] = 0
+    data["ticks"] = 0
     data["updatedAt"] = _now()
     _write(data)
     return {"ok": True, "target": target, "targets": data["targets"], "path": config_path()}
@@ -221,7 +291,8 @@ def clear_targets() -> dict[str, Any]:
     data["targets"] = []
     data["updatedAt"] = _now()
     _write(data)
-    return {"ok": True, "removed": removed, "path": config_path()}
+    return {"ok": True, "removed": removed, "path": config_path(),
+            "ladder": ladder_state(data)}
 
 
 def reset() -> dict[str, Any]:

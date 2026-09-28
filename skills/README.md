@@ -32,6 +32,8 @@ own procedure. This page tells you which file to open and how the pieces connect
 | 15 | [`evidence-sources`](evidence-sources/SKILL.md) | collab | A conclusion rests on something that was read. Store the paper or repo once, capture the sentence that carries the claim, link it to the node with an explicit relation. |
 | 16 | [`genui-scenarios`](genui-scenarios/SKILL.md) | collab | A decision is pending and a widget may carry it — or a state is being reported and a widget would be noise. Decides which. |
 
+| 17 | [`technical-report`](technical-report/SKILL.md) | collab | A finished run the user is satisfied with, or an explicit request for a writeup. Writes the report from the tree's own ledger: the kept chain and its cost, the refuted list by failure layer, the literature already cited with its supporting sentence, and every figure the data supports. Publishes the release to GitHub or a Kaggle dataset and puts both links in. |
+
 ### By category
 
 | Category | What it answers | Skills |

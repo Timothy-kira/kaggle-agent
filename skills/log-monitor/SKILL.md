@@ -110,28 +110,50 @@ tick with nothing to say from messaging anyone.
 This skill only supplies the tick body, because that part is specific to a Kaggle log:
 
 ```
-Check the run registered in kaggle_log_monitor (action="get"), then read its log.
-Still running, nothing wrong → exit quietly; say nothing.
-Log shows an error      → report it, and delete this cron.
-Run reached a terminal state → report the outcome, settle the experiment node, delete this cron.
-Log unreadable         → say so once, keep this cron for two more ticks, then delete it.
-Never poll between ticks, and never report progress that is only progress.
+1. kaggle_log_monitor action="get"      # which targets, and where the cadence is now
+2. read the run's log. Still running, nothing wrong → exit quietly; say nothing.
+   Error in the log        → report it, settle or record the node, delete this cron.
+   Terminal state          → report the outcome, settle the node, delete this cron.
+   Log unreadable          → say so once, keep this cron for two more ticks, then delete it.
+3. kaggle_log_monitor action="tick"     # returns the interval to re-arm with
+4. cron update schedule=<that interval>
 ```
+
+**The cadence is a ladder, and it is the tool's, not yours:**
+
+| rung | check every | when |
+|---|---|---|
+| 1 | **1m** | the run is starting; is it even doing the thing |
+| 2 | **3m** | it started; is it on the right track |
+| 3 | **5m** | shape is visible |
+| 4 | **10m** | it is plainly running |
+| 5 | **20m** | steady state — leave it here |
+
+`action="tick"` advances the ladder and hands back the interval to re-arm with, so the schedule
+follows the run instead of a guess you made once. A run that needs 6 hours does not need 720 reads
+of an endpoint with nothing to say; the interesting moments are at the start and at the end.
+`action="get"` shows which rung you are on. **Registering a run resets the ladder to the first
+rung**, so the next run is watched closely again.
+
+**Delete the cron when the run is over.** That is not tidy-up, it is the exit condition: a loop
+with no exit is a leak that bills API calls forever. Delete it on an error, on a terminal state, or
+after two consecutive unreadable ticks, and `cron list` shows you what is still watching.
+`kaggle_log_monitor action="clear"` retires the stale targets at the same time.
+
+**The slider still works, and it overrides the ladder.** `kaggle_log_monitor action="set"`, or the
+GUI from `log-monitor-visualizer`, changes the fetch interval a tick reads *within* its rung. The
+slider is for "check faster than the ladder would" — a run that is about to fail is worth
+30-second reads. It is not for pacing; the ladder owns that.
 
 Why each piece is there:
 
-- **`every`** — the tick interval. Pick it from the run's horizon: a 3-minute notebook check is
-  reasonable, a 6-hour training run does not need 3-minute ticks. `kaggle_log_monitor
-  action="get"` still returns the user's `intervalSeconds`; use it as the *read* cadence inside a
-  tick, and change it with `action="set"` or the slider.
-- **`action="get"` at the top of every tick** — it re-reads the interval from disk each call,
-  which is what makes a slider change take effect. Report the revision you last saw, so "did my
-  change take effect" is answerable from evidence.
+- **`action="get"` at the top of every tick** — it re-reads from disk each call, so a slider
+  change takes effect on the very next tick. Report the revision you last saw, so "did my change
+  take effect" is answerable from evidence.
 - **silent ticks** — a tick with nothing to say writes a progress block and exits without
   messaging. That is the behaviour you want.
-- **delete the cron** — on an error, a terminal state, or after two unreadable ticks. A loop
-  with no exit condition is a leak that bills API calls forever. Manage it with `cron list` /
-  `cron get` / `cron delete`; `cron trigger` runs one immediately if the user asks.
+- **`action="tick"`** — the rung is arithmetic, and arithmetic an agent does in its head is
+  arithmetic that drifts.
 
 **Also say this to the user:** scheduled tasks depend on the desktop app running, and a machine
 that sleeps or shuts down may miss a tick. For a run that matters, that is worth saying out loud

@@ -1,5 +1,5 @@
 {
-  "version": "1.19.0",
+  "version": "1.20.0",
   "comment": "Single source of truth for how the skills, agents and required sources in this package relate, AND for the live state those relationships are gated on. The per-category 'Bound edges' tables in each INDEX.md are RENDERED from this file, and tools/check_plugin.py fails the build when they drift. Edit this file, then re-run the checker, or it will tell you exactly which table is stale.",
   "state": {
     "_comment": "Live state, declared here and read through its own tool. The graph does not store the values - it points at the readers - so it cannot drift from reality. Read it all with kaggle_presence action='status', which reports the graph state and the ask-or-auto answer together. Anything unreadable fails toward asking: the cost of a wrong 'ask' is a pause, the cost of a wrong 'auto' is an unattended irreversible action.",
@@ -326,6 +326,19 @@
       "reference": "mcp_browser",
       "hostProvided": true,
       "note": "Host-bound in-app browser, used to open search pages and the required first-party sites. Session-scoped: a detached subagent does not have it, which is why the browsing happens in the main thread. Provided by the host, not registered by this package."
+    },
+    {
+      "id": "technical-report",
+      "kind": "skill",
+      "category": "collab",
+      "path": "skills/technical-report/SKILL.md"
+    },
+    {
+      "id": "dataset-publisher",
+      "kind": "tool",
+      "category": "collab",
+      "reference": "kaggle_datasets_publish",
+      "note": "Publishes a release bundle as a Kaggle dataset and returns its URL. Reports the file count, total size and largest files before writing anything, because a git host refuses a large bundle and a dataset is the route that works. Writes outside, so it waits for a yes."
     }
   ],
   "edges": [
@@ -712,6 +725,42 @@
       "to": "k-dense-methods",
       "type": "needs",
       "when": "it is an adaptation; the upstream bodies and their licence are recorded here so the provenance is not lost"
+    },
+    {
+      "from": "technical-report",
+      "to": "rsi-experiment-tree",
+      "type": "produces",
+      "when": "the report is written from action='report' on that tree; every sentence traces to a row"
+    },
+    {
+      "from": "technical-report",
+      "to": "scientific-plotting",
+      "type": "needs",
+      "when": "the figures come from analyze, and the ones it could not draw are stated as a limitation"
+    },
+    {
+      "from": "technical-report",
+      "to": "evidence-sources",
+      "type": "needs",
+      "when": "the bibliography is the tree's own sources, each with the sentence that supports the claim"
+    },
+    {
+      "from": "technical-report",
+      "to": "handoff",
+      "type": "needs",
+      "when": "the handoff and the report are two documents off one tree - continuity versus publication"
+    },
+    {
+      "from": "technical-report",
+      "to": "github-auth",
+      "type": "dispatches",
+      "when": "the code repository link in the report, when this machine cannot authenticate"
+    },
+    {
+      "from": "technical-report",
+      "to": "dataset-publisher",
+      "type": "enforces",
+      "when": "artifacts too large for a git host go to a Kaggle dataset, and the report carries the URL"
     }
   ]
 }

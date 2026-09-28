@@ -681,6 +681,32 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "kaggle_datasets_publish",
+        "description": (
+            "Publish a folder as a Kaggle dataset and return its URL. This exists because a "
+            "release bundle is often too large for a git host - model weights, a corpus, a "
+            "directory of artifacts - and 'commit it to GitHub' is then the wrong answer rather "
+            "than the only one. Kaggle's own storage is where competition participants already "
+            "publish results and models, and it links back to the account. Writes to the "
+            "outside, so read the folder and tell the user what will be published first."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "folder": {"type": "string", "description": "Directory holding dataset-metadata.json and the files."},
+                "title": {"type": "string", "description": "Human title for the dataset."},
+                "slug": {"type": "string", "description": "kaggle dataset slug, e.g. owner/name-slug."},
+                "private": {"type": "boolean", "description": "Default false. A private dataset is a safer first step."},
+                "dir_mode": {
+                    "type": "string",
+                    "description": "zip, tar or skip. Passed through to the CLI. Default zip.",
+                },
+                "description": {"type": "string", "description": "Dataset description; written into dataset-metadata.json if absent."},
+            },
+            "required": ["folder", "title", "slug"],
+        },
+    },
+    {
         "name": "kaggle_log_monitor",
         "description": (
             "Configure how experiment logs are watched. action='get' is what a monitoring "
@@ -695,7 +721,7 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["get", "set", "status", "target", "clear", "reset"],
+                    "enum": ["get", "tick", "set", "status", "target", "clear", "reset"],
                     "default": "get",
                     "description": (
                         "get = read current config (call every cycle); set = change the interval; "
@@ -807,9 +833,10 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["read", "consider", "declare", "settle", "prune", "alias",
-                             "record", "plan", "status", "select", "board", "replay", "compare",
-                             "policy", "round_close", "anchor", "undo", "analyze", "review"],
+                    "enum": ["read", "consider", "diagnose", "declare", "settle", "prune",
+                             "alias", "record", "plan", "status", "select", "board", "replay",
+                             "compare", "policy", "round_close", "anchor", "undo", "analyze",
+                             "review", "report"],
                     "default": "read",
                     "description": (
                         "read = the tree plus the readRevision that authorises one write "
@@ -1065,7 +1092,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.19.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.20.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -1746,6 +1773,63 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         return text_response("github_auth", 2, "", f"unknown action: {action}")
 
+    if name == "kaggle_datasets_publish":
+        folder = str(args["folder"])
+        if not os.path.isdir(folder):
+            return text_response(
+                f"kaggle datasets create -p {folder}", 2, "",
+                f"folder does not exist: {folder}")
+        title = str(args["title"])
+        slug = str(args["slug"])
+        if "/" not in slug:
+            return text_response(
+                "kaggle datasets create", 2, "",
+                f"slug must be owner/name, got {slug!r}. The owner is the Kaggle account the "
+                f"dataset will live under.")
+
+        listing = []
+        total = 0
+        for root, _dirs, files in os.walk(folder):
+            for fn in sorted(files):
+                full = os.path.join(root, fn)
+                try:
+                    size = os.path.getsize(full)
+                except OSError:
+                    continue
+                total += size
+                listing.append((os.path.relpath(full, folder).replace("\\", "/"), size))
+        listing.sort(key=lambda x: -x[1])
+        biggest = ", ".join(f"{n} ({s / 1048576:.1f} MiB)" for n, s in listing[:5])
+
+        meta_path = os.path.join(folder, "dataset-metadata.json")
+        if not os.path.isfile(meta_path):
+            meta = {"title": title, "id": slug,
+                    "licenses": [{"name": "other"}],
+                    "subtitle": str(args.get("description") or "")[:80]}
+            with open(meta_path, "w", encoding="utf-8") as fh:
+                json.dump(meta, fh, indent=2, ensure_ascii=False)
+                fh.write("\n")
+
+        cmd = ["datasets", "create", "-p", folder, "-t", title, "-s", slug,
+               "--dir-mode", str(args.get("dir_mode") or "zip")]
+        if args.get("private") is False:
+            cmd += ["-u"]  # public; the CLI default is private
+        code, out, err = run_kaggle(cmd)
+        url = f"https://www.kaggle.com/datasets/{slug}"
+        if code != 0:
+            return text_response(
+                " ".join(cmd), 2, out,
+                f"{err.strip() or 'the CLI refused'}\n\nNothing was published. If the bundle is "
+                f"too large for git, this is the route; check the slug is free and the folder "
+                f"has a dataset-metadata.json.")
+        body = (
+            f"published {len(listing)} file(s), {total / 1048576:.1f} MiB\n"
+            f"largest: {biggest}\n"
+            f"url: {url}\n\nPut that URL in the technical report next to the code repository; "
+            f"a report whose artifacts cannot be fetched is a description, not a release."
+        )
+        return text_response(" ".join(cmd), 0, body, "")
+
     if name == "kaggle_log_monitor":
         action = str(args.get("action") or "get")
         try:
@@ -1768,6 +1852,12 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 body += (
                     "\nnotify the main agent only on: error in log, run terminal "
                     "(stopped/ended/completed), or a decision that needs the user."
+                )
+                lad = logmonitor.ladder_state(data)
+                body += (
+                    f"\ncadence: rung {lad['rung'] + 1} of {lad['of']} - currently "
+                    f"{lad['currentLabel']}; after action=\"tick\" the next check is "
+                    f"{lad['nextLabel']}"
                 )
                 return text_response("kaggle_log_monitor get", 0, body.rstrip(), "")
 
@@ -1798,6 +1888,24 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 if not res["changed"]:
                     body += "\nthe value was unchanged, so no monitoring subagent will see a change.\n"
                 return text_response("kaggle_log_monitor set", 0, body, "")
+
+            if action == "tick":
+                # The loop's heartbeat contract: call this after each check, and it hands back
+                # the schedule to re-arm with. The ladder lives in the tool rather than in the
+                # prompt, because a rung an agent has to remember is a rung it will not take.
+                res = logmonitor.note_tick()
+                body = (
+                    f"tick {res['ticks']}   rung {res['rung'] + 1} of "
+                    f"{len(logmonitor.LADDER_SECONDS)}"
+                    f"   ({', '.join(logmonitor.LADDER_LABELS)})\n"
+                    f"re-arm the scheduled task with {res['rearmWithLabel']} "
+                    f"({res['rearmWithSeconds']}s)"
+                    + ("\nsteady state - the run is plainly just running; leave it here"
+                       if res["atSteadyState"] else "")
+                    + "\n\nthis watch deletes itself on an error, a terminal state, or two "
+                      "consecutive unreadable ticks."
+                )
+                return text_response("kaggle_log_monitor tick", 0, body, "")
 
             if action == "status":
                 data = logmonitor.describe()
@@ -2401,6 +2509,51 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                           f"(if a documented action is missing, this session is bound to an older "
                           f"schema - restart the session to pick up the current one)"]
             return text_response("kaggle_experiment_tree status", 0, "\n".join(lines), "")
+
+        if action == "report":
+            # The ledger a technical report is written FROM. It is not the report: the report is
+            # prose, this is the record under it, assembled the same way every time so two
+            # reports of one run cannot disagree. `mayNotClaim` is the part that matters most -
+            # a report's failure mode is a confident sentence nobody can check, so the
+            # unsupported claims are enumerated before anyone writes a sentence.
+            rep = experiment_tree.report(comp)
+            if not rep.get("ok"):
+                return text_response(
+                    f"kaggle_experiment_tree report ({rep.get('code')})", 3, "",
+                    f"{rep.get('message')}"
+                    + ("\n" + "\n".join(f"  - {p}" for p in (rep.get("problems") or []))
+                       if rep.get("problems") else ""))
+            lines = [
+                f"competition: {rep['competition']}   base: {rep.get('base') or '(none)'}   "
+                f"revision: {rep['revision']}",
+                f"quota spent on the kept chain: {rep.get('quotaHours')}h",
+                "",
+                f"KEPT ({len(rep.get('kept') or [])}):",
+            ]
+            for e in (rep.get("kept") or []):
+                lines.append(f"  {e['id']}: {e.get('change')}  "
+                             f"delta={e.get('delta')}  -> {e.get('reason')}")
+            lines += ["", f"REFUTED ({len(rep.get('refuted') or [])}):"]
+            for e in (rep.get("refuted") or []):
+                lines.append(f"  {e['id']}: {e.get('change')}  "
+                             f"layer={e.get('failureLayer') or 'unclassified'}  -> {e.get('reason')}")
+            lines += ["", "FIGURES the data supports:"]
+            lines += [f"  {f}" for f in (rep.get("figures") or [])] or ["  (none - run analyze)"]
+            if rep.get("couldNotDraw"):
+                lines += ["  could NOT draw (say so in the report, do not omit):"]
+                lines += [f"  - {c}" for c in (rep["couldNotDraw"])]
+            lines += ["", "BIBLIOGRAPHY (from the sources this tree cites):"]
+            lines += [f"  [{b.get('sourceId')}] {b.get('title')}  {b.get('url') or ''}"
+                      f"\n      supports: {', '.join(b.get('nodes') or [])}"
+                      for b in (rep.get("bibliography") or [])] or ["  (none cited)"]
+            lines += ["", "MAY NOT CLAIM (these stay out of the report):"]
+            lines += [f"  - {m.get('kind')}: {m.get('because')}"
+                      for m in (rep.get("mayNotClaim") or [])] or ["  (nothing)"]
+            if rep.get("artifacts"):
+                lines += ["", "ARTIFACTS a release would carry:"]
+                for a in rep["artifacts"]:
+                    lines.append(f"  {a['id']}: {', '.join(a.get('artifacts') or []) or '(none)'}")
+            return text_response("kaggle_experiment_tree report", 0, "\n".join(lines), "")
 
         if action == "record":
             node = args.get("node")

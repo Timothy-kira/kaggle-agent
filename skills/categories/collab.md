@@ -124,3 +124,9 @@ such declaration.
 | `evidence-sources` -> needs `rsi-experiment-tree` | a source is stored so a node can cite it; a store nobody cites is a reading list, not evidence | <!-- edge:evidence-sources->rsi-experiment-tree:needs --> |
 | `kaggle-competition-research` -> produces `evidence-sources` | every paper and repo the sweep opened is stored once, so a later review can re-read it instead of re-searching | <!-- edge:kaggle-competition-research->evidence-sources:produces --> |
 | `sources-store` => enforces `experiment-tree` | a node citing a source id that is not in the store is refused, so provenance can never dangle | <!-- edge:sources-store->experiment-tree:enforces --> |
+| `technical-report` -> produces `rsi-experiment-tree` | the report is written from action='report' on that tree; every sentence traces to a row | <!-- edge:technical-report->rsi-experiment-tree:produces --> |
+| `technical-report` -> needs `scientific-plotting` | the figures come from analyze, and the ones it could not draw are stated as a limitation | <!-- edge:technical-report->scientific-plotting:needs --> |
+| `technical-report` -> needs `evidence-sources` | the bibliography is the tree's own sources, each with the sentence that supports the claim | <!-- edge:technical-report->evidence-sources:needs --> |
+| `technical-report` -> needs `handoff` | the handoff and the report are two documents off one tree - continuity versus publication | <!-- edge:technical-report->handoff:needs --> |
+| `technical-report` -> dispatches `github-auth` | the code repository link in the report, when this machine cannot authenticate | <!-- edge:technical-report->github-auth:dispatches --> |
+| `technical-report` => enforces `dataset-publisher` | artifacts too large for a git host go to a Kaggle dataset, and the report carries the URL | <!-- edge:technical-report->dataset-publisher:enforces --> |

@@ -197,3 +197,5 @@ such declaration.
 | `sources-store` => enforces `experiment-tree` | a node citing a source id that is not in the store is refused, so provenance can never dangle | <!-- edge:sources-store->experiment-tree:enforces --> |
 | `plot-engine` => enforces `rsi-experiment-tree` | action='analyze' turns the recorded samples and costs into figures, and reports every figure it could not draw rather than omitting it silently | <!-- edge:plot-engine->rsi-experiment-tree:enforces --> |
 | `ablation-design` -> needs `k-dense-methods` | it is an adaptation; the upstream bodies and their licence are recorded here so the provenance is not lost | <!-- edge:ablation-design->k-dense-methods:needs --> |
+| `technical-report` -> produces `rsi-experiment-tree` | the report is written from action='report' on that tree; every sentence traces to a row | <!-- edge:technical-report->rsi-experiment-tree:produces --> |
+| `technical-report` -> needs `scientific-plotting` | the figures come from analyze, and the ones it could not draw are stated as a limitation | <!-- edge:technical-report->scientific-plotting:needs --> |

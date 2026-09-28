@@ -2635,6 +2635,133 @@ def review(competition: str) -> dict[str, Any]:
     }
 
 
+def report(competition: str) -> dict[str, Any]:
+    """The evidence pack a technical report is written FROM. It does not write the report.
+
+    Everything a reader will be told is assembled here from what is already recorded - the kept
+    chain, what was refuted and at which layer, the sources with the sentence that supports each
+    claim, the figures the data actually supports, the artifacts a release would carry, and the
+    quota it cost. The report is prose; this is the ledger under it, and it is assembled the same
+    way every time so two reports of the same run cannot disagree.
+
+    It also returns what the report MAY NOT claim. That section is the point: a technical report
+    is the one document whose failure mode is a confident sentence nobody can check, and the
+    cheapest defence is to make the unsupported claims enumerable before anyone writes a sentence.
+    """
+    import sources as src
+
+    tree = load(competition)
+    if tree.get("problems"):
+        return {"ok": False, "code": "tree_unsound",
+                "message": "the tree has structural problems; fix them before writing a report "
+                           "about it", "problems": tree.get("problems")}
+    inner = _current(tree)
+    nodes = inner.get("nodes") or {}
+    rev = review(competition)
+    ident = identity(competition)
+
+    # --- figures: what the data supports, and what it does not
+    figs = analyze(competition)
+    produced = figs.get("produced") or []
+    figure_paths = [f.get("path") for f in produced if isinstance(f, dict) and f.get("path")]
+    could_not_draw = figs.get("skipped") or []
+
+    # --- artifacts and cost, from the kept chain
+    release: list[dict[str, Any]] = []
+    quota_hours = 0.0
+    for e in rev.get("kept") or []:
+        node = nodes.get(e["id"]) or {}
+        arts = node.get("artifacts")
+        if isinstance(arts, str):
+            arts = [arts]
+        cost = node.get("cost") or {}
+        qh = cost.get("quotaHours")
+        if isinstance(qh, (int, float)):
+            quota_hours += float(qh)
+        release.append({
+            "id": e["id"], "change": e.get("change"),
+            "artifacts": list(arts or []),
+            "quotaHours": qh,
+            "metric": node.get("metric"),
+            "backedBy": e.get("backedBy") or e.get("evidence"),
+        })
+
+    # --- the bibliography, deduplicated, with the node each source carries
+    biblio: dict[str, dict[str, Any]] = {}
+    for e in (rev.get("kept") or []) + (rev.get("refuted") or []) + (rev.get("research") or []):
+        for b in e.get("backedBy") or []:
+            sid = b.get("sourceId")
+            if not sid:
+                continue
+            row = biblio.setdefault(sid, {
+                "sourceId": sid, "title": b.get("title"), "url": b.get("url"),
+                "licence": b.get("licence"), "relations": {}, "quote": b.get("quote") or "",
+                "nodes": [],
+            })
+            if b.get("relation"):
+                row["relations"][e["id"]] = b.get("relation")
+            row["nodes"].append(e["id"])
+            if not row.get("quote") and b.get("quote"):
+                row["quote"] = b.get("quote")
+
+    # --- runs that were declared and never settled: a report must not claim them
+    unsettled = pending_declarations(competition)
+
+    anchor_block = tree.get("anchor") or {}
+    may_not_claim: list[dict[str, Any]] = []
+    for nid in rev.get("unsupportedNodes") or []:
+        may_not_claim.append({"kind": "unbacked-claim", "node": nid,
+                              "because": "no source and no evidence='local-only'; add one before "
+                                        "it appears in a report"})
+    for nid in rev.get("linksWithoutQuote") or []:
+        may_not_claim.append({"kind": "no-quote", "node": nid,
+                              "because": "the source link carries no sentence that supports the "
+                                         "claim, so the claim cannot be checked"})
+    for d in unsettled:
+        may_not_claim.append({"kind": "unsettled-run", "node": d.get("id"),
+                              "because": "declared and run, but no result was recorded; settle it "
+                                         "or the report says nothing about it"})
+    if not rev.get("kept"):
+        may_not_claim.append({"kind": "no-kept-chain", "node": None,
+                              "because": "nothing has been kept, so there is no result to report"})
+    if not anchor_block.get("declared"):
+        may_not_claim.append({"kind": "no-anchor", "node": None,
+                              "because": "the held-out evaluation set was never declared, so no "
+                                         "claim in this report has been checked against data it "
+                                         "was not tuned on"})
+
+    criteria: dict[str, Any] = {}
+    for e in rev.get("kept") or []:
+        for c in (nodes.get(e["id"]) or {}).get("criteria") or []:
+            if isinstance(c, dict) and c.get("name"):
+                criteria.setdefault(str(c["name"]), []).append(e["id"])
+
+    return {
+        "ok": True,
+        "competition": competition,
+        "identity": ident,
+        "revision": tree["revision"],
+        "base": rev.get("base"),
+        "anchor": anchor_block,
+        "kept": rev.get("kept"),
+        "refuted": rev.get("refuted"),
+        "research": rev.get("research"),
+        "failuresByLayer": rev.get("failuresByLayer"),
+        "coverage": rev.get("coverage"),
+        "criteria": criteria,
+        "figures": figure_paths,
+        "couldNotDraw": could_not_draw,
+        "artifacts": release,
+        "quotaHours": round(quota_hours, 3),
+        "bibliography": sorted(biblio.values(), key=lambda r: str(r.get("title") or "")),
+        "unsettled": unsettled,
+        "mayNotClaim": may_not_claim,
+        "nextQuestions": rev.get("nextQuestions"),
+        "note": ("This is the ledger, not the report. Every sentence in the report must trace to a "
+                 "row here; anything that cannot is in mayNotClaim and stays out of the prose."),
+    }
+
+
 def _next_questions(competition: str, cov: dict[str, Any], refuted: list[dict[str, Any]],
                      research: list[dict[str, Any]],
                      nodes: dict[str, Any]) -> list[str]:

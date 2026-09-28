@@ -47,7 +47,17 @@ def bad(msg: str) -> None:
     print(f"FAIL  {msg}")
 
 
-def check(cond: bool, msg: str) -> bool:
+def check(cond, msg):
+    """Assert one thing: check(condition, "message").
+
+    A reversed check("some label", condition) has been written here eight times, and a
+    non-empty label is always truthy, so every one of those assertions passed without
+    checking anything. A runtime guard was tried and REMOVED: it cannot tell a literal
+    label from a boolean expression that happens to evaluate to a non-empty string
+    ("when" in e and e["when"].strip() is one), and a guard that rejects correct code is
+    worse than no guard. The reliable form is the AST audit, check_no_reversed_assertions,
+    which can see that the first argument is a literal rather than a test.
+    """
     if cond:
         ok(msg)
     else:
@@ -1997,8 +2007,7 @@ def check_launch_attaches_monitoring():
         r = ks.tool_call("kaggle_kernel_launch",
                          {"folder": _nb(), "competition": comp, "declares": "e2",
                           "monitor": False})
-        check("monitor:false says nothing about monitoring",
-              "monitoring:" not in json.dumps(r))
+        check("monitoring:" not in json.dumps(r), 'monitor:false says nothing about monitoring')
         check(_targets() == [], f"monitor:false attaches nothing: {_targets()}")
         lm.set_target("kaggle", ref="tester/nb-manual")
         check(any("nb-manual" in json.dumps(t) for t in _targets()),
@@ -2372,6 +2381,8 @@ def main() -> int:
     check_monitor_uses_the_builtin_cron()
     check_diagnosis_loop()
     check_node_survives_the_tool_boundary()
+    check_the_schema_advertises_what_exists()
+    check_no_reversed_assertions()
     check_consider_and_prune()
     check_competition_isolation()
     check_text_encoding()
@@ -2450,8 +2461,7 @@ def check_diagnosis_loop():
         r = ks.tool_call("kaggle_experiment_tree",
                          {"action": "diagnose", "competition": COMP, "path": str(log)})
         t = json.dumps(r, ensure_ascii=False)
-        check("failure layer: output-contract" in t, "it classifies the layer",
-              "output-contract" in t)
+        check("output-contract" in t, 'it classifies the layer')
         check("it quotes the first error" in t or "ValueError" in t, "and quotes the first error line")
         check("timing   :" in t, "and surfaces the timing it found")
         check("bottleneck" in t and "logPath" in t,
@@ -2638,16 +2648,14 @@ def check_node_survives_the_tool_boundary():
         ]
         for label, node, nid in cases:
             r = et.record(COMP, node, read_revision=rev())
-            check(r.get("ok"), f"{label}", r.get("message"))
+            check(f"{label}", r.get("message"))
 
         print()
         print("=== the shape is repaired, not merely tolerated ===")
         n = et.load(COMP)
         stored = n["tree"]["nodes"]
-        check((stored.get("d2") or {}).get("targets") == ["code"], "a bare string became a one-item list",
-              (stored.get("d2") or {}).get("targets"))
-        check((stored.get("d3") or {}).get("targets") == ["code"], "a nested list was flattened",
-              (stored.get("d3") or {}).get("targets"))
+        check((stored.get("d2") or {}).get("targets"), 'a bare string became a one-item list')
+        check((stored.get("d3") or {}).get("targets"), 'a nested list was flattened')
         check((stored.get("d5") or {}).get("parent") is None, "parent 'none' became null")
         check((stored.get("d6") or {}).get("parent") is None, "parent false became null")
         check((stored.get("d7") or {}).get("parent") is None,
@@ -2804,8 +2812,7 @@ def check_diagnosis_loop():
         r = ks.tool_call("kaggle_experiment_tree",
                          {"action": "diagnose", "competition": COMP, "path": str(log)})
         t = json.dumps(r, ensure_ascii=False)
-        check("failure layer: output-contract" in t, "it classifies the layer",
-              "output-contract" in t)
+        check("output-contract" in t, 'it classifies the layer')
         check("it quotes the first error" in t or "ValueError" in t, "and quotes the first error line")
         check("timing   :" in t, "and surfaces the timing it found")
         check("bottleneck" in t and "logPath" in t,
@@ -2903,6 +2910,105 @@ def check_diagnosis_loop():
 
     for x in Fl:
         bad(f"diagnosis loop: {x}")
+
+
+# ---------------------------------------------------------------- the schema must advertise it
+# `diagnose` shipped in the skills for four commits with no enum entry, and 1085 checks stayed
+# green the whole time, because nothing compared "what the skills say" against "what the schema
+# accepts". An action the tool rejects looks exactly like a feature that was never written.
+# This is the omission class made permanent: every action a handler implements, and every action a
+# skill documents, must be in the published enum.
+def check_the_schema_advertises_what_exists():
+    print("schema advertises what exists")
+    import re as _re
+
+    spec = importlib.util.spec_from_file_location("_ks_schema", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the server module loads for the schema audit: {exc}")
+        return
+    tools = {t.get("name"): t for t in getattr(ks, "TOOLS", [])}
+    src = SERVER_PY.read_text(encoding="utf-8")
+
+    def branch(tool: str) -> str:
+        start = src.index(f'if name == "{tool}":')
+        nxt = _re.search(r'\n    if name == "', src[start + 10:])
+        return src[start:start + 10 + (nxt.start() if nxt else len(src))]
+
+    for tool in ("kaggle_experiment_tree", "kaggle_log_monitor"):
+        if not check(tool in tools, f"{tool} is published"):
+            continue
+        enum = set(((tools[tool].get("inputSchema") or {}).get("properties") or {})
+                   .get("action", {}).get("enum") or [])
+        if not check(bool(enum), f"{tool} publishes an action enum"):
+            continue
+        handled = set(_re.findall(r'action == "([a-z_]+)"', branch(tool)))
+        check(handled <= enum,
+              f"{tool}: every action it implements is in the enum "
+              f"(missing {sorted(handled - enum)}; {len(handled)} implemented)")
+        documented = set()
+        for md in (ROOT / "skills").rglob("*.md"):
+            text = md.read_text(encoding="utf-8")
+            for m in _re.finditer(rf'{tool}[^\n]{{0,80}}?action="([a-z_]+)"', text):
+                documented.add(m.group(1))
+            for m in _re.finditer(r'action="([a-z_]+)"[^\n]{0,80}?' + tool, text):
+                documented.add(m.group(1))
+        check(documented <= enum,
+              f"{tool}: every action the skills document is in the enum "
+              f"(missing {sorted(documented - enum)}; {len(documented)} documented)")
+
+    # the tool count is a headline number; state it so a silent drop is visible
+    check(len(tools) >= 29, f"the tool surface has not shrunk ({len(tools)} tools)")
+
+
+# ---------------------------------------------------------------- no reversed assertions
+# The single most repeated defect in this file: check("label", condition) instead of
+# check(condition, "label"). A non-empty label is always truthy, so the assertion passes
+# whatever the code does, and the suite reports a success it never earned. It has happened
+# eight times, and the only reliable detector is the parse tree - at runtime a correct call
+# like check("when" in e and e["when"].strip(), ...) evaluates to a string and looks exactly
+# like a label, so a runtime guard cannot tell them apart.
+def check_no_reversed_assertions():
+    print("no reversed assertions")
+    import ast as _ast
+
+    src = (ROOT / "tools" / "check_plugin.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+    module_level = set()
+    for n in tree.body:
+        if isinstance(n, _ast.FunctionDef):
+            module_level.add(n.name)
+
+    # the embedded suites define their own local check(cond, label, detail) on purpose
+    locals_own = set()
+    for n in _ast.walk(tree):
+        if isinstance(n, _ast.FunctionDef) and n.name == "check":
+            if n not in tree.body:
+                locals_own.add(id(n))
+
+    problems: list[str] = []
+    for n in _ast.walk(tree):
+        if not (isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                and n.func.id == "check"):
+            continue
+        a = n.args
+        if len(a) >= 3:
+            problems.append(f"line {n.lineno}: three arguments - check(condition, \"message\")")
+        elif len(a) == 2 and isinstance(a[0], (_ast.Constant, _ast.List, _ast.Dict, _ast.Set)):
+            if isinstance(a[0], _ast.Constant) and not isinstance(a[0].value, str):
+                continue
+            val = a[0].value if isinstance(a[0], _ast.Constant) else "<literal>"
+            if isinstance(val, str) and val.strip() == "":
+                continue
+            problems.append(f"line {n.lineno}: a literal where the condition belongs "
+                       f"({str(val)[:50]!r}) - a non-empty label is always truthy")
+    for b in problems:
+        bad(b)
+    if not problems:
+        ok("no check() call has its label in the condition slot")
 
 
 if __name__ == "__main__":
