@@ -188,8 +188,7 @@ docs/                         架构图，由 tools/draw_architecture.py 生成
 tools/                        强制层
 ```
 
-这些图是从代码生成的，不是手画的，所以文字和图一起变动，检查也能要求它们存在。
-`python tools/draw_architecture.py` 重新绘制。
+重新生成：`python tools/draw_architecture.py`。
 
 ---
 
