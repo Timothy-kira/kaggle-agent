@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -238,6 +239,21 @@ RESEARCH_REQUIRED = ("question", "targets", "verdict", "opens")
 # selection. They are required, not optional, because that is the mechanism, not a nicety.
 SEARCH_REQUIRED = ("operator", "family")
 
+# ------------------------------------------------------------------ what are we trying to optimise
+# A tree with scores but no stated objective cannot answer "did this help?", only "did this
+# number go up?". Those are different questions and the second one is how a search ends up
+# optimising the thing that is easiest to move instead of the thing that matters. So the
+# terminal objective is declared once, at the tree level, and a node that measures something
+# else has to say why - the same forced-choice shape the evidence check already uses, because a
+# silent divergence is exactly what makes a long run drift off its own goal.
+CRITERION_ROLES = ("primary", "guard", "observe")
+DEFAULT_CRITERION_ROLE = "observe"
+
+# An expectation is a PREDICTION, not a hope: a direction and a floor. A direction with no floor
+# is unfalsifiable, because every move can be read as "in the right direction". Requiring the
+# floor is what makes "confirmed" and "refuted" different claims.
+EXPECTATION_VERDICTS = ("confirmed", "partial", "refuted", "unreadable")
+
 # Words that turn one experiment into two. "and" is the giveaway, but so are a few others that
 # reliably mean the node is describing a pipeline rather than a single variable.
 CONJUNCTIONS = (" and ", " then ", " plus ", " 同时 ", " 以及 ")
@@ -261,6 +277,24 @@ def _slug(competition: str) -> str:
 
 def comp_dir(competition: str) -> str:
     return os.path.join(_home(), "handoff", _slug(competition) or "unnamed")
+
+
+# A route is a folder, not a label. Two lines of work on the same competition are two
+# directories, so a later run on one cannot silently read, overwrite or ship the other's
+# checkpoints - the failure this exists to prevent is not "forgetting to clean up", it is
+# picking up a model that belongs to an approach that was already given up on.
+BRANCHES_DIRNAME = "branches"
+QUARANTINE_DIRNAME = "quarantine"
+
+
+def branch_dir(competition: str, branch: str) -> str:
+    """Where a named line of work keeps its own files."""
+    return os.path.join(comp_dir(competition), BRANCHES_DIRNAME, _slug(branch) or "main")
+
+
+def quarantine_dir(competition: str, branch: str) -> str:
+    """Where a given-up line of work is moved, intact and recoverable."""
+    return os.path.join(comp_dir(competition), QUARANTINE_DIRNAME, _slug(branch) or "main")
 
 
 def tree_path(competition: str) -> str:
@@ -493,6 +527,19 @@ def load(competition: str) -> dict[str, Any]:
         data["policies"] = stored["policies"]
     if isinstance(stored.get("journal"), list):
         data["journal"] = [j for j in stored["journal"] if isinstance(j, dict)]
+    # The goal, the curriculum, the current stage and the abandoned branches are document
+    # state, not read-time decoration, so they have to be carried across the load/save pair
+    # exactly like `anchor` and `policies`. Whitelisting the load path is the point - a key
+    # missing from this list is a key that silently vanishes on the next read, which is how
+    # a declared goal can appear to have been saved and then not be there.
+    if isinstance(stored.get("goal"), dict):
+        data["goal"] = stored["goal"]
+    if isinstance(stored.get("curriculum"), list):
+        data["curriculum"] = stored["curriculum"]
+    if stored.get("stage") is not None:
+        data["stage"] = stored["stage"]
+    if isinstance(stored.get("abandoned"), list):
+        data["abandoned"] = [a for a in stored["abandoned"] if isinstance(a, dict)]
     data["path"] = path
     data["identity"] = identity(competition)
     data["forks"] = forks
@@ -639,6 +686,170 @@ def _validate_policy(pid: str, policy: dict[str]) -> list[str]:
     return out
 
 
+def _num(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _metric_sign(metric: Any) -> float:
+    """+1 when a higher number is better, -1 when lower is, so one comparison serves both."""
+    if not isinstance(metric, dict):
+        return 1.0
+    return -1.0 if str(metric.get("direction", "higher")).strip().lower().startswith("lower") else 1.0
+
+
+def judge_expectation(expect: Any, metric: Any) -> dict[str, Any]:
+    """Did the run do what was predicted, or only what was hoped?
+
+    This is the question "the result and the expectation agreed" has never been able to answer,
+    because a hypothesis records why a change should matter and not what it should move. A node
+    that gained for a reason nobody predicted is a different animal from one that gained as
+    intended, and only the second one tells you the next change will compound.
+
+    The verdict is deliberately three-valued rather than two. "partial" is where the useful
+    judgement lives: the direction was right but the floor was not cleared, which reads as a
+    success in a kept-node list and is in fact a much weaker result than it looks. Collapsing
+    that into confirmed is how a search convinces itself it understands what it is doing.
+    """
+    if not isinstance(expect, dict):
+        return {"verdict": "unreadable", "why": "no expectation was recorded, so there is "
+                "nothing to compare the result against. A gain with no prediction is not "
+                "evidence that the idea worked - only that the number moved."}
+    if not isinstance(metric, dict):
+        return {"verdict": "unreadable",
+                "why": "the node recorded no metric, so the expectation cannot be judged."}
+
+    direction = str(expect.get("direction") or "up").strip().lower()
+    wanted_up = not direction.startswith("down")
+    try:
+        at_least = abs(float(expect.get("atLeast")))
+    except (TypeError, ValueError):
+        return {"verdict": "unreadable", "why": "expectation.atLeast is not a number, so the "
+                "prediction has no floor and cannot be confirmed or refuted."}
+
+    delta = _num(metric.get("delta"))
+    sign = _metric_sign(metric)
+    # Normalise both sides to "up is positive", so one comparison covers higher-is-better and
+    # lower-is-better without a second code path that can disagree with the first.
+    moved_up = (delta * sign) > 0
+    floor = at_least
+    samples = metric.get("samples") if isinstance(metric.get("samples"), dict) else {}
+    std = samples.get("std")
+    if std is not None:
+        try:
+            floor = max(at_least, abs(float(std)))
+        except (TypeError, ValueError):
+            pass
+
+    if not moved_up:
+        verdict = "refuted"
+        why = (f"predicted the metric would go {'up' if wanted_up else 'down'}, and it moved "
+               f"{'down' if delta < 0 else 'not at all'} ({delta:+.4g})."
+               + (" A delta of exactly zero is not a weak win; it is no movement."
+                  if delta == 0 else ""))
+    elif abs(delta) < floor:
+        verdict = "partial"
+        why = (f"the direction was right ({delta:+.4g}) but the floor was not cleared: "
+               f"{abs(delta):.4g} < {floor:.4g}"
+               + (f" (the noise floor, from {samples.get('n')} samples)" if std is not None
+                  else " (the declared atLeast)"))
+    else:
+        verdict = "confirmed"
+        why = (f"predicted {'up' if wanted_up else 'down'} by at least {at_least:.4g}, and it "
+               f"moved {delta:+.4g}.")
+
+    return {
+        "verdict": verdict,
+        "why": why,
+        "predicted": {"direction": direction, "atLeast": at_least},
+        "delta": delta,
+        "floor": floor,
+        "floorFrom": "noise" if std is not None else "declared",
+    }
+
+
+def goal_of(tree: Any) -> dict[str, Any]:
+    """The terminal objective this tree declared, or an empty dict."""
+    doc = tree if isinstance(tree, dict) else {}
+    goal = doc.get("goal")
+    return goal if isinstance(goal, dict) else {}
+
+
+def curriculum_of(tree: Any) -> list[dict[str, Any]]:
+    """The ordered stage ladder, simplest first. Empty when no curriculum was declared."""
+    doc = tree if isinstance(tree, dict) else {}
+    ladder = doc.get("curriculum")
+    if not isinstance(ladder, list):
+        return []
+    out = []
+    for i, stage in enumerate(ladder):
+        if isinstance(stage, dict) and stage.get("name"):
+            out.append({"index": i, "name": str(stage["name"]),
+                        "passesWhen": str(stage.get("passesWhen") or ""),
+                        "at": str(stage.get("at") or "")})
+    return out
+
+
+def _stage_index(ladder: list[dict[str, Any]], stage: Any) -> int:
+    """Where a stage name sits in the ladder. Unknown names sort after everything known."""
+    name = str(stage or "").strip()
+    for i, s in enumerate(ladder):
+        if s["name"] == name:
+            return i
+    return len(ladder)
+
+
+def _validate_goal(where: str, node: dict[str, Any], goal: dict[str, Any]) -> list[str]:
+    """A node that measures something other than the objective must say why.
+
+    Same shape as the provenance check: a forced choice, not a forced answer. A node that
+    measures a different metric is sometimes exactly right - you cannot improve a score you
+    refuse to look at - so the escape is to say so, and the silence is what is unacceptable.
+    """
+    if not goal:
+        return []
+    metric = node.get("metric")
+    if not isinstance(metric, dict):
+        return []
+    want = str(goal.get("metric") or "").strip()
+    if not want or str(metric.get("name") or "").strip() == want:
+        return []
+    if str(node.get("offGoalReason") or "").strip():
+        return []
+    return [f"{where}: this tree optimises {want!r}, but the node measures "
+            f"{metric.get('name')!r}. If that is deliberate, say why in offGoalReason - an "
+            f"unexplained metric swap is how a long run stops optimising its own goal."]
+
+
+def _validate_expectation(where: str, node: dict[str, Any]) -> list[str]:
+    """A prediction must name a direction and a floor, or it cannot be judged."""
+    expect = node.get("expect")
+    if expect is None:
+        return []
+    if not isinstance(expect, dict):
+        return [f"{where}: 'expect' must be an object, got {type(expect).__name__}"]
+    out: list[str] = []
+    direction = str(expect.get("direction") or "").strip().lower()
+    if direction not in ("up", "down"):
+        out.append(f"{where}: expect.direction must be 'up' or 'down', got "
+                   f"{expect.get('direction')!r} - a prediction with no direction is not one")
+    if expect.get("atLeast") is None:
+        out.append(f"{where}: expect.atLeast is required. A direction with no floor cannot be "
+                   f"refuted, because any movement can be read as 'in the right direction'.")
+    else:
+        try:
+            if abs(float(expect["atLeast"])) <= 0:
+                out.append(f"{where}: expect.atLeast must be a positive number of scale; 0 "
+                           f"would be confirmed by any movement at all")
+        except (TypeError, ValueError):
+            out.append(f"{where}: expect.atLeast must be a number, got {expect['atLeast']!r}")
+    if "metric" in expect and not str(expect.get("metric") or "").strip():
+        out.append(f"{where}: expect.metric is blank; omit the field to use the node's own metric")
+    return out
+
+
 def _validate_criteria(where: str, node: dict[str]) -> list[str]:
     """Optional multi-criterion evaluation surface. Domain-agnostic on purpose.
 
@@ -686,6 +897,14 @@ def _validate_criteria(where: str, node: dict[str]) -> list[str]:
         samples = c.get("samples")
         if samples is not None and not isinstance(samples, dict):
             out.append(f"{tag}: samples must be an object")
+        # A criterion without a role is indistinguishable from one that does not matter, and
+        # a search cannot tell the difference either - it will optimise whatever moved. So the
+        # role is stated, and absence means "observe", the weakest possible claim.
+        role = c.get("role")
+        if role is not None and str(role) not in CRITERION_ROLES:
+            out.append(f"{tag}: role must be one of {', '.join(CRITERION_ROLES)}, got {role!r}"
+                       f" - primary is what this tree optimises, guard is what must not get "
+                       f"worse, observe is only worth knowing")
     return out
 
 
@@ -800,6 +1019,14 @@ def normalize_node(node: Any) -> Any:
     recipe = _normalize_recipe(out.get("recipe"))
     if recipe is not None:
         out["recipe"] = recipe
+    # Every criterion carries its role, so "which numbers matter" is answered by the data
+    # rather than inferred from which ones moved. An absent role is the weakest claim
+    # (observe), not an exemption.
+    criteria = out.get("criteria")
+    if isinstance(criteria, list):
+        for c in criteria:
+            if isinstance(c, dict) and not str(c.get("role") or "").strip():
+                c["role"] = DEFAULT_CRITERION_ROLE
     return out
 
 
@@ -852,6 +1079,7 @@ def validate(tree: dict[str, Any]) -> list[str]:
 
     problems.extend(_validate_document(doc, problems))
     held_out = ((doc.get("anchor") or {}) if isinstance(doc.get("anchor"), dict) else {}).get("heldOut")
+    goal = goal_of(doc)
 
     for nid, node in nodes.items():
         where = f"node '{nid}'"
@@ -1010,6 +1238,8 @@ def validate(tree: dict[str, Any]) -> list[str]:
 
             problems.extend(_validate_criteria(where, node))
             problems.extend(_validate_provenance(where, node))
+            problems.extend(_validate_expectation(where, node))
+            problems.extend(_validate_goal(where, node, goal))
 
         if kind == "research":
             for field in RESEARCH_REQUIRED:
@@ -1197,6 +1427,38 @@ def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]
         nid for nid, n in nodes.items()
         if isinstance(n, dict) and n.get("kind") == "experiment" and not is_planned(n)
     ]
+
+    # ---- the curriculum gate. Checked BEFORE the diagnosis gate, because "you are trying the
+    # hard stage first" and "you did not say what you learned" are different mistakes, and
+    # reporting the wrong one first sends the agent to fix the wrong thing.
+    ladder = curriculum_of(tree)
+    if ladder:
+        unlocked = str(tree.get("stage") or ladder[0]["name"])
+        want_stage = str(node.get("stage") or unlocked).strip()
+        here, there = _stage_index(ladder, want_stage), _stage_index(ladder, unlocked)
+        if here > there:
+            override = str(node.get("stageOverride") or "").strip()
+            if not override:
+                skipped = [s["name"] for s in ladder[there:here]]
+                return {
+                    "ok": False, "code": "stage_locked",
+                    "message": (
+                        f"stage {want_stage!r} is locked. This tree is working at "
+                        f"{unlocked!r}, and the ladder is "
+                        f"{' -> '.join(s['name'] for s in ladder)}. "
+                        f"{'Pass ' + ', '.join(skipped) + ' first' if skipped else ''}, or set "
+                        f"stageOverride with a real reason. A curriculum exists so the easy "
+                        f"stages actually get run; skipping one on purpose is fine, skipping "
+                        f"one by accident is how a run burns a day on a stage that was never "
+                        f"going to work."
+                    ),
+                    "unlocked": unlocked,
+                    "requested": want_stage,
+                    "skipped": skipped,
+                    "passesWhen": [s for s in ladder if s["name"] in skipped],
+                }
+            node = dict(node)
+            node["stageOverrideReason"] = override
     if diagnosis is None:
         return {
             "ok": False, "code": "diagnosis_required",
@@ -1231,6 +1493,28 @@ def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]
                        f"diagnosis of a run. Cite one that read a log, or set "
                        f"diagnosis=\"none\" with a reason.",
         }
+
+    # ---- the prediction gate. A declaration says what you expect to happen, in a form that
+    # can come out wrong: a direction and a floor. Without it the tree can only ever record
+    # what did happen, and "did it work as intended" is unanswerable forever - the result and
+    # the expectation are never compared by anything. The escape hatch exists because a
+    # genuinely open exploration has no prediction; what is refused is the silence.
+    if node.get("expect") is None and not str(node.get("expectOmitted") or "").strip():
+        return {
+            "ok": False, "code": "expect_required",
+            "message": (
+                "a declaration must predict what will happen, so the result can be compared "
+                "against it afterwards. Give expect={} with a direction ('up' or 'down') and "
+                "an atLeast floor in the metric's own units - the floor is what makes a "
+                "prediction falsifiable, because any movement at all can be called 'in the "
+                "right direction'. If this run is genuinely open exploration with nothing to "
+                "predict, set expectOmitted saying what you are actually looking for."
+            ),
+        }
+    if node.get("expect") is not None:
+        bad_expect = _validate_expectation("this declaration", node)
+        if bad_expect:
+            return {"ok": False, "code": "expect_invalid", "message": "\n".join(bad_expect)}
 
     prepared = dict(node)
     # A declaration is always an experiment. A research node changes nothing and runs nothing,
@@ -1273,7 +1557,22 @@ def settle(competition: str, declared: str, node: dict[str, Any],
     prepared = dict(node)
     prepared.setdefault("kind", "experiment")
     prepared.setdefault("parent", declared)
-    return record(competition, prepared, read_revision)
+    # The prediction travels with the declaration and is judged HERE, once there is a number
+    # to judge it against. Copying it onto the result rather than asking for it again is the
+    # point: a prediction written after seeing the result is not a prediction.
+    declaration = nodes.get(declared) or {}
+    if isinstance(declaration.get("expect"), dict) and not isinstance(prepared.get("expect"), dict):
+        prepared["expect"] = dict(declaration["expect"])
+    judgment = judge_expectation(prepared.get("expect"), prepared.get("metric"))
+    prepared["expectation"] = judgment
+    if prepared.get("expectOmitted") or str(declaration.get("expectOmitted") or "").strip():
+        prepared.setdefault("expectOmitted", declaration.get("expectOmitted"))
+    res = record(competition, prepared, read_revision)
+    # The judgement is returned even when the record was refused, because "your prediction was
+    # refuted" is the answer the agent asked for and it is still true when the node is bad.
+    if res.get("ok"):
+        res["expectation"] = judgment
+    return res
 
 
 def _tokens(*values: Any) -> set[str]:
@@ -1450,6 +1749,339 @@ def prune(competition: str, node_id: str, reason: str,
             "revision": tree["revision"], "path": tree.get("path")}
 
 
+def _subtree(nodes: dict[str, Any], root: str) -> list[str]:
+    """Every node reachable from `root` by parent links, root included, in tree order."""
+    out: list[str] = []
+    frontier = [root]
+    while frontier:
+        nid = frontier.pop(0)
+        if nid in out or nid not in nodes:
+            continue
+        out.append(nid)
+        frontier.extend(k for k, v in nodes.items()
+                        if isinstance(v, dict) and v.get("parent") == nid)
+    return out
+
+
+def summarise_branch(nodes: dict[str, Any], ids: list[str]) -> dict[str, Any]:
+    """What a line of work turned out to be, in a form that survives losing its files.
+
+    Written into the tree at abandon time, because the reason a route was given up on is the
+    only thing about it that is worth carrying forward - and it is worth carrying forward
+    precisely when the files are gone. Quota spent and what was learned outlive the artefacts.
+    """
+    scored = []
+    for nid in ids:
+        n = nodes.get(nid) or {}
+        m = n.get("metric")
+        if isinstance(m, dict) and m.get("result") is not None:
+            scored.append((_signed_score(m) if _signed_score(m) is not None else float("-inf"),
+                           nid, n, m))
+    scored.sort(key=lambda row: -row[0])
+    best = scored[0] if scored else None
+    experiments = [n for n in ids
+                   if (nodes.get(n) or {}).get("kind") == "experiment"
+                   and not is_planned(nodes.get(n) or {})]
+    refuted = [nid for nid in ids if (nodes.get(nid) or {}).get("verdict") == "revert"]
+    confirmed = [nid for nid in ids
+                 if ((nodes.get(nid) or {}).get("expectation") or {}).get("verdict") == "confirmed"]
+    refuted_expect = [nid for nid in ids
+                      if ((nodes.get(nid) or {}).get("expectation") or {}).get("verdict")
+                      in ("refuted", "partial")]
+    quota = 0.0
+    for nid in ids:
+        cost = (nodes.get(nid) or {}).get("cost")
+        if isinstance(cost, dict):
+            try:
+                quota += float(cost.get("quotaHours") or 0.0)
+            except (TypeError, ValueError):
+                pass
+    return {
+        "nodes": len(ids),
+        "experiments": len(experiments),
+        "refuted": len(refuted),
+        "quotaHours": round(quota, 3),
+        "best": ({"id": best[1], "change": best[2].get("change"),
+                  "metric": best[3].get("name"), "result": best[3].get("result"),
+                  "delta": best[3].get("delta")} if best else None),
+        "confirmedExpectations": len(confirmed),
+        "refutedOrPartialExpectations": len(refuted_expect),
+        "operators": sorted({str((nodes.get(n) or {}).get("operator")) for n in ids
+                             if (nodes.get(n) or {}).get("operator")}),
+        "families": sorted({str((nodes.get(n) or {}).get("family")) for n in ids
+                            if (nodes.get(n) or {}).get("family")}),
+    }
+
+
+def abandon(competition: str, node_id: str, reason: str,
+            branch: str = "", read_revision: Optional[int] = None) -> dict[str, Any]:
+    """Give up a whole line of work: summarise it, mark it, and move its files aside.
+
+    An abandoned route is not a refuted node. Refuting says "this idea was wrong and here is
+    the evidence"; abandoning says "this whole direction is not worth more of my time", which
+    is a different and much larger claim, and one that used to have no way to be expressed at
+    all. Without it, the only options were to keep quietly extending something already known
+    to be bad, or to hand-edit the tree - and hand-edits are not evidence.
+
+    Nothing is deleted. The nodes are marked, so the cost and the reason stay on the record,
+    and the branch's files are MOVED to quarantine, which is recoverable and inspectable. That
+    is the whole point: quota was spent, and spent quota is the one thing that cannot be
+    un-spent. If the files need to go for disk, deleting the quarantined folder is a decision
+    the user makes with their own hands, not a side effect of giving up.
+    """
+    nid = str(node_id or "").strip()
+    if not nid:
+        return {"ok": False, "code": "no_node",
+                "message": "abandon needs the id of the node that starts the line to give up."}
+    tree = load(competition)
+    if read_revision is not None and int(read_revision) != int(tree["revision"]):
+        return {"ok": False, "code": "stale_read",
+                "message": f"the tree has changed since you read it (you read revision "
+                           f"{read_revision}, it is now {tree['revision']}). Read it again."}
+    inner = _current(tree)
+    nodes = inner.get("nodes") or {}
+    if nid not in nodes:
+        return {"ok": False, "code": "unknown_node",
+                "message": f"no node {nid!r} in the tree for {competition!r}."}
+    node = nodes[nid]
+    if nid == (inner.get("base") or {}).get("id"):
+        return {"ok": False, "code": "is_base",
+                "message": f"{nid!r} is the current base, so abandoning it would leave the tree "
+                           f"with no base. Promote another node with record(new_base=...) first, "
+                           f"then abandon this one."}
+    if str(node.get("abandonedAt") or "").strip():
+        return {"ok": False, "code": "already_abandoned",
+                "message": f"{nid!r} was already abandoned at {node.get('abandonedAt')!r}. "
+                           f"action=\"undo\" if that was wrong."}
+    if not str(reason or "").strip():
+        return {"ok": False, "code": "reason_required",
+                "message": "abandon needs a reason. The reason is the part that is worth keeping "
+                           "after the files are gone - 'we are going a different direction' is a "
+                           "reason, 'it failed' is not."}
+
+    ids = _subtree(nodes, nid)
+    summary = summarise_branch(nodes, ids)
+    line = str(branch or node.get("branch") or "").strip()
+
+    # The BEFORE state must record absence as well as presence. If a node had no
+    # `abandonedAt` before, undo has to remove it - and a snapshot that only stores keys that
+    # happened to be present cannot express "this was not here", so the mark survives undo and
+    # the line stays abandoned forever.
+    MARK_KEYS = ("abandonedAt", "abandonReason", "branch")
+    before_marks = {n: {k: nodes[n].get(k) for k in MARK_KEYS} for n in ids}
+    stamp = _now()
+    inner = dict(inner)
+    new_nodes = dict(nodes)
+    for n in ids:
+        marked = dict(new_nodes[n])
+        marked["abandonedAt"] = stamp
+        marked["abandonReason"] = str(reason)[:400]
+        if line:
+            marked["branch"] = line
+        new_nodes[n] = marked
+    inner["nodes"] = new_nodes
+    abandoned = [dict(r) for r in (tree.get("abandoned") or [])]
+    abandoned.append({
+        "root": nid, "branch": line or None, "at": stamp, "reason": str(reason)[:400],
+        "nodes": ids, "summary": summary,
+        "filesMovedTo": None,   # filled in below, only if a move actually happened
+    })
+    tree["tree"] = inner
+    tree["abandoned"] = abandoned
+    entry = abandoned[-1]
+
+    # The files move, and the move is recorded so undo can put them back. A branch with no
+    # folder is not an error: plenty of runs are Kaggle kernels whose outputs never landed
+    # locally, and inventing an empty directory would look like a successful move.
+    moved: dict[str, str] = {}
+    if line:
+        src, dst = branch_dir(competition, line), quarantine_dir(competition, line)
+        try:
+            if os.path.isdir(src):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                if os.path.isdir(dst):
+                    dst = dst + "-" + stamp.replace(":", "").replace("-", "")
+                shutil.move(src, dst)
+                moved = {"from": src, "to": dst}
+                entry["filesMovedTo"] = dst
+        except OSError as exc:
+            entry["filesMoveError"] = str(exc)
+
+    tree.setdefault("journal", []).append({
+        "op": "abandon", "nodeId": nid, "reason": str(reason)[:400],
+        "undoable": True, "before": {"marks": before_marks, "moved": moved,
+                                     "abandonedEntry": dict(entry)},
+    })
+    tree["revision"] = int(tree["revision"]) + 1
+    problems = validate(tree)
+    if problems:
+        return {"ok": False, "code": "would_break_tree",
+                "message": "abandoning this line would leave the tree invalid, so nothing was "
+                           "changed.",
+                "problems": problems}
+    save(competition, tree)
+    return {
+        "ok": True, "abandoned": nid, "nodes": ids, "branch": line or None,
+        "reason": str(reason)[:400],
+        "summary": summary, "filesMovedTo": entry.get("filesMovedTo"),
+        "filesMoveError": entry.get("filesMoveError"),
+        "revision": tree["revision"], "path": tree.get("path"),
+        "note": (
+            "Nothing was deleted. The nodes are marked and the line no longer counts as kept, "
+            "so it will not be selected or replayed. "
+            + (f"Its files are at {entry['filesMovedTo']} - delete that folder yourself if you "
+               f"need the disk back." if entry.get("filesMovedTo") else
+               "It had no local folder, so there was nothing to move - delete nothing.")
+            + " action=\"undo\" reverses this."
+        ),
+    }
+
+
+def _gated_write(tree: dict[str, Any], read_revision: Optional[int]) -> Optional[dict[str, Any]]:
+    if read_revision is not None and int(read_revision) != int(tree["revision"]):
+        return {"ok": False, "code": "stale_read",
+                "message": f"the tree has changed since you read it (you read revision "
+                           f"{read_revision}, it is now {tree['revision']}). Read it again."}
+    return None
+
+
+def set_goal(competition: str, metric: str = "", target: Any = None,
+             direction: str = "", note: str = "",
+             read_revision: Optional[int] = None) -> dict[str, Any]:
+    """Declare what this tree is ultimately optimising, or read back what it declared.
+
+    The question "which metric is the terminal one" has never had an answer stored anywhere,
+    so it is re-decided silently at every node - and a search that re-decides its objective
+    per node drifts toward whatever is easiest to move. Declaring it once makes the drift
+    visible: any node measuring a different metric has to say why.
+    """
+    tree = load(competition)
+    stale = _gated_write(tree, read_revision)
+    if stale:
+        return stale
+    if not str(metric or "").strip():
+        current = goal_of(tree)
+        return {"ok": True, "goal": current, "set": False,
+                "message": (f"this tree optimises {current.get('metric')!r}"
+                            f"{' toward ' + str(current['target']) if current.get('target') is not None else ''}."
+                            if current else
+                            "no goal is declared. Pass metric=<name> and, if you know it, "
+                            "target=<number>. Until then nothing tells a kept node from a "
+                            "kept node that moved the wrong number.")}
+    goal: dict[str, Any] = {"metric": str(metric).strip()}
+    if target is not None:
+        try:
+            goal["target"] = float(target)
+        except (TypeError, ValueError):
+            return {"ok": False, "code": "bad_target",
+                    "message": f"target must be a number, got {target!r}"}
+    if direction:
+        if direction not in VALID_DIRECTIONS:
+            return {"ok": False, "code": "bad_direction",
+                    "message": f"direction must be one of {', '.join(VALID_DIRECTIONS)}, "
+                               f"got {direction!r}"}
+        goal["direction"] = direction
+    if note:
+        goal["note"] = str(note)[:400]
+    goal["declaredAt"] = _now()
+    tree["goal"] = goal
+    tree["revision"] = int(tree["revision"]) + 1
+    save(competition, tree)
+    return {"ok": True, "goal": goal, "set": True, "revision": tree["revision"],
+            "message": f"this tree now optimises {goal['metric']!r}. Any node measuring a "
+                       f"different metric needs offGoalReason, so a metric swap has to be said "
+                       f"out loud."}
+
+
+def set_stage(competition: str, curriculum: Optional[list] = None, stage: str = "",
+              read_revision: Optional[int] = None) -> dict[str, Any]:
+    """Declare the easy-to-hard ladder, and which rung the search is allowed to work on.
+
+    Working simple-to-hard is not advice, it is a gate. A hard experiment run before the easy
+    one has passed usually fails for a reason that has nothing to do with the idea, and the
+    failure gets recorded as evidence against the idea. So a declaration above the current
+    stage is refused, with the same escape hatch the other gates use.
+    """
+    tree = load(competition)
+    stale = _gated_write(tree, read_revision)
+    if stale:
+        return stale
+    if curriculum:
+        names = [str(s.get("name") or "").strip() for s in curriculum
+                 if isinstance(s, dict) and str(s.get("name") or "").strip()]
+        if len(names) < 2:
+            return {"ok": False, "code": "curriculum_too_short",
+                    "message": "a curriculum needs at least two named stages, simplest first. "
+                               'e.g. [{"name":"smoke",...},{"name":"scale",...}]'}
+        if len(set(names)) != len(names):
+            return {"ok": False, "code": "duplicate_stage",
+                    "message": f"stage names must be unique, got {names}"}
+        tree["curriculum"] = curriculum
+        tree.setdefault("stage", names[0])
+        tree["revision"] = int(tree["revision"]) + 1
+        save(competition, tree)
+        return {"ok": True, "set": True, "revision": tree["revision"],
+                "curriculum": curriculum_of(tree), "stage": tree.get("stage"),
+                "message": f"curriculum declared: {' -> '.join(names)}. declare is now locked "
+                           f"to {tree.get('stage')!r}; pass stageOverride to go further early."}
+    ladder = curriculum_of(tree)
+    if not ladder:
+        return {"ok": False, "code": "no_curriculum",
+                "message": "no curriculum is declared. Pass curriculum=[...] as a JSON array in "
+                           "one string, simplest stage first, or pass action=\"read\" to see the "
+                           "tree as it is."}
+    if not stage:
+        return {"ok": True, "set": False, "curriculum": ladder, "stage": tree.get("stage"),
+                "message": f"curriculum: {' -> '.join(s['name'] for s in ladder)}; currently "
+                           f"allowed: {tree.get('stage') or ladder[0]['name']}"}
+    names = [s["name"] for s in ladder]
+    if stage not in names:
+        return {"ok": False, "code": "unknown_stage",
+                "message": f"{stage!r} is not a stage. The ladder is {', '.join(names)}."}
+    if _stage_index(ladder, stage) < _stage_index(ladder, tree.get("stage") or names[0]):
+        return {"ok": False, "code": "stage_backwards",
+                "message": f"the tree is already at {tree.get('stage')!r}; going back to "
+                           f"{stage!r} is not supported. A stage you have passed is not a place "
+                           f"to return to - record a new experiment instead."}
+    tree["stage"] = stage
+    tree["revision"] = int(tree["revision"]) + 1
+    save(competition, tree)
+    return {"ok": True, "set": True, "stage": stage, "revision": tree["revision"],
+            "curriculum": ladder,
+            "message": f"stage is now {stage!r}. declare may work at this stage and below."}
+
+
+def branch_paths(competition: str, name: str, node: str = "",
+                 read_revision: Optional[int] = None) -> dict[str, Any]:
+    """Where a line of work keeps its files, created on demand.
+
+    A route is a folder, not a word. Two approaches on one competition that share a directory
+    will overwrite each other's checkpoints, and the one that survives is whichever ran last -
+    which is exactly how a result from an approach you already gave up on gets shipped.
+    """
+    tree = load(competition)
+    stale = _gated_write(tree, read_revision)
+    if stale:
+        return stale
+    if not str(name or "").strip():
+        branches = sorted({str(n.get("branch")) for n in _current(tree).get("nodes", {}).values()
+                           if isinstance(n, dict) and n.get("branch")})
+        return {"ok": True, "set": False, "branches": branches,
+                "message": (f"branches in use: {', '.join(branches)}" if branches else
+                            "no branch is in use. Pass name=<branch> to create one, or omit it "
+                            "on a declaration to use the default.")}
+    path = branch_dir(competition, name)
+    os.makedirs(path, exist_ok=True)
+    branches = sorted({str(n.get("branch")) for n in _current(tree).get("nodes", {}).values()
+                       if isinstance(n, dict) and n.get("branch")} | {name})
+    return {"ok": True, "set": True, "branch": name, "path": path, "branches": branches,
+            "quarantine": quarantine_dir(competition, name),
+            "message": f"branch {name!r} keeps its files in {path}. Put this path in the run's "
+                       f"recipe so the next run on this line writes in the same place, and "
+                       f"action=\"abandon\" branch={name!r} moves the whole folder aside when "
+                       f"the line is given up on."}
+
+
 def record(competition: str, node: dict[str, Any], read_revision: Optional[int],
            new_base: Optional[str] = None) -> dict[str, Any]:
     """Add one node, refusing unless the tree was read at its current revision.
@@ -1596,6 +2228,28 @@ def plan_prompt(competition: str) -> str:
         "rules / leaderboard) because a result made the current picture insufficient, and it must",
         "say what it opens up ('opens') - that is what a later experiment will build on.",
     ]
+    # What this tree is for, and how far along it is. Both are one read away, and both are the
+    # first thing a node needs to know: a change is only measurable relative to an objective,
+    # and a run is only in the right place relative to a stage.
+    goal = goal_of(tree)
+    if goal:
+        target = (f" (target {goal['target']})" if goal.get("target") is not None else "")
+        lines.insert(4, f"optimising: {goal.get('metric')}{target}"
+                         f"{' - ' + goal['note'] if goal.get('note') else ''}")
+    ladder = curriculum_of(tree)
+    if ladder:
+        here = str(tree.get("stage") or ladder[0]["name"])
+        lines.insert(5, "curriculum: " + " -> ".join(
+            ("*" if s["name"] == here else " ") + s["name"] for s in ladder)
+            + f"   (declare may work at {here} and below)")
+    abandoned = tree.get("abandoned") or []
+    if abandoned:
+        lines.insert(6, "\n".join(
+            [f"given up (do not restart these): {len(abandoned)} line(s)"]
+            + [f"  {a['root']} ({a.get('branch') or 'no branch'}): {a.get('reason')}"
+               for a in abandoned[-4:]]))
+    if lines[4].startswith("optimising") or ladder or abandoned:
+        lines.insert(7, "")
     return "\n".join(lines)
 
 
@@ -1842,7 +2496,7 @@ def select_next(tree: dict[str, Any], weights: Optional[dict[str, float]] = None
     for r in rows:
         # A refuted node is evidence, not a candidate. It stays in the tree so it is never
         # repeated; it simply never wins selection again.
-        r["eligible"] = r["verdict"] != "revert"
+        r["eligible"] = r["verdict"] != "revert" and not is_abandoned(nodes.get(r["id"]))
         visits = counts.get(r["id"], 0)
         r["visits"] = visits
         r["cooling"] = 0.5 ** (visits / COOLING_HALF_LIFE)
@@ -1935,6 +2589,87 @@ def select_next(tree: dict[str, Any], weights: Optional[dict[str, float]] = None
     }
 
 
+def _expectation_tally(nodes: dict[str, Any]) -> dict[str, Any]:
+    """How often predictions came true, and the cross-tab that actually teaches something.
+
+    The single number "12 of 15 confirmed" is nearly useless on its own. The informative
+    split is kept-vs-refuted against confirmed-vs-refuted, because the cell that matters is
+    KEPT BUT NOT AS PREDICTED: the change is worth keeping and it worked for a reason nobody
+    predicted. That is simultaneously good news (the gain is real) and bad news (the model of
+    why is wrong, so the next change built on it is a guess). A board that only prints the
+    confirmation rate hides exactly that.
+    """
+    tally = {"confirmed": 0, "partial": 0, "refuted": 0, "unreadable": 0,
+             "keptConfirmed": 0, "keptNotAsPredicted": 0, "revertedAsPredicted": 0,
+             "unreadableButKept": 0}
+    surprise: list[str] = []
+    for nid, node in nodes.items():
+        if not isinstance(node, dict) or is_abandoned(node):
+            continue
+        judgment = node.get("expectation")
+        if not isinstance(judgment, dict) and not isinstance(node.get("metric"), dict):
+            continue  # a declaration has no result yet; it is not a failed prediction
+        verdict = str((judgment or {}).get("verdict") or "unreadable")
+        tally[verdict] = tally.get(verdict, 0) + 1
+        kept = node.get("verdict") == "keep"
+        if kept and verdict == "confirmed":
+            tally["keptConfirmed"] += 1
+        elif kept and verdict in ("refuted", "partial"):
+            tally["keptNotAsPredicted"] += 1
+            surprise.append(nid)
+        elif node.get("verdict") == "revert" and verdict == "refuted":
+            tally["revertedAsPredicted"] += 1
+        elif kept and verdict == "unreadable":
+            tally["unreadableButKept"] += 1
+    judged = sum(tally[k] for k in ("confirmed", "partial", "refuted"))
+    return {
+        **tally,
+        "judged": judged,
+        "keptNotAsPredictedNodes": surprise[:10],
+        "note": (
+            f"{judged} node(s) carried a prediction. {tally['keptNotAsPredicted']} of the kept "
+            f"ones worked for a reason that was not predicted - the gain is real but the "
+            f"explanation is not, so the next change built on it is a guess."
+            if tally["keptNotAsPredicted"] else
+            f"{judged} node(s) carried a prediction and the kept ones did what they said."
+            if judged else
+            "no node carries a prediction, so nothing here can say whether the search "
+            "understands why its changes work."
+        ),
+    }
+
+
+def _criterion_role_summary(nodes: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per criterion, with the role that says whether it is meant to be optimised."""
+    seen: dict[str, dict[str, Any]] = {}
+    for node in nodes.values():
+        if not isinstance(node, dict) or is_abandoned(node):
+            continue
+        for c in node.get("criteria") or []:
+            if not isinstance(c, dict) or not c.get("name"):
+                continue
+            row = seen.setdefault(str(c["name"]), {
+                "name": c["name"], "role": c.get("role") or DEFAULT_CRITERION_ROLE,
+                "seen": 0, "best": None, "worst": None,
+            })
+            row["seen"] += 1
+            if row["role"] == "observe" and c.get("role"):
+                row["role"] = c["role"]
+            try:
+                v = float(c.get("value"))
+            except (TypeError, ValueError):
+                continue
+            higher = str(c.get("direction", "higher")) != "lower"
+            if higher:
+                row["best"] = v if row["best"] is None else max(row["best"], v)
+                row["worst"] = v if row["worst"] is None else min(row["worst"], v)
+            else:
+                row["best"] = v if row["best"] is None else min(row["best"], v)
+                row["worst"] = v if row["worst"] is None else max(row["worst"], v)
+    order = {"primary": 0, "guard": 1, "observe": 2}
+    return sorted(seen.values(), key=lambda r: (order.get(r["role"], 3), r["name"]))
+
+
 def experience_board(tree: dict[str, Any]) -> dict[str, Any]:
     """The population-level view: families, their best, what failed, what is unexplored.
 
@@ -1948,7 +2683,7 @@ def experience_board(tree: dict[str, Any]) -> dict[str, Any]:
     operator_gain: dict[str, float] = {}
 
     for nid, node in nodes.items():
-        if not isinstance(node, dict):
+        if not isinstance(node, dict) or is_abandoned(node):
             continue
         fam = str(node.get("family") or "").strip()
         if node.get("kind") == "experiment" and fam:
@@ -1983,6 +2718,9 @@ def experience_board(tree: dict[str, Any]) -> dict[str, Any]:
         "families": ranked_families,
         "familyCount": len(families),
         "refutedByFamily": failures,
+        "expectations": _expectation_tally(nodes),
+        "criterionRoles": _criterion_role_summary(nodes),
+        "abandoned": [nid for nid, n in nodes.items() if is_abandoned(n)],
         "operatorGain": {
             k: round(v, 4) for k, v in sorted(
                 operator_gain.items(), key=lambda kv: -kv[1])
@@ -2134,9 +2872,13 @@ def _children_in_order(tree: dict[str, Any], nid: str) -> list[str]:
     branches at all.
     """
     nodes = _current(tree).get("nodes") or {}
+    # An abandoned line is not an edge the search may walk. Excluding it here rather than at
+    # each caller means replay, select and the board all agree by construction - three
+    # separate filters is three chances to forget one of them.
+    alive = {k: v for k, v in nodes.items() if not is_abandoned(v)}
     if nid == ROOT_ID:
-        return [k for k, v in nodes.items() if isinstance(v, dict) and not v.get("parent")]
-    return [k for k, v in nodes.items() if isinstance(v, dict) and v.get("parent") == nid]
+        return [k for k, v in alive.items() if not v.get("parent")]
+    return [k for k, v in alive.items() if v.get("parent") == nid]
 
 
 def replay(tree: dict[str, Any], params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -2484,6 +3226,29 @@ def undo(competition: str) -> dict[str, Any]:
         if isinstance(restored, dict) and entry.get("nodeId"):
             inner_now = _current(tree)
             inner_now.setdefault("nodes", {})[entry["nodeId"]] = restored
+    elif op == "abandon":
+        # Undo has to put the FILES back, not just the marks. An abandon that can be undone in
+        # the tree but not on disk leaves the next run on that line looking for a folder that
+        # is sitting in quarantine - a half-undone state that is worse than either end of it.
+        for nid, marks in (before.get("marks") or {}).items():
+            node = (_current(tree).get("nodes") or {}).get(nid)
+            if not isinstance(node, dict):
+                continue
+            for key, value in marks.items():
+                if value is None:
+                    node.pop(key, None)
+                else:
+                    node[key] = value
+        moved = before.get("moved") or {}
+        if moved.get("from") and moved.get("to") and os.path.isdir(moved["to"]):
+            try:
+                os.makedirs(os.path.dirname(moved["from"]), exist_ok=True)
+                shutil.move(moved["to"], moved["from"])
+            except OSError:
+                pass  # the marks are still restored; say so rather than pretending otherwise
+        abandoned = [a for a in (tree.get("abandoned") or [])
+                     if not (isinstance(a, dict) and a.get("root") == entry.get("nodeId"))]
+        tree["abandoned"] = abandoned
     tree["revision"] = int(tree["revision"]) + 1
     save(competition, tree)
     return {"ok": True, "undone": op, "entry": entry, "revision": tree["revision"]}
@@ -2898,6 +3663,17 @@ def refuted(tree: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def is_abandoned(node: Any) -> bool:
+    """Whether a node was given up on as part of a line of work.
+
+    Distinct from `verdict == "revert"`, which says the idea was wrong. Abandonment says the
+    direction was not worth continuing, and the two must not be treated alike: a refuted node
+    is still evidence worth reading, while an abandoned branch should stop costing the search
+    anything while remaining on the record of what was paid for.
+    """
+    return isinstance(node, dict) and bool(str(node.get("abandonedAt") or "").strip())
+
+
 def kept_chain(tree: dict[str, Any]) -> list[dict[str, Any]]:
     nodes = _current(tree).get("nodes") or {}
     out, cur, seen = [], (_current(tree).get("base") or {}).get("id"), set()
@@ -2905,7 +3681,8 @@ def kept_chain(tree: dict[str, Any]) -> list[dict[str, Any]]:
         seen.add(cur)
         n = nodes[cur]
         out.append({"id": cur, "change": n.get("change") or n.get("question"),
-                    "verdict": n.get("verdict"), "cost": n.get("cost")})
+                    "verdict": n.get("verdict"), "cost": n.get("cost"),
+                    "abandoned": is_abandoned(n)})
         cur = n.get("parent")
     return out
 
@@ -2950,3 +3727,60 @@ def status(competition: str) -> dict[str, Any]:
             "about the record, never about the result."
         ),
     }
+
+
+# ----------------------------------------------------------------- tool-facing renderers
+# The three new capabilities each have a shape the tool layer has to render, and each of them
+# answers a question that used to be unanswerable rather than adding a field nobody reads.
+
+def set_goal_response(competition: str, metric: str = "", target: Any = None,
+                      direction: str = "", note: str = "",
+                      read_revision: Optional[int] = None) -> dict[str, Any]:
+    res = set_goal(competition, metric, target, direction, note, read_revision)
+    if not res.get("ok"):
+        return {"content": [{"type": "text", "text": (
+            f"kaggle_experiment_tree goal ({res.get('code')})\n{res.get('message')}")}],
+            "isError": True}
+    g = res.get("goal") or {}
+    body = [res.get("message") or ""]
+    if g:
+        body.append(f"  metric: {g.get('metric')}")
+        if g.get("target") is not None:
+            body.append(f"  target: {g['target']}"
+                        + (f" ({g['direction']} is better)" if g.get("direction") else ""))
+        if g.get("note"):
+            body.append(f"  note: {g['note']}")
+    return {"content": [{"type": "text", "text": "\n".join(x for x in body if x)}],
+            "isError": False}
+
+
+def set_stage_response(competition: str, curriculum: Optional[list] = None, stage: str = "",
+                       read_revision: Optional[int] = None) -> dict[str, Any]:
+    res = set_stage(competition, curriculum, stage, read_revision)
+    if not res.get("ok"):
+        return {"content": [{"type": "text", "text": (
+            f"kaggle_experiment_tree stage ({res.get('code')})\n{res.get('message')}")}],
+            "isError": True}
+    lines = [res.get("message") or ""]
+    for s in res.get("curriculum") or []:
+        here = " <- current" if s["name"] == res.get("stage") else ""
+        lines.append(f"  {s['name']}{here}")
+        if s.get("passesWhen"):
+            lines.append(f"      passes when: {s['passesWhen']}")
+    return {"content": [{"type": "text", "text": "\n".join(x for x in lines if x)}],
+            "isError": False}
+
+
+def branch_response(competition: str, name: str = "", node: str = "",
+                    read_revision: Optional[int] = None) -> dict[str, Any]:
+    res = branch_paths(competition, name, node, read_revision)
+    if not res.get("ok"):
+        return {"content": [{"type": "text", "text": (
+            f"kaggle_experiment_tree branch ({res.get('code')})\n{res.get('message')}")}],
+            "isError": True}
+    lines = [res.get("message") or ""]
+    if res.get("path"):
+        lines.append(f"  files:       {res['path']}")
+        lines.append(f"  on abandon:  {res.get('quarantine')}")
+    return {"content": [{"type": "text", "text": "\n".join(x for x in lines if x)}],
+            "isError": False}

@@ -894,9 +894,9 @@ TOOLS: list[dict[str, Any]] = [
                 "action": {
                     "type": "string",
                     "enum": ["read", "consider", "diagnose", "declare", "settle", "prune",
-                             "alias", "record", "plan", "status", "select", "board", "replay",
-                             "compare", "policy", "round_close", "anchor", "undo", "analyze",
-                             "review", "report"],
+                             "abandon", "goal", "stage", "branch", "alias", "record", "plan",
+                             "status", "select", "board", "replay", "compare", "policy",
+                             "round_close", "anchor", "undo", "analyze", "review", "report"],
                     "default": "read",
                     "description": (
                         "read = the tree plus the readRevision that authorises one write "
@@ -906,9 +906,15 @@ TOOLS: list[dict[str, Any]] = [
                         "in flight, and whether it earns a node at all; declare = announce an "
                         "experiment before running it (change, hypothesis, parent, operator, "
                         "family, reason - no metric yet); settle = record the result of a "
-                        "declaration, as a new node parented by it; prune = delete one USELESS "
+                        "declaration, as a new node parented by it, and judge the prediction it "
+                        "made; prune = delete one USELESS "
                         "research node, and only that (an experiment is evidence and is never "
-                        "deleted); alias = point another name for the SAME competition at this "
+                        "deleted); abandon = give up a whole LINE of work: summarise it, mark it, "
+                        "and move its files aside - nothing is deleted; goal = declare the terminal "
+                        "metric this tree optimises; stage = declare the easy-to-hard curriculum "
+                        "and which rung declare is allowed to work on; branch = where a named line "
+                        "of work keeps its files; "
+                        "alias = point another name for the SAME competition at this "
                         "tree, so one competition never ends up with two histories; "
                         "record = add one node; plan = the kept / "
                         "refuted / in-flight / research summary to plan from; status = counts and "
@@ -988,8 +994,12 @@ TOOLS: list[dict[str, Any]] = [
                         "no 'and'), hypothesis, metric{name,parent,result,delta}, verdict, "
                         "reason, artifacts. kind='research' needs: parent, question, targets (a "
                         "list of forum/code/web/paper/model/dataset/rules/leaderboard), verdict, "
-                        "reason, opens (what this makes possible for a later experiment). For "
-                        "action='prune': just the research node's id, e.g. r2. Send the object as "
+                        "reason, opens (what this makes possible for a later experiment). "
+                        "declare/settle also take expect={direction:'up'|'down',atLeast:0.02} - "
+                        "the prediction, which settle judges into confirmed / partial / refuted; "
+                        "without it nothing compares the result to what you expected. Also "
+                        "take branch=<name> for the line of work it belongs to. For "
+                        "action='prune'/'abandon': just the node's id, e.g. r2. Send the object as "
                         "text: the host's tool layer empties a real object argument before it "
                         "reaches this server."
                     ),
@@ -997,6 +1007,54 @@ TOOLS: list[dict[str, Any]] = [
                 "new_base": {
                     "type": "string",
                     "description": "Node id to promote to base when this node is kept, if it should advance.",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": (
+                        "The name of the line of work this node belongs to. Two lines on one "
+                        "competition get two folders under branches/, so one approach cannot "
+                        "overwrite another's checkpoints. action='branch' name=<branch> creates "
+                        "it and prints the path; action='abandon' branch=<branch> moves that "
+                        "folder aside."
+                    ),
+                },
+                "metric": {
+                    "type": "string",
+                    "description": (
+                        "For action='goal': the terminal metric this tree optimises. Omit it to "
+                        "read back the current goal."
+                    ),
+                },
+                "target": {
+                    "type": "number",
+                    "description": "For action='goal': the value that would count as success, if known.",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["higher", "lower"],
+                    "description": "For action='goal': whether a higher or lower metric is better.",
+                },
+                "stage": {
+                    "type": "string",
+                    "description": (
+                        "For action='stage': which rung of the curriculum declare may work on "
+                        "now. For a node: which stage this experiment belongs to - refused if it "
+                        "is ahead of the tree's current stage unless stageOverride says why."
+                    ),
+                },
+                "curriculum": {
+                    "type": "string",
+                    "description": (
+                        "For action='stage': the easy-to-hard ladder, as a JSON array in one "
+                        "string, simplest first: [{\"name\":\"smoke\",\"passesWhen\":\"...\"},"
+                        "{\"name\":\"scale\",\"passesWhen\":\"...\"}]. Send it as text: the "
+                        "host's tool layer empties a real array argument before it reaches this "
+                        "server."
+                    ),
+                },
+                "name": {
+                    "type": "string",
+                    "description": "For action='branch': the line of work to create or read back.",
                 },
                 "weights": {
                     "type": "string",
@@ -1168,7 +1226,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.22.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.23.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -1248,10 +1306,16 @@ def _node_argument(value: Any) -> Optional[dict[str, Any]]:
 
 def _node_id(value: Any) -> str:
     """Read `node` as a node id, whether the caller sent the id or the whole node."""
-    node = jsonarg.structured(value, "node", dict, NODE_JSON_EXAMPLE)
-    if node is not None:
-        return str(node.get("id") or "").strip()
-    return str(value or "").strip()
+    if isinstance(value, dict):
+        return str(value.get("id") or "").strip()
+    text = str(value or "").strip()
+    # Only a value that opens a JSON container is worth parsing. A bare id like "n1" is the
+    # normal shape for prune and abandon, and running it through the JSON parser would reject
+    # the most common valid input with a confusing "not valid JSON".
+    if text.startswith("{"):
+        parsed = jsonarg.structured(text, "node", dict, NODE_JSON_EXAMPLE)
+        return str((parsed or {}).get("id") or "").strip()
+    return text
 
 
 def _policy_argument(value: Any) -> Any:
@@ -2442,6 +2506,36 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 lines += ["", "refuted, by family (never repeat these):"]
                 for fam, ids in board["refutedByFamily"].items():
                     lines.append(f"  {fam}: {', '.join(ids)}")
+            # The reflection surface: what was predicted, what happened, and - the cell that
+            # actually teaches - the kept nodes that worked for a reason nobody predicted.
+            ex = board.get("expectations") or {}
+            lines += ["", "predictions vs results (the point of declaring them):"]
+            lines.append(
+                f"  confirmed {ex.get('confirmed', 0)}   partial {ex.get('partial', 0)}   "
+                f"refuted {ex.get('refuted', 0)}   unjudged {ex.get('unreadable', 0)}"
+                f"   of {ex.get('judged', 0)} judged")
+            lines.append(
+                f"  kept AND confirmed      {ex.get('keptConfirmed', 0)}"
+                f"   <- the gain compounds as understood")
+            lines.append(
+                f"  kept but NOT as predicted {ex.get('keptNotAsPredicted', 0)}"
+                f"   <- real gain, wrong explanation"
+                + (f" ({', '.join(ex.get('keptNotAsPredictedNodes') or [])})"
+                   if ex.get("keptNotAsPredictedNodes") else ""))
+            lines.append(
+                f"  reverted as predicted    {ex.get('revertedAsPredicted', 0)}"
+                f"   <- caught before it cost more")
+            lines.append(f"  {ex.get('note', '')}")
+            roles = board.get("criterionRoles") or []
+            if roles:
+                lines += ["", "criteria, by the role that says what each is for:"]
+                for r in roles:
+                    lines.append(
+                        f"  {r['role']:<8} {r['name']:<16} best={r['best']} worst={r['worst']} "
+                        f"({r['seen']} observation(s))")
+            if board.get("abandoned"):
+                lines += ["", f"abandoned (excluded from everything above): "
+                              f"{', '.join(board['abandoned'])}"]
             lines += ["", board["operatorNote"]]
             return text_response("kaggle_experiment_tree board", 0, "\n".join(lines), "")
 
@@ -2877,6 +2971,67 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 "",
             )
 
+        if action == "abandon":
+            # Giving up a whole line is not refuting one node, and it used to have no way to
+            # be said at all - which is why a bad route only ended by being quietly extended.
+            res = experiment_tree.abandon(
+                comp, _node_id(args.get("node")), str(args.get("reason") or ""),
+                branch=str(args.get("branch") or ""),
+                read_revision=(int(args["read_revision"])
+                               if args.get("read_revision") is not None else None),
+            )
+            if not res.get("ok"):
+                return text_response(
+                    f"kaggle_experiment_tree abandon ({res.get('code')})", 3, "",
+                    str(res.get("message") or ""),
+                )
+            s = res.get("summary") or {}
+            lines = [
+                f"abandoned {res['abandoned']} and {len(res['nodes'])} node(s) on it",
+                f"reason: {(res.get('reason') or '').strip() or '(not given)'}",
+                "",
+                f"  experiments run   {s.get('experiments')}",
+                f"  refuted           {s.get('refuted')}",
+                f"  quota spent       {s.get('quotaHours')}h",
+                f"  predictions met   {s.get('confirmedExpectations')}",
+                f"  predictions missed {s.get('refutedOrPartialExpectations')}",
+            ]
+            if s.get("best"):
+                b = s["best"]
+                lines.append(
+                    f"  best node         {b['id']} ({b.get('metric')}={b.get('result')}, "
+                    f"delta {b.get('delta')}) - {b.get('change')}")
+            lines += ["", res.get("note") or ""]
+            return text_response("kaggle_experiment_tree abandon", 0, "\n".join(lines), "")
+
+        if action == "goal":
+            return experiment_tree.set_goal_response(
+                comp, metric=str(args.get("metric") or ""),
+                target=args.get("target"), direction=str(args.get("direction") or ""),
+                note=str(args.get("note") or ""),
+                read_revision=(int(args["read_revision"])
+                               if args.get("read_revision") is not None else None),
+            )
+
+        if action == "stage":
+            return experiment_tree.set_stage_response(
+                comp,
+                curriculum=jsonarg.structured(
+                    args.get("curriculum"), "curriculum", list,
+                    'e.g. [{"name":"smoke","passesWhen":"runs end to end"},'
+                    '{"name":"scale","passesWhen":"beats the baseline"}]'),
+                stage=str(args.get("stage") or ""),
+                read_revision=(int(args["read_revision"])
+                               if args.get("read_revision") is not None else None),
+            )
+
+        if action == "branch":
+            return experiment_tree.branch_response(
+                comp, name=str(args.get("name") or ""), node=_node_id(args.get("node")),
+                read_revision=(int(args["read_revision"])
+                               if args.get("read_revision") is not None else None),
+            )
+
         if action == "diagnose":
             # The loop's missing link. Everything else in this tool knows scores; this reads the
             # run's own log so the next experiment can be based on what the run actually did.
@@ -3038,7 +3193,9 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         return text_response(
             "kaggle_experiment_tree", 2, "",
-            f"unknown action: {action} (use read, declare, settle, record, plan or status)",
+            f"unknown action: {action} (use read, consider, diagnose, declare, settle, prune, "
+            f"abandon, goal, stage, branch, alias, record, plan, status, select, board, replay, "
+            f"compare, policy, round_close, anchor, undo, analyze, review or report)",
         )
 
     if name == "kaggle_local_launch":

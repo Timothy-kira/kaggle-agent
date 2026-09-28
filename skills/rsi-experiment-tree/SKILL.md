@@ -92,6 +92,98 @@ started: a recipe the next run cannot use is a note, and notes do not belong on 
 When a log is only readable by a non-obvious route, the working step belongs here too
 (`"step": "status"`), so the next run does not rediscover it.
 
+## Predict what will happen, then look back
+
+A `hypothesis` says why a change *should* matter. It does not say what it *will* move, so
+without more the tree can only ever record what did happen — and "did it work as intended"
+stays unanswerable. So a declaration carries a prediction, in a form that can come out wrong:
+
+```
+"expect": {"direction": "up", "atLeast": 0.03}
+```
+
+The floor is not optional. A direction with no floor is unfalsifiable, because any movement
+at all can be called "in the right direction". `settle` carries the prediction over and
+judges it, in three verdicts, and stores the reason:
+
+| verdict | means |
+|---|---|
+| **confirmed** | it moved in the predicted direction, past the floor |
+| **partial** | right direction, short of the floor — reads as a win in a kept list and is much weaker |
+| **refuted** | it went the other way, or not at all |
+
+A measured noise floor **raises** the bar: a predicted +0.01 against a measured std of 0.05
+is `partial`, because the move is not distinguishable from noise.
+
+`action="board"` then prints the cross-tab that actually teaches something. The cell to read
+is **kept, but not as predicted** — the change is worth keeping *and* it worked for a reason
+nobody predicted. The gain is real; the explanation is not, so the next change built on it is
+a guess. A board that only printed the confirmation rate would hide exactly that.
+
+`declare` refuses a node with no prediction. If the run is genuinely open exploration, say
+`expectOmitted` with what you are actually looking for — the silence is what is refused.
+
+## Say what the tree is optimising
+
+```
+kaggle_experiment_tree action="goal" metric="score" target=0.85 direction="higher"
+```
+
+A tree that re-decides its objective at every node drifts toward whatever is easiest to move.
+Once a goal is declared, a node measuring a **different** metric needs `offGoalReason` — an
+unexplained metric swap is how a long run stops optimising its own goal.
+
+Criteria carry a role, which is the answer to "which numbers matter":
+
+| role | means |
+|---|---|
+| `primary` | what this tree optimises |
+| `guard` | must not get worse — a regression here is reported even when the primary moves |
+| `observe` | only worth knowing; the weakest claim, and the default |
+
+`board` groups them by role, so a composite that looks stable while one guard collapses cannot
+hide behind the average.
+
+## Work the easy stages first
+
+```
+kaggle_experiment_tree action="stage" curriculum='[
+  {"name":"smoke","passesWhen":"runs end to end"},
+  {"name":"scale","passesWhen":"beats the baseline"}]'
+```
+
+`declare` is then **locked to the first stage**. A hard experiment run before the easy one has
+passed usually fails for a reason that has nothing to do with the idea, and that failure gets
+recorded as evidence *against the idea*. To skip ahead on purpose, set `stageOverride` with a
+real reason; the ladder keeps it.
+
+## Give up a whole line, without losing what it cost
+
+```
+kaggle_experiment_tree action="abandon" node="n7" branch="arc-approach" reason="..."
+```
+
+This is not `prune` and not a `revert`. A refuted node says "this idea was wrong"; abandoning
+says "this whole direction is not worth more of my time", which used to have no way to be
+expressed — so a bad route only ended by being quietly extended, or by hand-editing the tree.
+
+`abandon` writes a **summary** into the tree (quota spent, best node, predictions met and
+missed, operators used), marks the subtree, and **moves** the branch's files to
+`quarantine/<branch>/`. Nothing is deleted: quota spent is the one thing that cannot be
+un-spent, and if you want the disk back, deleting that folder is your call, not a side effect
+of giving up. The abandoned line drops out of selection and replay. `action="undo"` puts the
+marks *and* the files back.
+
+## Keep each line's files in their own folder
+
+```
+kaggle_experiment_tree action="branch" name="arc-approach"
+```
+
+Returns the path to keep that line's checkpoints in. Two approaches on one competition sharing
+a directory will overwrite each other's files, and the one that survives is whichever ran last
+— which is how a result from an approach you already gave up on gets shipped.
+
 That is the whole loop, enforced rather than requested: once a node lands, the tree has changed,
 so the next node cannot be planned from the version you remember. Planning the second experiment
 requires reading the tree again.

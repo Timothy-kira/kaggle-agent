@@ -28,6 +28,25 @@ SERVERS = ROOT / "servers.mcp.json"
 REL = ROOT / "skills" / "relationships.json"
 SERVER_PY = ROOT / "mcp" / "kaggle_server.py"
 
+# declare now requires a falsifiable prediction, so any suite that declares a node without
+# caring about the prediction has to say one. Doing it here rather than editing a dozen call
+# sites keeps the suites readable - and keeps the default an honest prediction rather than a
+# new escape hatch nobody reads.
+_PREDICT = {"direction": "up", "atLeast": 0.01}
+
+
+def with_prediction(node: dict) -> dict:
+    """A declaration payload that satisfies the prediction gate."""
+    out = dict(node)
+    if out.get("expect") is None and not out.get("expectOmitted"):
+        out["expect"] = dict(_PREDICT)
+    return out
+
+
+def _decl(et, comp, node: dict, **kw):
+    """declare() with the prediction gate satisfied, for suites that are not testing it."""
+    return et.declare(comp, with_prediction(node), **kw)
+
 CATEGORIES = ["identity", "research", "experiment", "collab"]
 
 failures: list[str] = []
@@ -1745,7 +1764,7 @@ def check_launch_gate():
               "the refusal names the call that unlocks it")
 
         rev = et.read(comp)["revision"]
-        d = et.declare(comp, {"id": "e1", "change": "swap the sampler",
+        d = _decl(et, comp, {"id": "e1", "change": "swap the sampler",
                               "hypothesis": "it is the bottleneck", "parent": None,
                               "operator": "draft", "family": "sampling",
                               "reason": "the profile says so",
@@ -1753,7 +1772,7 @@ def check_launch_gate():
                       "diagnosisReason": "first run in this test tree"}, read_revision=rev)
         if not check(d.get("ok"), f"a declaration is accepted: {d.get('message')}"):
             return
-        check(et.declare(comp, {"id": "e0", "change": "x", "hypothesis": "h", "parent": None,
+        check(_decl(et, comp, {"id": "e0", "change": "x", "hypothesis": "h", "parent": None,
                                 "operator": "draft", "family": "f", "reason": "r",
                                 "diagnosis": "none",
                                 "diagnosisReason": "probing the read gate"},
@@ -1792,7 +1811,7 @@ def check_launch_gate():
                                                 "delta": 0, "rank": 1, "rankSource": "x"}},
                        read_revision=et.read(comp)["revision"]).get("code") == "already_settled",
               "settling the same declaration twice is refused")
-        check(et.declare(comp, {"id": "p2", "change": "abandon the model entirely",
+        check(_decl(et, comp, {"id": "p2", "change": "abandon the model entirely",
                                 "hypothesis": "the baseline is wrong, not the method",
                                 "parent": None, "operator": "crossover",
                                 "family": "problem-framing",
@@ -1896,7 +1915,7 @@ def check_consider_and_prune():
         c = et.consider(comp, "read the library release notes", "to know what changed")
         check(c["verdict"] == "judge_it" and c["worthANode"] is False,
               f"an unnamed change with no operator or family goes to judgement: {c['verdict']}")
-        check(et.declare(comp, {"id": "p1", "change": "quantise the weights to int8",
+        check(_decl(et, comp, {"id": "p1", "change": "quantise the weights to int8",
                                 "hypothesis": "half the memory", "parent": "e2",
                                 "operator": "debug", "family": "memory",
                                 "reason": "the next cost",
@@ -1974,8 +1993,8 @@ def check_launch_attaches_monitoring():
     def _targets():
         return lm.describe().get("targets") or []
 
-    def _decl(nid):
-        return et.declare(comp, {"id": nid, "change": f"try {nid}", "hypothesis": "h",
+    def _mk_decl(nid):
+        return _decl(et, comp, {"id": nid, "change": f"try {nid}", "hypothesis": "h",
                                  "parent": None, "operator": "draft", "family": "sampling",
                                  "reason": "because",
                                  "diagnosis": "none",
@@ -1995,7 +2014,7 @@ def check_launch_attaches_monitoring():
                "https://www.kaggle.com/code/tester/nb-auto-monitor", "")
 
         lm.reset()
-        check(_decl("e1").get("ok"), "seed: a declaration")
+        check(_mk_decl("e1").get("ok"), "seed: a declaration")
         r = ks.tool_call("kaggle_kernel_launch",
                          {"folder": _nb(), "competition": comp, "declares": "e1"})
         check("monitoring:" in json.dumps(r), "a launch reports that monitoring is attached")
@@ -2003,7 +2022,7 @@ def check_launch_attaches_monitoring():
               f"the kernel just pushed is a monitor target: {_targets()}")
 
         lm.reset()
-        _decl("e2")
+        _mk_decl("e2")
         r = ks.tool_call("kaggle_kernel_launch",
                          {"folder": _nb(), "competition": comp, "declares": "e2",
                           "monitor": False})
@@ -2021,7 +2040,7 @@ def check_launch_attaches_monitoring():
 
         lm.reset()
         ks.run_kaggle = lambda cmd: (1, "", "kaggle: notebook metadata is invalid")
-        _decl("e3")
+        _mk_decl("e3")
         r = ks.tool_call("kaggle_kernel_launch",
                          {"folder": _nb(), "competition": comp, "declares": "e3"})
         check("notebook metadata is invalid" in json.dumps(r),
@@ -2092,8 +2111,8 @@ def check_local_run_is_monitored():
     def _targets():
         return lm.describe().get("targets") or []
 
-    def _decl(nid):
-        return et.declare(comp, {"id": nid, "change": f"try {nid}", "hypothesis": "h",
+    def _mk_decl(nid):
+        return _decl(et, comp, {"id": nid, "change": f"try {nid}", "hypothesis": "h",
                                  "parent": None, "operator": "draft", "family": "sampling",
                                  "reason": "because",
                                  "diagnosis": "none",
@@ -2112,7 +2131,7 @@ def check_local_run_is_monitored():
               "a local run with no competition is refused")
 
         lm.reset()
-        check(_decl("e1").get("ok"), "seed: a declaration")
+        check(_mk_decl("e1").get("ok"), "seed: a declaration")
         logfile = work / "run1.log"
         r = ks.tool_call("kaggle_local_launch",
                          {"command": [sys.executable, "-c",
@@ -2134,7 +2153,7 @@ def check_local_run_is_monitored():
               "the run's real output landed in the attached log")
 
         lm.reset()
-        _decl("e2")
+        _mk_decl("e2")
         r = ks.tool_call("kaggle_local_launch",
                          {"command": [sys.executable, "-c", "print(2)"], "cwd": str(work),
                           "competition": comp, "declares": "e2", "monitor": False,
@@ -2143,7 +2162,7 @@ def check_local_run_is_monitored():
         check("run2.log" in json.dumps(r), "but the run still starts and reports its log")
 
         lm.reset()
-        _decl("e3")
+        _mk_decl("e3")
         r = ks.tool_call("kaggle_local_launch",
                          {"command": ["definitely-not-a-real-binary-xyz"], "cwd": str(work),
                           "competition": comp, "declares": "e3"})
@@ -2386,6 +2405,9 @@ def main() -> int:
     check_transport_resilience()
     check_the_monitor_watches_content()
     check_a_node_keeps_its_recipe()
+    check_predictions_are_judged()
+    check_the_curriculum_gates_declare()
+    check_a_line_can_be_abandoned()
     check_consider_and_prune()
     check_competition_isolation()
     check_text_encoding()
@@ -2472,7 +2494,7 @@ def check_diagnosis_loop():
 
         print()
         print("=== 2. declaring without a diagnosis is refused ===")
-        d = et.declare(COMP, {"id": "e0", "change": "x", "hypothesis": "h", "parent": None,
+        d = _decl(et, COMP, {"id": "e0", "change": "x", "hypothesis": "h", "parent": None,
                               "operator": "draft", "family": "f", "reason": "r"},
                        read_revision=et.read(COMP)["revision"])
         check(not d.get("ok") and d.get("code") == "diagnosis_required",
@@ -2491,7 +2513,7 @@ def check_diagnosis_loop():
         rec = et.record(COMP, node, read_revision=et.read(COMP)["revision"])
         check(rec.get("ok"), f"the diagnosis is recorded: {rec.get('message')}")
 
-        d = et.declare(COMP, {"id": "e1", "change": "write both columns", "hypothesis": "it then passes",
+        d = _decl(et, COMP, {"id": "e1", "change": "write both columns", "hypothesis": "it then passes",
                               "parent": None, "operator": "debug", "family": "submission",
                               "reason": "the diagnosis named it", "diagnosis": "d1"},
                        read_revision=et.read(COMP)["revision"])
@@ -2499,7 +2521,7 @@ def check_diagnosis_loop():
 
         print()
         print("=== 4. the citation is checked, not trusted ===")
-        d2 = et.declare(COMP, {"id": "e2", "change": "c", "hypothesis": "h", "parent": None,
+        d2 = _decl(et, COMP, {"id": "e2", "change": "c", "hypothesis": "h", "parent": None,
                                "operator": "draft", "family": "f", "reason": "r",
                                "diagnosis": "no-such-node"},
                         read_revision=et.read(COMP)["revision"])
@@ -2508,7 +2530,7 @@ def check_diagnosis_loop():
         et.record(COMP, {"id": "r9", "kind": "research", "question": "q", "targets": ["code"],
                          "verdict": "keep", "opens": "o", "parent": None, "reason": "r"},
                   read_revision=et.read(COMP)["revision"])
-        d3 = et.declare(COMP, {"id": "e3", "change": "c", "hypothesis": "h", "parent": None,
+        d3 = _decl(et, COMP, {"id": "e3", "change": "c", "hypothesis": "h", "parent": None,
                                "operator": "draft", "family": "f", "reason": "r",
                                "diagnosis": "r9"},
                         read_revision=et.read(COMP)["revision"])
@@ -2518,13 +2540,13 @@ def check_diagnosis_loop():
         print()
         print("=== 5. the escape hatch still needs a reason ===")
         comp2 = "zz-loop-first"
-        d4 = et.declare(comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
+        d4 = _decl(et, comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
                                 "parent": None, "operator": "draft", "family": "f", "reason": "r",
                                 "diagnosis": "none"},
                          read_revision=et.read(comp2)["revision"])
         check(not d4.get("ok") and d4.get("code") == "diagnosis_reason_required",
               f"diagnosis=none without a reason is refused: {d4.get('code')}")
-        d5 = et.declare(comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
+        d5 = _decl(et, comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
                                 "parent": None, "operator": "draft", "family": "f", "reason": "r",
                                 "diagnosis": "none",
                                 "diagnosisReason": "first run of this competition, nothing to learn from yet"},
@@ -3132,7 +3154,7 @@ def check_a_node_keeps_its_recipe():
         decl = {"id": "n2", "kind": "experiment", "parent": "n1", "change": "more",
                 "hypothesis": "better", "reason": "push it", "operator": "improve",
                 "family": "tuning", "diagnosis": "none", "diagnosisReason": "baseline only"}
-        res = et.declare(comp, decl, read_revision=rev)
+        res = _decl(et, comp, decl, read_revision=rev)
         check(res.get("ok"), f"the child declaration is accepted ({res.get('message')})")
         n2 = (et.load(comp).get("tree") or {}).get("nodes", {}).get("n2") or {}
         check((n2.get("recipe") or {}).get("command") == ["python", "train.py"],
@@ -3144,6 +3166,265 @@ def check_a_node_keeps_its_recipe():
         roll = et.latest_recipes(comp)
         check("local" in roll and roll["local"]["recipe"]["command"] == ["python", "train.py"],
               f"read/rollup reports how to run it now ({roll})")
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+
+
+
+
+# ------------------------------------------------- did the result match the prediction, and why
+# A tree with scores but no predictions can only say "the number went up". It cannot say
+# "the number went up the way we thought it would", which is the difference between a result
+# that compounds and one that happened. This asserts the judging, the gate that forces a
+# prediction to exist, and the board cell that exposes a kept-but-unpredicted gain.
+def check_predictions_are_judged():
+    print("predictions are judged")
+    import json as _json
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    def check(cond, label):
+        if cond:
+            ok(label)
+        else:
+            bad(f"predictions are judged: {label}")
+
+    spec = importlib.util.spec_from_file_location("_ks_pred", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"predictions are judged: the server module loads: {exc}")
+        return
+    et = sys.modules["experiment_tree"]
+
+    # the judge, on its own, across the three verdicts and the noise floor
+    up = lambda d, s=None: {"name": "s", "parent": 0, "result": 0.3 + d, "delta": d,
+                            **({"samples": s} if s else {})}
+    check(et.judge_expectation({"direction": "up", "atLeast": 0.02}, up(0.05))["verdict"]
+          == "confirmed", "a delta past the floor is confirmed")
+    check(et.judge_expectation({"direction": "up", "atLeast": 0.05}, up(0.03))["verdict"]
+          == "partial", "right direction, short of the floor, is partial - not confirmed")
+    check(et.judge_expectation({"direction": "up", "atLeast": 0.02}, up(-0.02))["verdict"]
+          == "refuted", "the wrong direction is refuted")
+    check(et.judge_expectation({"direction": "up", "atLeast": 0.02}, up(0.0))["verdict"]
+          == "refuted", "no movement at all is refuted, not a weak win")
+    noisy = et.judge_expectation({"direction": "up", "atLeast": 0.01},
+                                 up(0.02, {"n": 4, "mean": 0.32, "std": 0.05}))
+    check(noisy["verdict"] == "partial" and noisy["floorFrom"] == "noise",
+          "a measured noise floor above the prediction downgrades it to partial")
+    check(et.judge_expectation(None, up(0.05))["verdict"] == "unreadable",
+          "no prediction is unreadable, not silently fine")
+
+    # declare refuses a node with no prediction, and accepts one with
+    home = _tempfile.mkdtemp(prefix="ka-check-pred-")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    comp = "zz-pred"
+    try:
+        t = et.load(comp); t["tree"] = {"base": None, "nodes": {}}; t["revision"] = 0
+        et.save(comp, t)
+        base = {"id": "b1", "kind": "experiment", "parent": None, "change": "seed",
+                "hypothesis": "h",
+                "metric": {"name": "s", "parent": 0.0, "result": 0.3, "delta": 0.3,
+                           "rank": 1, "rankSource": "local"},
+                "verdict": "keep", "reason": "r", "operator": "draft", "family": "base",
+                "evidence": "local-only"}
+        et.record(comp, base, read_revision=0)
+        rev = et.read(comp)["revision"]
+        d = {"id": "n1", "kind": "experiment", "parent": "b1", "change": "c", "hypothesis": "h",
+             "reason": "r", "operator": "improve", "family": "opt",
+             "diagnosis": "none", "diagnosisReason": "base only"}
+        miss = et.declare(comp, d, read_revision=rev)
+        check(not miss.get("ok") and miss.get("code") == "expect_required",
+              f"declare refuses a node with no prediction ({miss.get('code')})")
+        d["expect"] = {"direction": "up", "atLeast": 0.05}
+        ok_decl = et.declare(comp, d, read_revision=rev)
+        check(ok_decl.get("ok"), f"a declaration with a prediction is accepted "
+                                 f"({ok_decl.get('message')})")
+
+        # settle carries the prediction over and judges it
+        res = {"id": "r1", "kind": "experiment", "parent": "n1", "change": "c",
+               "hypothesis": "h",
+               "metric": {"name": "s", "parent": 0.3, "result": 0.32, "delta": 0.02,
+                          "rank": 2, "rankSource": "local"},
+               "verdict": "keep", "reason": "gained a little", "operator": "improve",
+               "family": "opt", "evidence": "local-only"}
+        s = et.settle(comp, "n1", res, read_revision=et.read(comp)["revision"])
+        stored = (et.load(comp).get("tree") or {}).get("nodes", {}).get("r1") or {}
+        check((stored.get("expectation") or {}).get("verdict") == "partial",
+              f"settle judges the prediction against the result "
+              f"({(stored.get('expectation') or {}).get('verdict')})")
+        check((stored.get("expectation") or {}).get("why"),
+              "and records why, not just a label")
+
+        # the board surfaces the kept-but-unpredicted cell
+        board = et.experience_board(et.load(comp))
+        check(board["expectations"]["keptNotAsPredicted"] == 1,
+              f"board counts a kept node that worked for the wrong reason "
+              f"({board['expectations']})")
+        rendered = _json.dumps(ks.safe_tool_call(
+            "kaggle_experiment_tree", {"action": "board", "competition": comp}))
+        check("kept but NOT as predicted" in rendered,
+              "and the rendered board names that cell explicitly")
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+
+
+# ------------------------------------------------------------- the curriculum is a gate, not advice
+# Simple-to-hard is enforced here, not suggested: a hard stage before the easy one has passed
+# usually fails for a reason unrelated to the idea, and that failure gets recorded as evidence
+# against the idea. The override exists so a deliberate skip is still possible.
+def check_the_curriculum_gates_declare():
+    print("the curriculum gates declare")
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    def check(cond, label):
+        if cond:
+            ok(label)
+        else:
+            bad(f"the curriculum gates declare: {label}")
+
+    spec = importlib.util.spec_from_file_location("_ks_curr", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the curriculum gates declare: the server module loads: {exc}")
+        return
+    et = sys.modules["experiment_tree"]
+
+    home = _tempfile.mkdtemp(prefix="ka-check-curr-")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    comp = "zz-curr"
+    try:
+        t = et.load(comp); t["tree"] = {"base": None, "nodes": {}}; t["revision"] = 0
+        et.save(comp, t)
+        ladder = [{"name": "smoke", "passesWhen": "runs end to end"},
+                  {"name": "scale", "passesWhen": "beats the baseline"}]
+        setr = et.set_stage(comp, curriculum=ladder, read_revision=0)
+        check(setr.get("ok"), f"a curriculum is declared ({setr.get('message')})")
+        check(et.load(comp).get("stage") == "smoke",
+              "and the search starts at the simplest stage")
+
+        _seq = [0]
+
+        def decl(stage, override=None):
+            _seq[0] += 1
+            d = {"id": f"n{_seq[0]}", "kind": "experiment",
+                 "parent": None, "change": "c", "hypothesis": "h", "reason": "r",
+                 "operator": "draft", "family": "f", "diagnosis": "none",
+                 "diagnosisReason": "first", "expect": {"direction": "up", "atLeast": 0.01}}
+            if stage:
+                d["stage"] = stage
+            if override:
+                d["stageOverride"] = override
+            return et.declare(comp, d, read_revision=et.read(comp)["revision"])
+
+        locked = decl("scale")
+        check(not locked.get("ok") and locked.get("code") == "stage_locked",
+              f"declaring the hard stage first is refused ({locked.get('code')})")
+        over = decl("scale", "the harness is already configured for the full run")
+        check(over.get("ok"), "a deliberate skip with a stated reason is accepted")
+        easy = decl("smoke", None)
+        check(easy.get("ok"), "declaring at the current stage is fine")
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+
+
+# ------------------------------------------------ giving up a line: summarise, isolate, delete nothing
+# Abandoning a whole direction has no way to be said without these, and a half-measure here
+# (delete the folder, keep the node) loses the reason; (keep the folder, mark the node) leaves
+# the next run writing into the abandoned line. This asserts the summary, the marking, the file
+# move, and that nothing is destroyed.
+def check_a_line_can_be_abandoned():
+    print("a line can be abandoned")
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    def check(cond, label):
+        if cond:
+            ok(label)
+        else:
+            bad(f"a line can be abandoned: {label}")
+
+    spec = importlib.util.spec_from_file_location("_ks_aband", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"a line can be abandoned: the server module loads: {exc}")
+        return
+    et = sys.modules["experiment_tree"]
+
+    home = _tempfile.mkdtemp(prefix="ka-check-abandon-")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    comp = "zz-abandon"
+    try:
+        t = et.load(comp); t["tree"] = {"base": None, "nodes": {}}; t["revision"] = 0
+        et.save(comp, t)
+        base = {"id": "b1", "kind": "experiment", "parent": None, "change": "seed",
+                "hypothesis": "h",
+                "metric": {"name": "s", "parent": 0.0, "result": 0.3, "delta": 0.3,
+                           "rank": 1, "rankSource": "local"},
+                "verdict": "keep", "reason": "r", "operator": "draft", "family": "base",
+                "evidence": "local-only"}
+        et.record(comp, base, read_revision=0)
+        et.branch_paths(comp, "bad", read_revision=et.read(comp)["revision"])
+        d = {"id": "n1", "kind": "experiment", "parent": "b1", "change": "radical",
+             "hypothesis": "h", "reason": "r", "operator": "improve", "family": "rad",
+             "diagnosis": "none", "diagnosisReason": "base only", "branch": "bad",
+             "expect": {"direction": "up", "atLeast": 0.1}}
+        et.declare(comp, d, read_revision=et.read(comp)["revision"])
+        res = {"id": "r1", "kind": "experiment", "parent": "n1", "change": "radical",
+               "hypothesis": "h",
+               "metric": {"name": "s", "parent": 0.3, "result": 0.2, "delta": -0.1,
+                          "rank": 3, "rankSource": "local"},
+               "verdict": "revert", "reason": "much worse", "operator": "improve",
+               "family": "rad", "evidence": "local-only", "failureLayer": "metric",
+               "cost": {"quotaHours": 1.5}}
+        et.settle(comp, "n1", res, read_revision=et.read(comp)["revision"])
+        # a real file in the branch, so the move is real
+        bdir = et.branch_dir(comp, "bad")
+        _os.makedirs(bdir, exist_ok=True)
+        Path(bdir, "model.pt").write_text("weights", encoding="utf-8")
+
+        ab = et.abandon(comp, "n1", "this direction is not worth more quota", branch="bad",
+                        read_revision=et.read(comp)["revision"])
+        check(ab.get("ok"), f"the line is abandoned ({ab.get('message')})")
+        s = ab.get("summary") or {}
+        check(s.get("quotaHours") == 1.5, f"the summary keeps the quota spent "
+                                          f"({s.get('quotaHours')})")
+        check(s.get("refutedOrPartialExpectations") == 1,
+              f"and counts the missed prediction ({s.get('refutedOrPartialExpectations')})")
+        qdir = et.quarantine_dir(comp, "bad")
+        check(not _os.path.isdir(bdir), "the branch folder is moved, not left in place")
+        check(Path(qdir, "model.pt").is_file(), "and the file is intact in quarantine")
+        nodes = et.load(comp)["tree"]["nodes"]
+        check(et.is_abandoned(nodes["n1"]) and et.is_abandoned(nodes["r1"]),
+              "both the declaration and its result are marked abandoned")
+        check(not et.is_abandoned(nodes["b1"]), "and nothing outside the line is touched")
+        # the abandoned line drops out of the search
+        sel = et.select_next(et.load(comp))
+        ids = {r["id"] for r in sel.get("ranking", []) if r.get("eligible")}
+        check("n1" not in ids and "r1" not in ids,
+              f"an abandoned line is no longer selectable ({sorted(ids)})")
+
+        # undo puts the marks AND the files back
+        u = et.undo(comp)
+        check(u.get("ok") and u.get("undone") == "abandon", f"abandon is undoable ({u})")
+        check(Path(bdir, "model.pt").is_file(), "and undo puts the files back where they were")
+        check(not et.is_abandoned(et.load(comp)["tree"]["nodes"]["n1"]),
+              "and clears the mark")
     finally:
         _os.environ.pop("KAGGLE_AGENT_HOME", None)
         _shutil.rmtree(home, ignore_errors=True)

@@ -159,10 +159,124 @@ def _(ks, js):
         et.declare(comp, {"id": "n2", "kind": "experiment", "parent": "n1",
                           "change": "more", "hypothesis": "better", "reason": "push",
                           "operator": "improve", "family": "tuning",
-                          "diagnosis": "none", "diagnosisReason": "baseline only"},
+                          "diagnosis": "none", "diagnosisReason": "baseline only",
+                          "expect": {"direction": "up", "atLeast": 0.01}},
                    read_revision=rev)
         n2 = (et.load(comp).get("tree") or {}).get("nodes", {}).get("n2") or {}
         return not n2.get("recipe")  # no inherited recipe is the failure
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+
+
+@case("declare with no prediction (the gate the search relies on)",
+      "declare refuses a node with no prediction")
+def _(ks, js):
+    import experiment_tree as et
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+    home = _tempfile.mkdtemp(prefix="ka-ce-expect-")
+    old = _os.environ.get("KAGGLE_AGENT_HOME")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    try:
+        comp = "ce-expect"
+        t = et.load(comp); t["tree"] = {"base": None, "nodes": {}}; t["revision"] = 0
+        et.save(comp, t)
+        base = {"id": "b1", "kind": "experiment", "parent": None, "change": "seed",
+                "hypothesis": "h",
+                "metric": {"name": "s", "parent": 0.0, "result": 0.3, "delta": 0.3,
+                           "rank": 1, "rankSource": "local"},
+                "verdict": "keep", "reason": "r", "operator": "draft", "family": "base",
+                "evidence": "local-only"}
+        et.record(comp, base, read_revision=0)
+        d = {"id": "n1", "kind": "experiment", "parent": "b1", "change": "c",
+             "hypothesis": "h", "reason": "r", "operator": "improve", "family": "opt",
+             "diagnosis": "none", "diagnosisReason": "base"}
+        res = et.declare(comp, d, read_revision=et.read(comp)["revision"])
+        return res.get("ok")  # ACCEPTED is the failure: nothing forces a prediction
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+
+
+@case("a kept node whose prediction was refuted, hidden from the tally",
+      "board counts a kept node that worked for the wrong reason")
+def _(ks, js):
+    import experiment_tree as et
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+    home = _tempfile.mkdtemp(prefix="ka-ce-surprise-")
+    old = _os.environ.get("KAGGLE_AGENT_HOME")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    try:
+        nodes = {
+            "b1": {"kind": "experiment", "verdict": "keep", "change": "seed",
+                   "metric": {"name": "s", "parent": 0.0, "result": 0.3, "delta": 0.3}},
+            # gained, was kept, and was NOT predicted: the cell that teaches.
+            "r1": {"kind": "experiment", "verdict": "keep", "change": "c",
+                   "metric": {"name": "s", "parent": 0.3, "result": 0.35, "delta": 0.05},
+                   "expectation": {"verdict": "partial"}},
+        }
+        tree = {"tree": {"base": {"id": "b1"}, "nodes": nodes}, "revision": 1}
+        tally = et._expectation_tally(nodes)
+        # If the tally only counted confirmations, this number would be 0.
+        return tally.get("keptNotAsPredicted") != 1
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+
+
+@case("a curriculum that does not gate (declaring the hard stage succeeds)",
+      "declaring the hard stage first is refused")
+def _(ks, js):
+    import experiment_tree as et
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+    home = _tempfile.mkdtemp(prefix="ka-ce-stage-")
+    old = _os.environ.get("KAGGLE_AGENT_HOME")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    try:
+        comp = "ce-stage"
+        t = et.load(comp); t["tree"] = {"base": None, "nodes": {}}; t["revision"] = 0
+        et.save(comp, t)
+        et.set_stage(comp, curriculum=[{"name": "smoke"}, {"name": "scale"}],
+                     read_revision=0)
+        d = {"id": "n1", "kind": "experiment", "parent": None, "change": "c",
+             "hypothesis": "h", "reason": "r", "operator": "draft", "family": "f",
+             "diagnosis": "none", "diagnosisReason": "f", "stage": "scale",
+             "expect": {"direction": "up", "atLeast": 0.01}}
+        res = et.declare(comp, d, read_revision=et.read(comp)["revision"])
+        return res.get("ok")  # ACCEPTED is the failure: the stage did not lock
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
+
+
+@case("abandon that deletes the branch folder instead of moving it",
+      "the branch folder is moved, not left in place")
+def _(ks, js):
+    import experiment_tree as et
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+    from pathlib import Path as _P
+    home = _tempfile.mkdtemp(prefix="ka-ce-aband-")
+    old = _os.environ.get("KAGGLE_AGENT_HOME")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    try:
+        comp = "ce-aband"
+        t = et.load(comp); t["tree"] = {"base": None, "nodes": {}}; t["revision"] = 0
+        et.save(comp, t)
+        bdir = et.branch_dir(comp, "bad")
+        _os.makedirs(bdir, exist_ok=True)
+        _P(bdir, "model.pt").write_text("w", encoding="utf-8")
+        # The destroy-it variant: remove the folder instead of moving it aside. The
+        # instrument must then find the file GONE from quarantine - which is the harm.
+        _shutil.rmtree(bdir)
+        return not _P(et.quarantine_dir(comp, "bad"), "model.pt").exists()
     finally:
         _os.environ.pop("KAGGLE_AGENT_HOME", None)
         _shutil.rmtree(home, ignore_errors=True)

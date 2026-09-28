@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "kaggle-agent",
   "displayName": "Kaggle Agent",
-  "version": "1.22.0",
+  "version": "1.23.0",
   "description": "Kaggle as composable tools and workflows, organised into four categories: identity and accounts, competition research, experiment execution, and collaboration. Multi-account quota named after Kaggle usernames; two-wave competition research where wave 1 launches four Kaggle-native subagents in one response and wave 2 runs sequentially in the main thread, the general browser search through the deep-research skill with a hard requirement that GitHub, Hugging Face and arXiv are genuinely opened and parsed, then a reusable competition-browser subagent for source forensics; ablation experiment trees; 12h-capped notebook runs with verified-accelerator checks and safe backup-before-retire; subagent-delegated log monitoring with a live-adjustable fetch interval; presence mode that asks often when the user is watching and advances unattended with recorded, reversible defaults when they are away; and a cross-session/cross-agent handoff document with optional zero-dependency GitHub sync. GenUI widgets are strictly bound to the business skill and decision point that owns them, and share one forked foundation plus one component library.",
   "author": "Akira",
   "icon": "icon.png",
