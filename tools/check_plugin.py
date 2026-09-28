@@ -1000,6 +1000,281 @@ def check_failure_layer_and_anchor():
     check(not r4["ok"], "a node scored on the held-out set is rejected once the anchor is declared")
 
 
+# ---------------------------------------------------------------- ablation arithmetic
+_CTL = {"seed": 1, "budget": "s", "eval": "v", "retrain": "re-eval"}
+
+
+def _ab(nid, factors, result, parent=None, controls=None, **extra):
+    """A bare experiment node for the ablation arithmetic (no metric ceremony needed)."""
+    n = {"id": nid, "kind": "experiment", "parent": parent, "change": "swap one thing",
+         "hypothesis": "h", "metric": {"name": "s", "parent": 0.0, "result": result,
+                                       "delta": result, "rank": 1, "rankSource": "local",
+                                       "direction": "higher"},
+         "verdict": "keep", "reason": "r", "artifacts": ["a"], "evidence": "local-only",
+         "operator": "improve", "family": "f"}
+    if factors is not None:
+        n["factors"] = factors
+    if controls is not None:
+        n["controls"] = controls
+    n.update(extra)
+    return n
+
+
+def _ab_tree(nodes, base=None):
+    return {"base": base, "nodes": nodes}
+
+
+def check_ablation_arithmetic():
+    print("ablation arithmetic")
+    et, _ = _probe_tree()
+
+    # factors=[] is the bare model, not an absent field. This one line is the difference between
+    # an ablation table and a table that quietly starts one row too low.
+    check(et._factor_set({"factors": []}) == frozenset(),
+          "an empty factor list is the bare model, not an unrecorded one")
+    check(et._factor_set({"factors": ["A", "b", "A"]}) == frozenset({"a", "b"}),
+          "factors are folded to lower-case slugs and de-duplicated")
+    check(et._factor_set({}) is None,
+          "an absent factors field is still None - unknown stays unknown")
+    n = et.normalize_node({"factors": ["B", "a"]})
+    check(n["factors"] == ["a", "b"], "normalize_node sorts a factor set deterministically")
+    check(et.normalize_node({"factorsIntent": "FACTORIAL"})["factorsIntent"] == "factorial",
+          "normalize_node folds the intent too")
+    check(et.normalize_node({"factors": []})["factors"] == [],
+          "normalize_node keeps the bare-model arm instead of dropping it")
+
+    # --- the case the rule was written for: bare -> +a -> +a+b, and no standalone b arm
+    ladder = _ab_tree({
+        "n0": _ab("n0", [], 0.50, controls=_CTL),
+        "n1": _ab("n1", ["a"], 0.60, parent="n0", controls=_CTL),
+        "n2": _ab("n2", ["a", "b"], 0.75, parent="n1", controls=_CTL),
+    })
+    t = et.ablation_table(ladder)
+    check(t["baseline"] and t["baseline"]["node"] == "n0",
+          f"the bare arm is the baseline (got {t['baseline']}) - it was being dropped from its "
+          f"own table because an empty list read as absent")
+    check(len(t["edges"]) == 2, "each one-factor step is an edge")
+    check(all(e["direction"] == "add" for e in t["edges"]),
+          "direction is read off the parent link, so an upward ladder reads as additions")
+    check(t["interactions"] == [],
+          "a pair with no standalone arm produces NO interaction - the degenerate triple used "
+          "to print a confident 0.00, which reads exactly like independence")
+    cond = {c["factor"]: c for c in t["conditional"]}
+    check("a" not in cond, "a was measured on the bare arm, so its effect needs no caveat")
+    check(cond.get("b", {}).get("shape") == "add-one-in",
+          f"b was only ever added on top of a, and is named as such (got {cond.get('b')})")
+    check("in that company" in cond.get("b", {}).get("note", ""),
+          "the caveat says what the number actually is: b's effect alongside a")
+
+    # --- leave-one-out: same edges, read from the other end
+    loo = _ab_tree({
+        "m0": _ab("m0", ["a", "b", "c"], 0.90, controls=_CTL),
+        "m1": _ab("m1", ["a", "b"], 0.70, parent="m0", controls=_CTL),
+        "m2": _ab("m2", ["a", "c"], 0.68, parent="m0", controls=_CTL),
+        "m3": _ab("m3", ["b", "c"], 0.66, parent="m0", controls=_CTL),
+    })
+    t2 = et.ablation_table(loo)
+    check(t2["baseline"] is None,
+          "a leave-one-out family has no bare arm, and the table says so instead of promoting "
+          "an arbitrary pair to baseline")
+    check({e["factor"] for e in t2["edges"]} == {"a", "b", "c"},
+          "every factor is isolated by dropping it")
+    check(all(e["direction"] == "drop" for e in t2["edges"]),
+          "the same table reads as removals for a family declared as removals")
+    check(t2["gaps"] == [], "nothing is missing when every factor has an isolating comparison")
+    check(all(c["shape"] == "leave-one-out" for c in t2["conditional"]),
+          "the family is recognised as leave-one-out, and told its deltas do not add up")
+
+    # --- a factorial arm needs four DISTINCT arms before an interaction exists
+    fac = _ab_tree({
+        "f0": _ab("f0", [], 0.50, controls=_CTL),
+        "f1": _ab("f1", ["a"], 0.60, parent="f0", controls=_CTL),
+        "f2": _ab("f2", ["b"], 0.62, parent="f0", controls=_CTL),
+        "f3": _ab("f3", ["a", "b"], 0.95, parent="f1", controls=_CTL,
+                  factorsIntent="factorial"),
+    })
+    t3 = et.ablation_table(fac)
+    check(len(t3["interactions"]) == 1, "four distinct arms make exactly one interaction")
+    it = t3["interactions"][0]
+    check(abs(it["interaction"] - 0.23) < 1e-9,
+          f"the interaction is joint minus the parts, not the joint (got {it['interaction']})")
+    check(it["kind"] == "synergistic", "a pair doing more than the sum is called synergistic")
+    check(t3["size"]["complete"] and t3["size"]["fullFactorialArms"] == 4,
+          "the factorial size is reported, so a half-covered grid does not look finished")
+
+    # --- noise: a repeated configuration is the only free measurement of it
+    rep = _ab_tree({
+        "r0": _ab("r0", [], 0.50, controls=_CTL),
+        "r0b": _ab("r0b", [], 0.52, parent="r0", controls=_CTL, factorsIntent="repeat"),
+        "r1": _ab("r1", ["a"], 0.53, parent="r0", controls=_CTL),
+        "r2": _ab("r2", ["a", "b"], 0.80, parent="r1", controls=_CTL),
+    })
+    t4 = et.ablation_table(rep)
+    check(abs((t4["noise"] or 0) - 0.02) < 1e-9,
+          f"repeated configurations give the noise floor (got {t4['noise']})")
+    check(any(e["kind"] == "indistinguishable" for e in t4["edges"]),
+          "a delta inside the noise floor is not evidence and is marked so")
+    check(all(not e["without"] == "r0b" and not e["with"] == "r0b" or e["direction"] != "repeat"
+              for e in t4["edges"]),
+          "a repeat is not an edge - identical factor sets isolate nothing")
+    check(t4["repeats"] and t4["repeats"][0]["nodes"] == ["r0", "r0b"],
+          "the repeat is reported, because it is what the noise estimate rests on")
+
+    # --- controls that disagree make a delta unattributable, and say which one
+    conf = _ab_tree({
+        "c0": _ab("c0", [], 0.50, controls=_CTL),
+        "c1": _ab("c1", ["a"], 0.62, parent="c0", controls=dict(_CTL, seed=7)),
+    })
+    t5 = et.ablation_table(conf)
+    check(t5["edges"] and t5["edges"][0]["attributable"] is False,
+          "an edge whose arms disagree on a control is not attributable")
+    check(t5["confounds"] and "seed" in t5["confounds"][0]["differ"][0],
+          f"the table names the control that moved (got {t5['confounds']})")
+    check("not comparable" in t5["note"], "the note leads with the confound, not the numbers")
+
+    # --- a factor that never took part in any comparison is named as missing
+    lone = _ab_tree({
+        "z0": _ab("z0", ["a", "b", "c"], 0.70, controls=_CTL),
+        "z1": _ab("z1", ["a", "b"], 0.60, parent="z0", controls=_CTL),
+    })
+    t6 = et.ablation_table(lone)
+    check(any("'a'" in g for g in t6["gaps"]) and any("'b'" in g for g in t6["gaps"]),
+          f"a factor that only ever ran inside a combination is reported missing "
+          f"(got {t6['gaps']})")
+    check(not any("'c'" in g for g in t6["gaps"]),
+          "c was isolated by the drop, so it is not reported missing - a gap that names a factor "
+          "which does have an arm sends people to run an experiment they already ran")
+    check(any("added" in g and "removed" in g for g in t6["gaps"]),
+          "the missing arm is named in both directions, because a leave-one-out family needs "
+          "the removal and an add-one-in ladder needs the addition")
+
+    # --- an empty tree says what to record rather than printing an empty table
+    empty = et.ablation_table(_ab_tree({}))
+    check(empty["rows"] == [] and "factors" in empty["note"],
+          "an empty tree explains how to start one")
+
+    # --- the gates, exercised through the real write path
+    et._write("abl", et.empty_tree())
+    base = _v3_node("b1", None, 0.50, 0.0, "draft", "f")
+    base["factors"] = ["a"]
+    base["controls"] = dict(_CTL)
+    check(et.record("abl", base, read_revision=et.read("abl")["readRevision"])["ok"],
+          "the bare first arm records")
+
+    def _try(nd):
+        return et.record("abl", nd, read_revision=et.read("abl")["readRevision"])
+
+    two = _v3_node("b2", "b1", 0.70, 0.2, "improve", "f")
+    two["factors"] = ["a", "b", "c"]
+    two["controls"] = dict(_CTL)
+    r = _try(two)
+    check(not r["ok"], "changing two factors at once is refused - no conjunction word required")
+    check(any("2 factors" in p for p in r.get("problems", [])),
+          f"the refusal states the arithmetic (got {r.get('problems')})")
+    two["factorsIntent"] = "factorial"
+    check(_try(two)["ok"], "declaring it a factorial arm is the way through")
+
+    same = _v3_node("b3", "b2", 0.72, 0.02, "improve", "f")
+    same["factors"] = ["a", "b", "c"]
+    same["controls"] = dict(_CTL)
+    r = _try(same)
+    check(not r["ok"], "a run with the same factors as its parent is refused")
+    check(any("seed" in p for p in r.get("problems", [])),
+          "the refusal says the delta measures the seed rather than a factor")
+    same["factorsIntent"] = "repeat"
+    check(_try(same)["ok"], "declaring it a repeat is the way through")
+
+    seeded = _v3_node("b4", "b3", 0.74, 0.02, "improve", "f")
+    seeded["factors"] = ["a", "b", "c", "d"]
+    seeded["controls"] = dict(_CTL, seed=99)
+    r = _try(seeded)
+    check(not r["ok"], "a run that changed a control as well as a factor is refused")
+    check(any("disagree about" in p for p in r.get("problems", [])),
+          f"the refusal names the control that moved (got {r.get('problems')})")
+    seeded["confoundReason"] = "the seed is the experiment"
+    check(_try(seeded)["ok"], "saying why the control moved is the way through")
+
+    quiet = _v3_node("b5", "b4", 0.76, 0.02, "improve", "f")
+    check("factors" not in quiet and "controls" not in quiet,
+          "the probe really is a node that says nothing about factors or controls")
+    check(_try(quiet)["ok"],
+          "a node that records no factors and no controls is still writable - refusing it would "
+          "have rejected every tree ever recorded, which is what happened once already")
+    check(not any("controls" in p for p in (_try(quiet).get("problems") or [])),
+          "silence about controls is not the same as a disagreement about them")
+
+    bad_slug = _v3_node("b6", "b5", 0.78, 0.02, "improve", "f")
+    bad_slug["factors"] = ["two words and a space"]
+    r = _try(bad_slug)
+    check(not r["ok"], "a factor that is not one slug is refused")
+    check(any("end to end" in p for p in r.get("problems", [])),
+          f"the slug rule is anchored, not a prefix match (got {r.get('problems')})")
+
+    bad_retrain = _v3_node("b7", "b5", 0.78, 0.02, "improve", "f")
+    bad_retrain["factors"] = ["a"]
+    bad_retrain["controls"] = {"retrain": "sometimes"}
+    check(not _try(bad_retrain)["ok"],
+          "retrain must be from-scratch or re-eval, because they answer different questions")
+
+    bad_intent = _v3_node("b8", "b5", 0.78, 0.02, "improve", "f")
+    bad_intent["factors"] = ["a"]
+    bad_intent["factorsIntent"] = "vibes"
+    check(not _try(bad_intent)["ok"], "an invented factorsIntent is refused")
+
+    # --- a declaration is an announcement, not an arm
+    et._write("abl2", et.empty_tree())
+    check(et.record("abl2", _ab("p0", ["a"], 0.50, controls=_CTL),
+                    read_revision=0)["ok"], "the arm before the declaration lands")
+    decl = {"id": "p1", "kind": "experiment", "parent": "p0", "change": "add b",
+            "hypothesis": "h", "reason": "r", "operator": "improve", "family": "f",
+            "factors": ["a", "b"], "controls": dict(_CTL),
+            "diagnosis": "none", "diagnosisReason": "ladder",
+            "expect": {"direction": "up", "atLeast": 0.01}}
+    check(et.declare("abl2", decl, read_revision=et.read("abl2")["readRevision"])["ok"],
+          "a declaration carrying factors is accepted")
+    landed = _ab("p1r", ["a", "b"], 0.62, parent="p1")
+    landed["operator"], landed["family"] = "improve", "f"
+    res = et.settle("abl2", "p1", landed, read_revision=et.read("abl2")["readRevision"])
+    check(res.get("ok"),
+          f"the settled run is accepted - a declaration carries the factors the run WILL have, "
+          f"so measuring the run against its own announcement always reads as 'nothing changed' "
+          f"and every settle in the tree would be refused (got {res.get('problems')})")
+    nodes2 = et.load("abl2")["tree"]["nodes"]
+    check(et._comparison_parent(nodes2, nodes2["p1r"]) == "p0",
+          "a settled run is measured against the arm its declaration was measured against")
+    check(nodes2["p1"].get("status") == "planned",
+          "the declaration is still marked planned, which is how the walk knows to step over it")
+    ladder2 = et.ablation_table(et.load("abl2"))
+    check([r["node"] for r in ladder2["rows"]] == ["p0", "p1r"],
+          "the declaration itself is not an arm in the table - it has no result to place")
+    check(ladder2["edges"] and ladder2["edges"][0]["direction"] == "add",
+          f"a declared-and-settled ladder step reads as an addition through the declaration "
+          f"(got {[(e['factor'], e['direction']) for e in ladder2['edges']]})")
+
+    # --- the action is actually reachable
+    srv = SERVER_PY.read_text(encoding="utf-8")
+    check('"board", "ablate"' in srv, "kaggle_experiment_tree exposes the ablate action")
+    check('action == "ablate"' in srv and "ablation_table_response" in srv,
+          "ablate is wired to the ablation table rather than left dangling")
+    check("ablate," in srv, "the unknown-action hint lists ablate")
+    check("factorsIntent" in srv and "confoundReason" in srv,
+          "the node schema tells the caller about the escape hatches, not just the rule")
+
+    # the skill has to teach the shape, or the rule is only discoverable by hitting it
+    doc = (ROOT / "skills" / "rsi-experiment-tree" / "SKILL.md").read_text(encoding="utf-8")
+    for token, why in (("factors", "what was switched on"),
+                       ("factorsIntent", "the declared exceptions"),
+                       ("confoundReason", "the declared control change"),
+                       ('action="ablate"', "how to read the table"),
+                       ("from-scratch", "the retrain axis")):
+        check(token in doc, f"SKILL.md documents {token} ({why})")
+    check("leave-one-out" in doc and "add-one-in" in doc,
+          "SKILL.md names both directions, because the table serves both")
+    check("0.00" in doc,
+          "SKILL.md says what a degenerate interaction looks like - a flat zero that reads as "
+          "independence is the failure, not a rounding detail")
+
+
 def check_undo_and_rounds():
     print("undo and round archival")
     et, _ = _probe_tree()
@@ -2380,6 +2655,7 @@ def main() -> int:
     check_failure_layer_and_anchor()
     check_undo_and_rounds()
     check_migration_v2_to_v3()
+    check_ablation_arithmetic()
     check_decision_coupling()
     check_tree_ownership()
     check_runtime_behaviour()

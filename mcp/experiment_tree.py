@@ -254,6 +254,31 @@ DEFAULT_CRITERION_ROLE = "observe"
 # floor is what makes "confirmed" and "refuted" different claims.
 EXPECTATION_VERDICTS = ("confirmed", "partial", "refuted", "unreadable")
 
+# --------------------------------------------------------------------- what an ablation compares
+# "Changes one thing" was a promise in prose, and prose is not checkable. Representing a run as
+# the SET of factors it had turns the promise into arithmetic: a child differs from its parent
+# by a symmetric difference, and that difference has to be exactly one factor. Two changes in
+# one node stops being a wording problem and becomes a set problem.
+#
+# The set is also what makes an ablation table possible at all. With A, A+B and B recorded as
+# factor sets, the interaction - delta(A+B) minus delta(A) plus delta(B) - is a subtraction
+# rather than a recollection, and a claim about B can finally be told apart from a claim about
+# A+B: without a standalone B arm, "B helps" is really "B together with A helps", and those
+# are different claims with different consequences for what to try next.
+#
+# `controls` exists for the confound that makes such a table quietly wrong: two arms measured
+# under different seeds, budgets, eval sets or retrain policies did not differ by one factor,
+# they differed by however many things changed between those two runs. Recording the controls
+# makes that difference visible instead of invisible.
+FACTOR_RE = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
+CONTROL_KEYS = ("seed", "budget", "eval", "retrain")
+VALID_RETRAIN = ("from-scratch", "re-eval")
+# What a run says it is doing when the factor arithmetic alone cannot tell. A factorial arm
+# changes two factors and means it; a repeat changes none and is measuring noise. Both are
+# legitimate, and both used to be indistinguishable from a mistake at the only moment it
+# mattered - after the run, when someone reads the delta.
+VALID_INTENT = ("one-factor", "factorial", "repeat")
+
 # Words that turn one experiment into two. "and" is the giveaway, but so are a few others that
 # reliably mean the node is describing a pipeline rather than a single variable.
 CONJUNCTIONS = (" and ", " then ", " plus ", " 同时 ", " 以及 ")
@@ -1027,7 +1052,511 @@ def normalize_node(node: Any) -> Any:
         for c in criteria:
             if isinstance(c, dict) and not str(c.get("role") or "").strip():
                 c["role"] = DEFAULT_CRITERION_ROLE
+    # A factor set is repaired rather than rejected, like a list: the tool boundary collapses
+    # single-element lists to bare strings, and a factors list that arrives mangled would
+    # otherwise make an ablation unreadable exactly when it was being recorded.
+    if out.get("factors") is not None:
+        out["factors"] = sorted({str(x).strip().lower()
+                                 for x in _normalize_list(out["factors"])
+                                 if str(x or "").strip()})
+    intent = out.get("factorsIntent")
+    if intent is not None:
+        out["factorsIntent"] = str(intent).strip().lower() or "one-factor"
+    controls = out.get("controls")
+    if isinstance(controls, dict):
+        out["controls"] = {k: controls[k] for k in CONTROL_KEYS if controls.get(k) not in (None, "")}
     return out
+
+
+def _comparison_parent(nodes: dict[str, Any], node: Any) -> Optional[str]:
+    """The run this one is actually measured against, skipping over declarations.
+
+    A declaration is an announcement, not an arm: it carries the factors the run WILL have,
+    because that is the whole point of announcing it before the run. Measuring the result
+    against its own declaration therefore always comes out as "nothing changed" - which the
+    symmetric-difference gate correctly reads as an undeclared repeat, and refuses every
+    settled node in the tree. The run is measured against whatever the declaration was
+    measured against.
+    """
+    seen: set[str] = set()
+    pid = (node or {}).get("parent") if isinstance(node, dict) else None
+    while pid and pid in nodes and pid not in seen:
+        seen.add(pid)
+        candidate = nodes.get(pid) or {}
+        if str(candidate.get("status") or "") != "planned":
+            return pid
+        pid = candidate.get("parent")
+    return None
+
+
+def _validate_factors(where: str, node: dict[str, Any], nodes: dict[str, Any]) -> list[str]:
+    """Check that a run changed one factor, and that its comparison against its parent holds.
+
+    These are the checks the word "and" cannot do. A node can describe a two-factor change in a
+    single confident sentence, and the conjunction check will never see it; the factor sets
+    will, because the symmetric difference comes out at two. Recording both arms as factor sets
+    is also the only way the interaction term is ever computable, so this is not just a guard -
+    it is the thing that makes the ablation table possible.
+
+    Every refusal here has a named way out, because the honest exceptions are real: a factorial
+    arm deliberately changes two factors, a repeat run deliberately changes none, and retraining
+    instead of re-evaluating is a control change on purpose. What is refused is silence - the
+    node that is one of those things and never says so.
+    """
+    out: list[str] = []
+    factors = _factor_set(node)
+    intent = str(node.get("factorsIntent") or "one-factor").strip().lower()
+    if intent not in VALID_INTENT:
+        out.append(f"{where}: factorsIntent must be one of {', '.join(sorted(VALID_INTENT))}, "
+                   f"got {intent!r}. It is how a run says it deliberately changed two factors "
+                   f"(factorial) or none at all (repeat), instead of leaving that to be guessed.")
+    if factors is not None:
+        for f in sorted(factors):
+            if not FACTOR_RE.match(f):
+                out.append(f"{where}: factor {f!r} must match {FACTOR_RE.pattern} end to end - "
+                           f"factors are joined and compared as slugs, so keep them short and "
+                           f"stable, and a slug is one token")
+    controls = node.get("controls")
+    if controls is not None:
+        if not isinstance(controls, dict):
+            out.append(f"{where}: controls must be an object with any of "
+                       f"{', '.join(CONTROL_KEYS)}")
+        else:
+            for k in controls:
+                if k not in CONTROL_KEYS:
+                    out.append(f"{where}: unknown control {k!r}; the ones that actually move a "
+                               f"delta are {', '.join(CONTROL_KEYS)}")
+            retrain = controls.get("retrain")
+            if retrain is not None and str(retrain) not in VALID_RETRAIN:
+                out.append(f"{where}: controls.retrain must be one of "
+                           f"{', '.join(VALID_RETRAIN)}, got {retrain!r}. Retraining measures a "
+                           f"component's unique contribution; re-evaluating measures how much "
+                           f"the trained solution leans on it, and the two answer different "
+                           f"questions.")
+    # the arithmetic, when both sides are checkable. The parent is the last CONCLUDED run:
+    # a declaration carries the factors the run will have, so measuring against it would make
+    # every settled experiment look like a run that changed nothing.
+    parent_id = _comparison_parent(nodes, node)
+    if parent_id and parent_id in nodes:
+        parent = nodes[parent_id]
+        delta = factor_delta(parent, node)
+        if delta is not None and delta["changed"] > 1 and intent != "factorial":
+            out.append(
+                f"{where}: this run differs from its parent {parent_id} in {delta['changed']} "
+                f"factors (added {delta['added'] or '[]'}, removed {delta['removed'] or '[]'}), "
+                f"so it measured the combination rather than one thing. A node changes one "
+                f"thing - split it, or record it as factorsIntent='factorial' so the pair is "
+                f"recorded as a deliberate arm instead of passing for a single-factor result."
+            )
+        if delta is not None and delta["changed"] == 0 and intent != "repeat":
+            out.append(
+                f"{where}: this run has the same factors as its parent {parent_id}, so its "
+                f"delta measures the seed and the run-to-run spread, not any factor. That is a "
+                f"worthwhile measurement and it has a name: factorsIntent='repeat'. Without it "
+                f"the repeat reads as a result about the pipeline."
+            )
+        mism = _control_diff(parent, node, missing_is_a_problem=False)
+        if mism and not str(node.get("confoundReason") or "").strip():
+            out.append(
+                f"{where}: this run and its parent {parent_id} disagree about "
+                f"{'; '.join(mism)}. A delta between them is not attributable to the factor, so "
+                f"the ablation table will refuse to call it one. If the control change is the "
+                f"experiment (re-evaluating vs retraining answers different questions), say so "
+                f"in confoundReason."
+            )
+    return out
+
+
+def _factor_set(node: Any) -> Optional[frozenset]:
+    """The factors a run had, or None when the run never recorded any.
+
+    An empty list is NOT the same as an absent one. factors=[] is the bare model with every
+    component switched off - the arm every other arm is measured against - while an absent
+    key means the run simply never said. Collapsing the two deletes the baseline from its own
+    ablation table and, worse, returns None from factor_delta for every run whose parent is
+    that baseline, which switches the symmetric-difference check off precisely where a
+    one-factor-at-a-time ladder starts.
+    """
+    if not isinstance(node, dict):
+        return None
+    if node.get("factors") is None:
+        return None
+    raw = node.get("factors")
+    items = raw if isinstance(raw, list) else [raw]
+    return frozenset(str(x).strip().lower() for x in items if str(x or "").strip())
+
+
+def factor_delta(parent: Any, child: Any) -> Optional[dict[str, Any]]:
+    """Exactly which factors turned on and which turned off between two runs.
+
+    Returning None means "not checkable" - one side never said what it had. Returning a dict
+    with more than one changed factor is the whole point: it is the mechanical version of
+    "this node changes one thing", and unlike the conjunction-word check it cannot be defeated
+    by wording a pipeline in one sentence.
+    """
+    before, after = _factor_set(parent), _factor_set(child)
+    if before is None or after is None:
+        return None
+    added = sorted(after - before)
+    removed = sorted(before - after)
+    return {"added": added, "removed": removed, "changed": len(added) + len(removed)}
+
+
+def _control_diff(na: dict[str, Any], nb: dict[str, Any],
+                  missing_is_a_problem: bool = True) -> list[str]:
+    """Where two runs were not comparable because their controls differ.
+
+    A delta between two arms is only attributable to the factor that differs if everything
+    else did too. Seeds, budget, eval set and retrain policy are the four that actually move
+    numbers in practice, so those are the four compared - and a run that recorded no controls
+    is compared as "unknown" rather than assumed to match, because assuming that is exactly how
+    a table becomes a table of losses that could belong to any system.
+
+    missing_is_a_problem is the difference between the two callers, and conflating them was a
+    real bug: a tree reads as un-attributable when controls were never recorded, which is the
+    normal state of most trees, but a WRITE must not refuse a node for silence about something
+    the parent did not record either. So the table reports the unknown, and only a genuine
+    disagreement between two recorded values blocks a write.
+    """
+    ca, cb = na.get("controls"), nb.get("controls")
+    if not isinstance(ca, dict) or not isinstance(cb, dict):
+        if not missing_is_a_problem:
+            return []
+        return ["(controls were not recorded on both runs, so the delta is not attributable)"]
+    out = []
+    for key in CONTROL_KEYS:
+        va, vb = ca.get(key), cb.get(key)
+        if va is None or vb is None:
+            if missing_is_a_problem:
+                out.append(f"{key} (not recorded on both)")
+        elif str(va) != str(vb):
+            out.append(f"{key}: {va!r} vs {vb!r}")
+    return out
+
+
+def control_mismatches(nodes: dict[str, Any], a: str, b: str) -> list[str]:
+    """Control differences between two nodes of a tree, by id."""
+    return _control_diff(nodes.get(a) or {}, nodes.get(b) or {})
+
+
+def ablation_table(tree: dict[str, Any]) -> dict[str, Any]:
+    """The ablation table, built from recorded factor sets rather than re-derived from prose.
+
+    The primitive here is an EDGE: any two runs whose factor sets differ by exactly one, with
+    the delta attributed to that one factor. An edge is direction-free, which is the only way
+    one table can serve every ablation design - add-one-in reads its edges upward, leave-one-out
+    reads the same edges downward, one-factor-at-a-time is the ladder of them, and a factorial
+    family is a grid they cross. Picking a baseline and measuring everything against it only
+    serves the first of those, and on a leave-one-out family it silently reports every delta
+    against an arbitrary pair instead of against the full configuration.
+
+    Two things this refuses to do. It will not report a delta whose two arms disagreed about
+    seed, budget, eval set or retrain policy, because that number belongs to more than one
+    cause. And it will not report an interaction from a triple that is not three distinct arms:
+    with a bare baseline and no standalone B, "A+B" is reachable as both the pair and the
+    solo arm, and the arithmetic then prints a confident 0.00 interaction from a missing run.
+    """
+    inner = _current(tree)
+    nodes = inner.get("nodes") or {}
+    rows: list[dict[str, Any]] = []
+    for nid, node in nodes.items():
+        if not isinstance(node, dict) or is_abandoned(node):
+            continue
+        if str(node.get("status") or "") == "planned":
+            continue          # an announcement, not a run: it has no result to place
+        factors = _factor_set(node)
+        metric = node.get("metric")
+        if factors is None or not isinstance(metric, dict):
+            continue
+        rows.append({
+            "node": nid,
+            "factors": sorted(factors),
+            "set": factors,
+            "score": _metric_sign(metric) * _num(metric.get("result")),
+            "metric": metric.get("name"),
+            "controls": node.get("controls"),
+            "verdict": node.get("verdict"),
+        })
+    if not rows:
+        return {"ok": True, "rows": [], "baseline": None, "edges": [], "gaps": [],
+                "interactions": [], "confounds": [], "repeats": [], "noise": None, "note": (
+                    "no run recorded a `factors` set, so there is no ablation table to build. A "
+                    "run declares factors=[...] - [] for the bare model - and the comparison "
+                    "becomes arithmetic instead of a recollection.")}
+
+    # Two runs claiming the same configuration are a repeat, not a new arm. They are also the
+    # only free measurement of noise in the whole system, which is what makes it possible to
+    # tell a real delta from a lucky seed later.
+    groups: dict[frozenset, list[dict[str, Any]]] = {}
+    for r in rows:
+        groups.setdefault(r["set"], []).append(r)
+    repeats, noise = [], None
+    for fs, group in groups.items():
+        if len(group) < 2:
+            continue
+        scores = [g["score"] for g in group]
+        spread = max(scores) - min(scores)
+        repeats.append({"factors": sorted(fs) or "(none)",
+                        "nodes": [g["node"] for g in group],
+                        "spread": round(spread, 6), "spreadLabel": f"{spread:+.4g}"})
+        noise = spread if noise is None else max(noise, spread)
+
+    # The bare configuration is the baseline when it was run. When it was not, that is said
+    # plainly instead of being replaced by the shortest arm, because "everything is compared
+    # against {a}" is a different and much weaker claim than "compared against nothing".
+    bare = groups.get(frozenset())
+    if bare:
+        base = sorted(bare, key=lambda r: r["node"])[0]
+        base_score = base["score"]
+    else:
+        base, base_score = None, None
+    for r in rows:
+        r["delta"] = None if base is None else round(r["score"] - base_score, 6)
+        r["deltaLabel"] = "-" if base is None else f"{r['score'] - base_score:+.4g}"
+        r["versusBaseline"] = ("no bare-model arm was run, so there is no baseline to measure "
+                               "against; read the edges below instead" if base is None else
+                               base["node"] if r["node"] != base["node"] else "(this is the baseline)")
+
+    index: dict[frozenset, dict[str, Any]] = {}
+    for fs, group in groups.items():
+        index[fs] = sorted(group, key=lambda r: r["node"])[0]
+
+    # Edges: every pair isolating exactly one factor, in whichever direction it was run.
+    order = sorted(rows, key=lambda r: (len(r["factors"]), r["node"]))
+    edges: list[dict[str, Any]] = []
+    for i, r1 in enumerate(order):
+        for r2 in order[i + 1:]:
+            d = factor_delta(r1, r2)
+            if d is None or d["changed"] != 1:
+                continue
+            factor = (d["added"] or d["removed"])[0]
+            low, high = (r1, r2) if d["added"] else (r2, r1)
+            delta = high["score"] - low["score"]
+            mism = control_mismatches(nodes, low["node"], high["node"])
+            # Direction is read off the parent link, not off which row happened to sort first.
+            # Sorted order makes every leave-one-out family look like a set of additions, which
+            # reads as the opposite of how the runs were actually declared - and the difference
+            # is the whole content of "+b on top of a" versus "a without b".
+            child, other = high["node"], low["node"]
+            # the arms must be looked up as NODES here: a table row carries the score and the
+            # factor set but no parent link, so asking it for a parent silently returns None
+            # and every edge falls back to "either".
+            if _comparison_parent(nodes, nodes.get(child) or {}) == other:
+                direction = "add"        # the child is the richer arm: it turned the factor on
+            elif _comparison_parent(nodes, nodes.get(other) or {}) == child:
+                direction = "drop"       # the child is the poorer arm: it turned the factor off
+            else:
+                direction = "either"
+            edges.append({
+                "factor": factor,
+                "direction": direction,
+                "without": low["node"], "with": high["node"],
+                "withoutFactors": low["factors"], "withFactors": high["factors"],
+                "delta": round(delta, 6), "deltaLabel": f"{delta:+.4g}",
+                "kind": ("indistinguishable" if noise is not None and abs(delta) <= noise
+                         else "positive" if delta > 0 else "negative"),
+                "attributable": not mism,
+                "confound": mism,
+            })
+    edges.sort(key=lambda e: (e["factor"], e["direction"], e["without"]))
+
+    # Interactions need four DISTINCT arms: the reference, each part alone, and the pair. The
+    # distinctness is the point - when the bare arm is missing, {a,b} is reachable as both the
+    # pair and a "solo", and summing those gives a flat zero that looks like independence.
+    interactions: list[dict[str, Any]] = []
+    all_factors = sorted({f for r in rows for f in r["factors"]})
+    for a in all_factors:
+        for b in all_factors:
+            if a >= b:
+                continue
+            sa, sb, sab = index.get(frozenset({a})), index.get(frozenset({b})), index.get(frozenset({a, b}))
+            if not (sa and sb and sab):
+                continue
+            for ref_fs in sorted(groups, key=lambda s: (len(s), sorted(s))):
+                if a in ref_fs or b in ref_fs:
+                    continue
+                ref = index[ref_fs]
+                arms = [ref, sa, sb, sab]
+                mism = sorted({m for other in arms[1:] for m in control_mismatches(nodes, ref["node"], other["node"])})
+                joint = sab["score"] - ref["score"]
+                total = (sa["score"] - ref["score"]) + (sb["score"] - ref["score"])
+                effect = joint - total
+                interactions.append({
+                    "factors": [a, b], "reference": sorted(ref_fs) or "(bare)",
+                    "referenceNode": ref["node"],
+                    "joint": round(joint, 6), "sumOfParts": round(total, 6),
+                    "interaction": round(effect, 6), "interactionLabel": f"{effect:+.4g}",
+                    "kind": ("indistinguishable" if noise is not None and abs(effect) <= noise
+                             else "synergistic" if effect > 0 else "redundant"),
+                    "attributable": not mism, "confound": mism,
+                })
+                break  # the simplest reference is the one a reader checks first
+
+    # What an edge actually establishes is a CONDITIONAL effect: the delta for factor f was
+    # measured with whatever the two arms had in common switched on. Reading that number as the
+    # effect of f is the add-one-in error - "+b on top of a" is not "+b", and b may work only
+    # because a is there. So a factor is reported with the contexts it was measured in, and a
+    # factor that flips sign between two contexts is not summarised as one number at all.
+    contexts: dict[str, list[dict[str, Any]]] = {}
+    for e in edges:
+        common = frozenset(e["withoutFactors"]) & frozenset(e["withFactors"])
+        contexts.setdefault(e["factor"], []).append({"context": sorted(common), **e})
+    gaps: list[str] = []
+    conditional: list[dict[str, Any]] = []
+    for f in all_factors:
+        seen = contexts.get(f) or []
+        if not seen:
+            gaps.append(
+                f"{f!r} never ran in a comparison that isolates it. A gain credited to it is a "
+                f"gain of whatever it was combined with, not of {f!r} alone - and those are "
+                f"different claims with different consequences. The arm that isolates it is this "
+                f"configuration with {f!r} added, or with {f!r} removed; either one does it."
+            )
+            continue
+        bare = [s for s in seen if not s["context"]]
+        if not bare:
+            tops = sorted({"+".join(s["context"]) for s in seen})
+            signs = sorted({s["delta"] > 0 for s in seen})
+            drops = {s["direction"] for s in seen}
+            shape = ("leave-one-out" if drops == {"drop"} else
+                     "add-one-in" if drops == {"add"} else "mixed")
+            if shape == "leave-one-out":
+                note = (
+                    f"{f!r} is only ever measured by removing it, so the delta is the cost of "
+                    f"removing {f!r} while {'+'.join(tops)} stayed on. These deltas do not add "
+                    f"up: the cost of removing everything at once is a separate measurement, "
+                    f"and it is usually larger than their sum."
+                )
+            elif shape == "add-one-in":
+                note = (
+                    f"{f!r} was only ever added on top of {'+'.join(tops)}, so its delta is its "
+                    f"effect in that company, not its effect alone - {f!r} may work only because "
+                    f"the rest is there. One arm with {f!r} on the bare model is what turns this "
+                    f"into a statement about {f!r}."
+                )
+            else:
+                note = (
+                    f"{f!r} was measured both by adding and by removing it, on "
+                    f"{', '.join(tops)}. Say which number belongs to which comparison before "
+                    f"quoting either."
+                )
+            if len(signs) > 1:
+                note += (" It does not even hold one sign across those contexts, so no single "
+                         "number describes it.")
+            conditional.append({
+                "factor": f, "shape": shape, "contexts": tops,
+                "deltas": sorted({s["deltaLabel"] for s in seen}),
+                "signStable": len(signs) == 1, "note": note,
+            })
+
+    # A factorial family is 2^k runs. Naming the size stops a five-factor grid from being
+    # discovered halfway through, one arm at a time, at the cost of the whole quota.
+    k = len(all_factors)
+    expected = 2 ** k
+    size = {
+        "factors": k, "fullFactorialArms": expected, "recordedArms": len(groups),
+        "complete": len(groups) == expected,
+        "note": (f"{k} factors need {expected} arms for a full factorial; {len(groups)} are "
+                 f"recorded. Partial coverage is fine for an add-one-in or leave-one-out "
+                 f"design - what it forbids is reading an interaction out of it."
+                 if len(groups) < expected else
+                 f"all {expected} arms of a {k}-factor factorial are present."),
+    }
+    if k > 4 and not size["complete"]:
+        size["note"] += (f" {k} factors is past the point where a full factorial is "
+                         f"practical; the {expected} runs it needs are usually better spent on "
+                         f"the arms an edge says are missing.")
+
+    confounds = [{"a": e["without"], "b": e["with"], "factor": e["factor"], "differ": e["confound"]}
+                 for e in edges if not e["attributable"]]
+    unattributed = [i for i in interactions if not i["attributable"]]
+
+    return {
+        "ok": True,
+        "rows": sorted(rows, key=lambda r: (len(r["factors"]), r["node"])),
+        "baseline": ({"node": base["node"], "factors": base["factors"], "score": base["score"]}
+                     if base else None),
+        "edges": edges,
+        "interactions": interactions,
+        "gaps": gaps,
+        "conditional": conditional,
+        "confounds": confounds,
+        "repeats": repeats,
+        "noise": noise,
+        "size": size,
+        "note": (
+            "these edges were not comparable: their arms disagreed about seed, budget, eval "
+            "set or retrain policy, so the delta belongs to more than one cause and the table "
+            "names each one instead of printing a number."
+            if confounds else
+            "every edge in this table has matching controls, so each delta belongs to the one "
+            "factor it differs by."),
+        "interactionNote": (
+            "an interaction needs four distinct arms - a reference, each factor alone, and the "
+            "pair. Computed from a degenerate triple it prints a flat zero that looks exactly "
+            "like independence, which is why a missing arm is reported as a gap instead."),
+        "noiseNote": (
+            f"repeated configurations disagree by up to {noise:.4g}, so a delta smaller than "
+            f"that is not evidence of anything. Edges inside that band are marked "
+            f"indistinguishable." if noise is not None else
+            "no configuration was run twice, so this table has no noise estimate of its own: "
+            "treat every delta as unverified until one arm is repeated."),
+    }
+
+
+def ablation_table_response(competition: str) -> dict[str, Any]:
+    """Render the ablation table for a competition."""
+    res = ablation_table(load(competition))
+    if not res.get("rows"):
+        return {"content": [{"type": "text", "text": f"ablation table\n{res.get('note')}"}],
+                "isError": False}
+    lines: list[str] = []
+    base = res.get("baseline")
+    if base:
+        lines.append(f"baseline: {base['node']} "
+                     f"({'+'.join(base['factors']) or 'bare model, every factor off'}) "
+                     f"score {base['score']:.4g}")
+    else:
+        lines.append("baseline: none - no bare-model arm was run, so nothing here is a delta "
+                     "against nothing; read the edges instead")
+    lines += ["", f"{'config':<24}{'score':<10}{'delta':<10}node"]
+    for r in res["rows"]:
+        label = "+".join(r["factors"]) or "(bare)"
+        lines.append(f"{label:<24}{r['score']:<10.4g}{r['deltaLabel']:<10}{r['node']}")
+    if res.get("edges"):
+        lines += ["", "edges (each isolates exactly one factor, in the direction it was run):"]
+        for e in res["edges"]:
+            arrow = "add" if e["direction"] == "add" else "drop"
+            flag = "" if e["attributable"] else "  NOT ATTRIBUTABLE: " + "; ".join(e["confound"])
+            lines.append(f"  {e['factor']:<14}{e['deltaLabel']:<10}{arrow} "
+                         f"{e['without']} -> {e['with']}  [{e['kind']}]{flag}")
+    if res.get("interactions"):
+        lines += ["", "interactions (joint minus the sum of the parts):"]
+        for it in res["interactions"]:
+            flag = "" if it["attributable"] else "  NOT ATTRIBUTABLE: " + "; ".join(it["confound"])
+            lines.append(f"  {'+'.join(it['factors'])} on {it['reference']}: "
+                         f"{it['interactionLabel']} ({it['kind']}: joint {it['joint']:+.4g} vs "
+                         f"parts {it['sumOfParts']:+.4g}){flag}")
+        lines.append(f"  {res['interactionNote']}")
+    if res.get("gaps"):
+        lines += ["", "the comparison set is incomplete:"]
+        lines += [f"  {g}" for g in res["gaps"]]
+    if res.get("conditional"):
+        lines += ["", "effects measured only in company:"]
+        for c in res["conditional"]:
+            lines.append(f"  {c['factor']} ({c['shape']}): {c['note']}")
+    if res.get("confounds"):
+        lines += ["", "these arms were not comparable:"]
+        for c in res["confounds"]:
+            lines.append(f"  {c['a']} vs {c['b']} ({c['factor']}): " + "; ".join(c["differ"]))
+    if res.get("repeats"):
+        lines += ["", "repeated configurations (free noise):"]
+        for rp in res["repeats"]:
+            lines.append(f"  {rp['factors']}: {' vs '.join(rp['nodes'])} spread {rp['spreadLabel']}")
+    if res.get("size"):
+        lines += ["", f"size: {res['size']['note']}"]
+    lines += ["", res["note"], res.get("noiseNote", "")]
+    return {"content": [{"type": "text", "text": "\n".join(lines)}], "isError": False}
 
 
 def _normalize_recipe(value: Any) -> Optional[dict[str, Any]]:
@@ -1152,6 +1681,7 @@ def validate(tree: dict[str, Any]) -> list[str]:
                     f"{where}: change contains '{conj}', so it is two experiments. "
                     "One node changes one thing."
                 )
+            problems.extend(_validate_factors(where, node, nodes))
             # A recipe is optional, but a half-written one is worse than none: it looks
             # reusable and is not. So its presence is checked, not its content's absence.
             if "recipe" in node:

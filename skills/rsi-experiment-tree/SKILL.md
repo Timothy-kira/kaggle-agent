@@ -188,6 +188,69 @@ That is the whole loop, enforced rather than requested: once a node lands, the t
 so the next node cannot be planned from the version you remember. Planning the second experiment
 requires reading the tree again.
 
+## An ablation is arithmetic, not a description
+
+Record what was switched **on** in each run, and the comparison stops being a thing you
+remember:
+
+```
+node='{"id":"e4","factors":["aug-a","cache"],"controls":{"seed":1,"budget":"1h",
+      "eval":"holdout","retrain":"re-eval"}, ...}'
+```
+
+`factors=[]` is the bare model with everything off. It is **not** the same as leaving the field
+out, and the difference is load-bearing: an empty set is the arm every other arm is measured
+against, so a tree that treats it as "unrecorded" silently starts its table one row too low.
+
+The tree then enforces, on every write, that a node differs from its parent in **exactly one**
+factor. This is the check the word "and" cannot do — a node can describe a two-factor change in
+one confident sentence ("swap the cache while widening the context window") and no keyword scan
+will ever see it. The symmetric difference comes out at two, so it is refused.
+
+Every refusal has a named way out, because the honest exceptions are real:
+
+| What you did | How you say so |
+|---|---|
+| Changed two factors on purpose | `factorsIntent="factorial"` |
+| Changed nothing, to measure the seed | `factorsIntent="repeat"` |
+| Moved a control on purpose (`re-eval` vs `from-scratch`) | `confoundReason="..."` |
+
+What is refused is **silence**, not the answer.
+
+## One table for every ablation design
+
+```
+kaggle_experiment_tree action="ablate"
+```
+
+The primitive is an **edge**: two runs whose factor sets differ by exactly one, with the delta
+attributed to that one factor. Edges have no direction of their own, so the same table serves
+every design — an add-one-in ladder reads its edges upward, a leave-one-out family reads the
+same edges downward, one-factor-at-a-time is the ladder of them, and a factorial family is a
+grid they cross. Direction is read off the parent link, so a family declared as removals is not
+silently re-read as a set of additions.
+
+Three things the table will not do:
+
+- **It will not invent a baseline.** A family with no bare arm has no baseline, and the table
+  says so instead of promoting an arbitrary pair.
+- **It will not report an interaction from three arms that are not three arms.** An interaction
+  needs a reference, each factor alone, and the pair. When standalone B was never run, `A+B` is
+  reachable as both the pair *and* a solo — the arithmetic then prints a flat `0.00`, which
+  reads exactly like independence and is the most expensive kind of wrong.
+- **It will not attribute a delta whose two arms disagreed** about seed, budget, eval set or
+  retrain policy. Those comparisons are listed with the control that moved, instead of a number
+  that belongs to more than one cause.
+
+And two it will keep telling you about:
+
+- **Effects measured only in company.** `+b` on top of `a` is Δ(b | a), not Δ(b). The table names
+  which factors were only ever measured alongside something else, and says so in both directions —
+  a leave-one-out family needs the removal, an add-one-in ladder needs the addition.
+- **A noise floor, if you ever ran an arm twice.** Two runs of the same configuration are a
+  repeat, not a new arm, and their spread is the only free measurement of noise you will get. Any
+  delta smaller than it is marked *indistinguishable* rather than positive.
+
 ## Every step consults the tree. Only worthwhile steps become nodes.
 
 Consulting the tree has to be cheap enough that you do it every time, not only before a run — and

@@ -895,7 +895,7 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": ["read", "consider", "diagnose", "declare", "settle", "prune",
                              "abandon", "goal", "stage", "branch", "alias", "record", "plan",
-                             "status", "select", "board", "replay", "compare", "policy",
+                             "status", "select", "board", "ablate", "replay", "compare", "policy",
                              "round_close", "anchor", "undo", "analyze", "review", "report"],
                     "default": "read",
                     "description": (
@@ -922,6 +922,13 @@ TOOLS: list[dict[str, Any]] = [
                         "selection returning a BATCH (quality + progress + novelty, visit "
                         "cooling, plus per-criterion regression and effective cost); board = the "
                         "experience board: families, failures by layer, and per-criterion EFC. "
+                        "ablate = the ablation table from the runs' factor sets: every comparison "
+                        "isolating exactly one factor in whichever direction it was run (so "
+                        "add-one-in, leave-one-out and one-factor-at-a-time are the same edges "
+                        "read up or down), the interactions that four distinct arms make "
+                        "computable, the arms that are missing, the arms whose controls disagree "
+                        "and therefore have no attributable delta, and the noise floor implied by "
+                        "repeated configurations; "
                         "replay = 'dream' a policy over the recorded history at zero cost; "
                         "compare = score several policies and pick the best, never worse than the "
                         "deployed one; policy = create/use/deploy/list exploration policies; "
@@ -997,7 +1004,16 @@ TOOLS: list[dict[str, Any]] = [
                         "reason, opens (what this makes possible for a later experiment). "
                         "declare/settle also take expect={direction:'up'|'down',atLeast:0.02} - "
                         "the prediction, which settle judges into confirmed / partial / refuted; "
-                        "without it nothing compares the result to what you expected. Also "
+                        "without it nothing compares the result to what you expected. An "
+                        "experiment may also take factors=['aug-a','cache'] (the components "
+                        "switched on in that run - [] is the bare model, which is the arm "
+                        "everything else is measured against, not an absent field), "
+                        "controls={seed,budget,eval,retrain} (retrain is 'from-scratch' or "
+                        "'re-eval'), and factorsIntent='one-factor'|'factorial'|'repeat'. The "
+                        "factor arithmetic is enforced: a node that differs from its parent by "
+                        "more or fewer than one factor, or whose controls disagree with its "
+                        "parent's, is refused unless it declares why (factorsIntent, or "
+                        "confoundReason when the control change is the experiment). Also "
                         "take branch=<name> for the line of work it belongs to. For "
                         "action='prune'/'abandon': just the node's id, e.g. r2. Send the object as "
                         "text: the host's tool layer empties a real object argument before it "
@@ -1226,7 +1242,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.23.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.24.0"}
 
 
 def run_kaggle(args: list[str]) -> tuple[int, str, str]:
@@ -2539,6 +2555,9 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             lines += ["", board["operatorNote"]]
             return text_response("kaggle_experiment_tree board", 0, "\n".join(lines), "")
 
+        if action == "ablate":
+            return experiment_tree.ablation_table_response(comp)
+
         if action == "replay":
             doc = experiment_tree.load(comp)
             policy = _policy_argument(args.get("policy"))
@@ -3194,8 +3213,8 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         return text_response(
             "kaggle_experiment_tree", 2, "",
             f"unknown action: {action} (use read, consider, diagnose, declare, settle, prune, "
-            f"abandon, goal, stage, branch, alias, record, plan, status, select, board, replay, "
-            f"compare, policy, round_close, anchor, undo, analyze, review or report)",
+            f"abandon, goal, stage, branch, alias, record, plan, status, select, board, ablate, "
+            f"replay, compare, policy, round_close, anchor, undo, analyze, review or report)",
         )
 
     if name == "kaggle_local_launch":
