@@ -62,7 +62,7 @@ not render it:
    account, a username, or which one is active.
 2. Emit exactly one `<mavis-widget>` using the `mavis.widget.v1` DSL as the final content of
    the final message, after all tool calls finish. Do not call a tool after emitting it.
-3. Read the shared foundation at `../../_shared/genui-widget/SKILL.md` and its linked
+3. Read the shared foundation at `../../_shared/genui-widget/FOUNDATION.md` and its linked
    references first. The theme-token contract, the security rules and the fallback contract
    are part of this skill.
 

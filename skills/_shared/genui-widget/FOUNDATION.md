@@ -10,6 +10,11 @@ packageRole: >-
   and read by every kaggle-agent visualizer through a relative path.
   This is not a registered Plugin capability and is not loaded as a Skill by name.
   See skills/_shared/README.md and skills/_shared/genui-widget/COMPONENTS.md.
+  This file is named FOUNDATION.md, not SKILL.md, and must keep that name: SKILL.md is
+  how the package names a capability, so a file with that name is a capability whether or
+  not plugin.json lists it, and the marketplace rejected this package for
+  UNREFERENCED_CAPABILITY while it was still called SKILL.md. The frontmatter below is
+  provenance, not registration.
 ---
 
 # GenUI Widget

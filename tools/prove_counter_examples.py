@@ -912,6 +912,22 @@ def _(ks, js):
     return not _catches("check_manifest", _break, "author is a non-empty string")
 
 
+@case("a SKILL.md nested below the skill layer",
+      "the manifest check reports an undeclared capability - submission PLUGIN-202609290159 was "
+      "rejected for UNREFERENCED_CAPABILITY because a shared widget foundation sat at "
+      "skills/_shared/genui-widget/SKILL.md, one level deeper than any declared skill. The "
+      "one-level glob said 17 of 17 and was right about 17 of 18")
+def _(ks, js):
+    def _break(root):
+        shared = root / "skills" / "_shared" / "genui-widget"
+        shared.mkdir(parents=True, exist_ok=True)
+        (shared / "SKILL.md").write_text(
+            "---\nname: genui-widget\ndescription: shared widget infrastructure\n---\n\n"
+            "Not a registered capability, and not loaded by name.\n",
+            encoding="utf-8")
+    return not _catches("check_manifest", _break, "every capability file in the package is named")
+
+
 @case("a fourth example query",
       "the manifest check reports more than 3 exampleQueries - the ceiling the submission "
       "guide states, which no schema error would have caught")

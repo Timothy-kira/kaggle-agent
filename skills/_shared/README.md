@@ -5,10 +5,16 @@ in `plugin.json` and must not be loaded by name. It exists so two widgets cannot
 
 ```
 _shared/genui-widget/
-  SKILL.md        the mavis.widget.v1 protocol, theme tokens, security rules  (forked once)
+  FOUNDATION.md   the mavis.widget.v1 protocol, theme tokens, security rules  (forked once)
   references/     color-system, visual-rules, widget-patterns, widget-recipes (forked once)
   COMPONENTS.md   the component shapes these two widgets actually share
 ```
+
+It is called `FOUNDATION.md` and not `SKILL.md` on purpose. `SKILL.md` is how the package
+names a capability, so a file carrying that name is a capability whether or not `plugin.json`
+lists it — and the marketplace rejected exactly this package for
+`UNREFERENCED_CAPABILITY` when the foundation was still called `SKILL.md`. A validator is
+right to read the name; the fix is to rename the file, not to argue with the reader.
 
 ## Why one copy
 
@@ -20,8 +26,8 @@ So it is forked **once, here**, and both visualizers reference it by relative pa
 
 | Visualizer | Path to the foundation |
 |---|---|
-| `skills/experiment/log-monitor-visualizer/` | `../../_shared/genui-widget/SKILL.md` |
-| `skills/identity/account-rename-visualizer/` | `../../_shared/genui-widget/SKILL.md` |
+| `skills/experiment/log-monitor-visualizer/` | `../../_shared/genui-widget/FOUNDATION.md` |
+| `skills/identity/account-rename-visualizer/` | `../../_shared/genui-widget/FOUNDATION.md` |
 
 **Do not fork another copy.** If the foundation needs changing, change it here.
 
@@ -39,6 +45,6 @@ one twice.
 ## The binding contract
 
 Which skill emits which widget, at which decision point, is owned by
-`skills/collab/genui-scenarios/SKILL.md`. That table is the single source of truth, and each
+`skills/genui-scenarios/SKILL.md`. That table is the single source of truth, and each
 business skill repeats the instruction in its own body so neither file depends on the other
 being read.

@@ -397,15 +397,30 @@ def check_manifest():
     # every declared skill file exists
     for rel_path in data.get("skills", []):
         check((ROOT / rel_path).is_file(), f"declared skill exists: {rel_path}")
-    # ...and the other direction: a skill folder in the package that the manifest does not
-    # reference ships to nobody. §9 asks for 所有 App/MCP/Skill 文件都被 manifest 引用, and
-    # the declared->exists direction above cannot see this one.
-    declared_skills = set(data.get("skills") or [])
-    on_disk_skills = {p.relative_to(ROOT).as_posix() for p in (ROOT / "skills").glob("*/SKILL.md")}
-    orphans = sorted(on_disk_skills - declared_skills)
+    # ...and the other direction. UNREFERENCED_CAPABILITY, submission PLUGIN-202609290159:
+    # the marketplace collects capability files by NAME, not by the layout this package
+    # happened to use, so a skills/**/SKILL.md that plugin.json does not list is a capability
+    # to it whatever the directory around it claims. This package shipped one - a shared widget
+    # foundation at skills/_shared/genui-widget/SKILL.md, complete with frontmatter and a note
+    # saying it was not a capability - and was rejected for it. The earlier version of this
+    # check globbed "skills/*/SKILL.md", one level, saw 17 of 17 and reported green through
+    # every other gate: it was right about 17 of 18, and the one it could not see was the one
+    # that mattered. Recursive, and the three capability shapes the guide names in §2.
+    declared_caps = set(data.get("skills") or []) | set(data.get("mcpServers") or []) \
+        | set(data.get("apps") or [])
+    if data.get("icon"):
+        declared_caps.add(data["icon"])
+    found_caps: set[str] = set()
+    for pattern in ("SKILL.md", "*.mcp.json", "*.app.json"):
+        for p in ROOT.rglob(pattern):
+            if ".git" in p.relative_to(ROOT).parts or not p.is_file():
+                continue
+            found_caps.add(p.relative_to(ROOT).as_posix())
+    orphans = sorted(found_caps - declared_caps)
     check(not orphans,
-          f"every skills/*/SKILL.md in the package is referenced by the manifest "
-          f"({len(on_disk_skills)} on disk, {len(declared_skills)} declared; orphans: {orphans or 'none'})")
+          f"every capability file in the package is named in the manifest - scanned {len(found_caps)} "
+          f"SKILL.md / *.mcp.json / *.app.json at any depth against {len(declared_caps)} declared "
+          f"paths; undeclared: {orphans or 'none'}")
     # §2: 不接受符号链接. os.walk follows nothing on its own, so a symlink to a file inside the
     # tree would read as a normal file here and only fail on someone else's machine, where the
     # target may not exist.

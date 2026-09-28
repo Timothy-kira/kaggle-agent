@@ -1314,7 +1314,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.30.4"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.30.5"}
 
 
 def run_kaggle(args: list[str], account: str = "") -> tuple[int, str, str]:

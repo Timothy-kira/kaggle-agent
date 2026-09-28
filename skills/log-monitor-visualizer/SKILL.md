@@ -51,7 +51,7 @@ apply it." The business skill works unchanged without this file.
 2. Emit exactly one `<mavis-widget>` using the `mavis.widget.v1` DSL as the final content of
    the final message, after all tool calls have finished. Do not call a tool after emitting
    it. Prose outside the widget is at most one short sentence before and one after.
-3. Read the shared foundation at `../../_shared/genui-widget/SKILL.md` and its linked
+3. Read the shared foundation at `../../_shared/genui-widget/FOUNDATION.md` and its linked
    references before writing the widget. The theme-token contract, the security rules, and
    the fallback contract are part of this skill, not optional reading.
 
