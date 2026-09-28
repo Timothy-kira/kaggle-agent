@@ -13,6 +13,7 @@ Exit: 0 = all checks pass, 1 = at least one failure.
 from __future__ import annotations
 
 import ast
+import fnmatch
 import importlib.util
 import json
 import os
@@ -56,6 +57,18 @@ _atexit.register(lambda: [_shutil.rmtree(d, ignore_errors=True) for d in _OWN_TE
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# What the working tree looked like before any check ran. One of the checks below cleans up
+# mcp/__pycache__ in a finally block, so a residue count taken from inside a check function
+# reports zero and reads exactly like a tree that never had bytecode in it - which is what the
+# first version of the submission-guide check believed, on the run where the probes had just
+# written one. Sampled here, the count is the real one.
+_RESIDUE_AT_IMPORT: list[str] = sorted(
+    p.relative_to(ROOT).as_posix()
+    for p in ROOT.rglob("*")
+    if ".git" not in p.relative_to(ROOT).parts
+    and (p.name == "__pycache__" or p.suffix.lower() in (".pyc", ".pyo", ".pyd"))
+)
 MANIFEST = ROOT / ".minimax-plugin" / "plugin.json"
 SERVERS = ROOT / "servers.mcp.json"
 REL = ROOT / "skills" / "relationships.json"
@@ -300,6 +313,42 @@ def check_manifest():
     author = data.get("author")
     check(isinstance(author, str) and bool(author.strip()),
           f"author is a non-empty string, the shape the Marketplace validator accepts ({author!r})")
+    # 作者/展示名: 「去除首尾空白后必须非空,UTF-8 编码长度不得超过 1,024 字节」
+    # (submission guide, manifest field table). Byte length, not character count - a display name
+    # that is short in characters can still be long in bytes, and the validator counts bytes.
+    for field in ("author", "displayName"):
+        value = data.get(field)
+        if field == "displayName" and value is None:
+            check(True, "displayName is omitted, so name is used (the guide allows either)")
+            continue
+        nbytes = len(value.strip().encode("utf-8")) if isinstance(value, str) else -1
+        check(isinstance(value, str) and value.strip() and 0 < nbytes <= 1024,
+              f"{field} is non-empty after trimming and at most 1024 UTF-8 bytes "
+              f"({nbytes} bytes: {value!r})")
+    # description: 「说明能解决什么问题,不写内部技术实现」(submission guide, manifest field table).
+    # The 1.30.3 description was a paragraph of mechanism - which thread launches how many
+    # subagents, which widget shares which forked foundation - and a reviewer reading the listing
+    # sees none of that. What is checkable is the vocabulary, so the words the guide sends away are
+    # the words this refuses. A description that is short and free of them still has to be good;
+    # this check is the floor, not the goal.
+    description = data.get("description")
+    implementation_words = ("subagent", "wave 1", "wave 2", "forked foundation", "component library",
+                            "genui", "widget", "frontmatter", "transitive", "zero-dependency",
+                            "re-entrant", "idempotent")
+    leaked = [w for w in implementation_words if w in (description or "").lower()]
+    check(isinstance(description, str) and bool(description.strip()),
+          f"description is non-empty ({len(description) if isinstance(description, str) else 0} chars)")
+    check(not leaked,
+          f"description says what the plugin does for the user and not how it is built "
+          f"(implementation vocabulary found: {leaked or 'none'})")
+    # §1: 当前第三方表单尚不受理 Hook,请勿提交 hooks 字段或 Hook JSON 文件
+    check("hooks" not in data,
+          "plugin.json declares no 'hooks' field, which the current submission form does not accept")
+    hook_files = sorted(p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.hook.json"))
+    check(not hook_files, f"no Hook JSON file is shipped in the package ({hook_files or 'none'})")
+    # §3: deliveryTargets / installationPolicy / listed 和排序配置不属于 plugin.json 字段
+    for field in ("deliveryTargets", "installationPolicy", "listed", "sortOrder", "order", "rank"):
+        check(field not in data, f"plugin.json has no '{field}' field, which is catalog metadata")
     # exampleQueries: 0-3 条真实示例，每条非空且最多 4,096 个字符 (submission guide, manifest field
     # table). Not caught by SCHEMA_INVALID - the schema has no ceiling on this array, so the only
     # thing standing between ten queries and a reviewer is a check written here.
@@ -326,9 +375,45 @@ def check_manifest():
           "at the moment (DARK_ICON_TEMPORARILY_DISABLED)")
     for q in data.get("exampleQueries", []):
         check(isinstance(q, str) and q.strip() != "", f"example query non-empty: {q[:40]!r}")
+    # category: 从下方固定分类中选择一项 (submission guide, manifest field table). The list is
+    # printed verbatim under that table, so a category that is not in it is not a preference -
+    # it is a value the listing has no slot for.
+    CATEGORIES_ON_MARKETPLACE = ("Office", "Studio", "Design & Sites", "Code", "Business", "Sales",
+                                 "Productivity", "Science & Healthcare", "Education", "Other")
+    check(data.get("category") in CATEGORIES_ON_MARKETPLACE,
+          f"category is one of the fixed marketplace categories ({data.get('category')!r})")
     # every declared skill file exists
     for rel_path in data.get("skills", []):
         check((ROOT / rel_path).is_file(), f"declared skill exists: {rel_path}")
+    # ...and the other direction: a skill folder in the package that the manifest does not
+    # reference ships to nobody. §9 asks for 所有 App/MCP/Skill 文件都被 manifest 引用, and
+    # the declared->exists direction above cannot see this one.
+    declared_skills = set(data.get("skills") or [])
+    on_disk_skills = {p.relative_to(ROOT).as_posix() for p in (ROOT / "skills").glob("*/SKILL.md")}
+    orphans = sorted(on_disk_skills - declared_skills)
+    check(not orphans,
+          f"every skills/*/SKILL.md in the package is referenced by the manifest "
+          f"({len(on_disk_skills)} on disk, {len(declared_skills)} declared; orphans: {orphans or 'none'})")
+    # §2: 不接受符号链接. os.walk follows nothing on its own, so a symlink to a file inside the
+    # tree would read as a normal file here and only fail on someone else's machine, where the
+    # target may not exist.
+    links = sorted(p.relative_to(ROOT).as_posix()
+                   for p in ROOT.rglob("*")
+                   if p.is_symlink() and ".git" not in p.relative_to(ROOT).parts)
+    check(not links, f"no symlink is shipped in the package ({links or 'none'})")
+    # §2: 不接受...包安装生命周期脚本,指 package.json 中的 preinstall、install、postinstall 等
+    lifecycle = []
+    for pkg in ROOT.rglob("package.json"):
+        if ".git" in pkg.relative_to(ROOT).parts:
+            continue
+        scripts = (parse_json(pkg)[0] or {}).get("scripts") or {}
+        lifecycle += [f"{pkg.relative_to(ROOT).as_posix}:{k}" for k in scripts
+                      if k in ("preinstall", "install", "postinstall", "prepare", "prepublish")]
+    # One check whether or not the loop above found anything: a rule that is only ever asserted
+    # when it is already broken is not a rule, it is a coincidence. This package ships no
+    # package.json at all, and the check has to say so.
+    check(not lifecycle, f"no install lifecycle script is declared anywhere in the package "
+                         f"({lifecycle or 'no package.json, or none of its scripts are install hooks'})")
     return data
 
 
@@ -341,6 +426,38 @@ def check_servers():
     check("stdio" in text, "uses the stdio transport")
     for banned in ('"oauth"', '"auth"', '"refresh"'):
         check(banned not in text, f"no unsupported auth field {banned}")
+    check(data.get("schemaVersion") == 1, "servers.mcp.json declares schemaVersion 1")
+    # §5, verbatim: 支持 stdio、streamable-http、sse;不支持 http alias. The "uses the stdio
+    # transport" line above is a substring match, so it would happily pass a file that also
+    # declared a second server on the "http" alias the guide names as unsupported.
+    servers = data.get("mcpServers")
+    if check(isinstance(servers, dict) and bool(servers), "servers.mcp.json declares mcpServers"):
+        for key, srv in servers.items():
+            transport = srv.get("type")
+            check(transport in ("stdio", "streamable-http", "sse"),
+                  f"MCP server {key!r} uses a supported transport ({transport!r}; 'http' is not an alias)")
+            # §5, verbatim: stdio.command 只能写 PATH 中的解释器或可执行名,不能包含路径.
+            # An absolute path here is the failure that shipped once already: the config validated
+            # perfectly and then pointed every importer's server at a directory on their disk.
+            command = srv.get("command")
+            has_path = isinstance(command, str) and (
+                "/" in command or "\\" in command or bool(re.match(r"^[A-Za-z]:", command))
+                or command.startswith("~")
+            )
+            check(isinstance(command, str) and command.strip() and not has_path,
+                  f"MCP server {key!r} names a bare interpreter in PATH, with no path in it "
+                  f"({command!r})")
+            timeout = srv.get("timeout")
+            check(timeout is None or (isinstance(timeout, int) and timeout > 0),
+                  f"MCP server {key!r} timeout is a positive millisecond count ({timeout!r})")
+            # §5: 不得在 headers、env 或其他文件中写入任何密钥与用户凭据
+            for field in ("headers", "env"):
+                values = srv.get(field) or {}
+                credentialish = [k for k in values if re.search(
+                    r"(?i)(token|secret|password|api[-_]?key|authorization|bearer|cookie)", str(k))]
+                check(not credentialish,
+                      f"MCP server {key!r} declares no credential-bearing key in {field} "
+                      f"({credentialish or 'none'})")
 
 
 # ---------------------------------------------------------------- frontmatter
@@ -2604,6 +2721,71 @@ def _git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
 
 
+def _rule_ignores(rules: list[str], rel: str) -> str | None:
+    """Which of these gitignore rules, if any, would ignore `rel`? None if none would.
+
+    A deliberately small matcher. It only has to answer for the shapes this package's own
+    .gitignore uses - a bare directory name that matches at any depth, a bare glob, and a
+    path-shaped pattern - and it has to answer WITHOUT a git repository. See
+    check_the_package_ships_no_built_artifact for why that is the whole point.
+    """
+    segments = rel.replace("\\", "/").split("/")
+    for raw in rules:
+        rule = raw.strip()
+        if not rule or rule.startswith("#"):
+            continue
+        directory_rule = rule.endswith("/")
+        rule = rule.rstrip("/")
+        pattern = rule.lstrip("/")
+        if not pattern:
+            continue
+        if directory_rule and "/" not in pattern:
+            # A bare directory name matches that directory at any depth - including the last
+            # segment. Checking only the parent segments answers a different question (which
+            # directory CONTAINS a match) and let `tools/__pycache__` come back uncovered.
+            if pattern in segments:
+                return rule
+        elif "/" in pattern:
+            if fnmatch.fnmatch("/".join(segments), pattern):
+                return rule
+        elif any(fnmatch.fnmatch(segment, pattern) for segment in segments):
+            return rule
+    return None
+
+
+def check_the_package_ships_no_built_artifact():
+    """§2 and §7: 平台专属二进制 is refused, and a ZIP submission is made from this directory.
+
+    Deliberately makes no git call. The counter-example harness copies the tree without .git,
+    so a check that shells out to `git check-ignore` fails there for a reason that has nothing
+    to do with the guarantee - and `_catches` then reports "an instrument that flags the
+    pristine repo", so the case prints OK forever. An OK that means "the break did nothing"
+    is byte-for-byte the same output as an OK that means "the guarantee is load-bearing", and
+    the first version of this check was the first one. Everything here is decided by reading
+    .gitignore and walking the tree, so the answer is the same in a checkout and in a copy.
+    """
+    print("no built artifact can ship")
+
+    gitignore = ROOT / ".gitignore"
+    rules = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.is_file() else []
+
+    for pattern in ("__pycache__/", "*.py[cod]"):
+        check(pattern in [r.strip() for r in rules],
+              f".gitignore carries {pattern!r}, so a ZIP of this directory cannot carry "
+              f"compiled bytecode as a platform-specific binary")
+
+    residue = sorted(set(_RESIDUE_AT_IMPORT) | {
+        p.relative_to(ROOT).as_posix()
+        for p in ROOT.rglob("*")
+        if ".git" not in p.relative_to(ROOT).parts
+        and (p.name == "__pycache__" or p.suffix.lower() in (".pyc", ".pyo", ".pyd"))
+    })
+    unignored = [rel for rel in residue if _rule_ignores(rules, rel) is None]
+    check(not unignored,
+          f"every bytecode path in the working tree is covered by a .gitignore rule "
+          f"({len(residue)} such path(s) present; uncovered: {unignored or 'none'})")
+
+
 def check_publishable():
     print("publishable")
 
@@ -2625,6 +2807,23 @@ def check_publishable():
                 f"so it also matches every nested directory; anchor it as '/{line}'")
         if not offenders:
             ok("every gitignore directory rule is anchored to the package root")
+
+    # (1b) The submission guide refuses 平台专属二进制. A GitHub source serves the tracked tree,
+    #     so the tracked set is the file list that route can ship; the ZIP route serves this
+    #     directory instead, and that half of the guarantee lives in
+    #     check_the_package_ships_no_built_artifact, which needs no git and can therefore be
+    #     broken on purpose by a counter-example.
+    tracked = set()
+    if shutil.which("git") is not None:
+        out = _git("ls-files", "-z")
+        if out.returncode == 0:
+            tracked = {p for p in out.stdout.split("\0") if p}
+    binaries = sorted(rel for rel in tracked
+                      if Path(rel).suffix.lower() in
+                      (".so", ".dll", ".dylib", ".exe", ".pyc", ".pyo", ".pyd", ".jar", ".class"))
+    check(not binaries,
+          f"no tracked file is a compiled artifact, so a GitHub source cannot ship one "
+          f"({len(tracked)} tracked files; {binaries or 'none found'})")
 
     # (2) The manifest's own declarations must survive .gitignore. This is the assertion
     #     whose absence let the bug through: `check_manifest` proved the file existed,
@@ -4184,6 +4383,7 @@ def main() -> int:
     check_competition_isolation()
     check_text_encoding()
     check_publishable()
+    check_the_package_ships_no_built_artifact()
     print()
     if failures:
         print(f"{len(failures)} failure(s) out of {checks} checks:")

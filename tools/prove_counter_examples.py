@@ -10,6 +10,22 @@ Two outcomes are accepted, and they mean different things:
   BLOCKED   the current code already refuses the broken input, so the case cannot reproduce.
             That also proves the fix is load-bearing, and it is the stronger result.
 
+THE FIXTURE HAS NO .git, AND THAT CHANGES WHAT A CASE CAN MEAN.  `_run_repo_check` copies the
+tree with `_IGNORE` and does not carry `.git` across, so a case aimed at a check that shells out
+to git - `check_publishable` is the one that bites - runs the check in a directory that is not
+a repository. `git ls-files` answers "0 files" and `git check-ignore` answers "not ignored", so
+the check reports failures on the PRISTINE copy, `_catches` returns False at its first guard, and
+the case prints OK. That output is byte-for-byte what a genuinely load-bearing case prints. The
+first case written against a git-dependent check looked exactly like a passing one and measured
+nothing. Before adding a case, check that the target function reaches the same verdict on a
+pristine copy as it does in a real checkout - `tools/probe_*.py` and a one-off
+`spec_from_file_location` run are enough - or target a function that needs no git, the way
+`check_the_package_ships_no_built_artifact` does.
+
+A second trap in the same place: a CRLF file. `text.replace("rule/\n", "")` is not a substring
+of "rule/\r\n", so a break written that way edits nothing and reports OK. Split into lines and
+rejoin.
+
 Usage:  python tools/prove_counter_examples.py
 """
 
@@ -17,6 +33,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import sys
@@ -905,6 +922,115 @@ def _(ks, js):
         cfg["exampleQueries"] = list(cfg.get("exampleQueries") or []) + ["退订 this run"]
         path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     return not _catches("check_manifest", _break, "at most 3 exampleQueries")
+
+
+def _edit_manifest(root, **changes):
+    path = root / ".minimax-plugin" / "plugin.json"
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    cfg.update(changes)
+    path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+
+def _edit_servers(root, **changes):
+    path = root / "servers.mcp.json"
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    for key, srv in cfg["mcpServers"].items():
+        srv.update(changes)
+    path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+
+@case("a description written as an implementation note",
+      "the manifest check reports implementation vocabulary in description - the submission "
+      "guide says 说明能解决什么问题,不写内部技术实现, and 1.30.3's description was a "
+      "paragraph of mechanism")
+def _(ks, js):
+    def _break(root):
+        _edit_manifest(root, description=(
+            "Wave 1 launches four Kaggle-native subagents in one response; wave 2 runs the "
+            "forensics in the main thread, and the GenUI widgets share one forked foundation and "
+            "one component library so nothing drifts."))
+    return not _catches("check_manifest", _break, "not how it is built")
+
+
+@case("a displayName over 1024 UTF-8 bytes",
+      "the manifest check reports a displayName past the 1024-byte ceiling - the guide counts "
+      "bytes, not characters")
+def _(ks, js):
+    def _break(root):
+        _edit_manifest(root, displayName="Kaggle Agent " + "代理" * 600)
+    return not _catches("check_manifest", _break, "displayName is non-empty after trimming")
+
+
+@case("a hooks field in the manifest",
+      "the manifest check reports a hooks field - the current submission form does not accept "
+      "Hooks and asks for the field to be left out")
+def _(ks, js):
+    def _break(root):
+        _edit_manifest(root, hooks=[{"event": "afterToolUse", "command": "./bin/x.sh"}])
+    return not _catches("check_manifest", _break, "declares no 'hooks' field")
+
+
+@case("a deliveryTargets field in the manifest",
+      "the manifest check reports deliveryTargets - the guide lists it as catalog metadata that "
+      "does not belong in plugin.json")
+def _(ks, js):
+    def _break(root):
+        _edit_manifest(root, deliveryTargets=["desktop", "cloud"])
+    return not _catches("check_manifest", _break, "plugin.json has no 'deliveryTargets' field")
+
+
+@case("an absolute path in the MCP command",
+      "the server check reports a command that is a path - the guide says stdio.command 只能写 "
+      "PATH 中的解释器或可执行名, and baking this author's home directory in is how the "
+      "package once pointed every importer at a directory that does not exist on their disk")
+def _(ks, js):
+    def _break(root):
+        # Assembled at run time on purpose. Written out as a literal it is its own bug: the
+        # published-package check refuses any file that hardcodes an absolute user path, and this
+        # counter-example would have been the file it refuses - the break reproducing a real
+        # defect in the test that is supposed to catch a real defect.
+        someone = os.path.join("C:" + os.sep, "Users", "someone", ".minimax", "plugins",
+                               "kaggle-agent", "bin", "python")
+        _edit_servers(root, command=someone)
+    return not _catches("check_servers", _break, "names a bare interpreter in PATH")
+
+
+@case("the http transport alias",
+      "the server check reports type=http - the guide supports stdio, streamable-http and sse, "
+      "and names 'http' as an alias it does not accept")
+def _(ks, js):
+    def _break(root):
+        _edit_servers(root, type="http")
+    return not _catches("check_servers", _break, "uses a supported transport")
+
+
+@case("a credential key in the MCP env block",
+      "the server check reports a credential-bearing key in env - the guide forbids 密钥与用户凭据 "
+      "in headers, env or any other file")
+def _(ks, js):
+    def _break(root):
+        _edit_servers(root, env={"KAGGLE_API_TOKEN": "0123456789abcdef0123456789abcdef"})
+    return not _catches("check_servers", _break, "declares no credential-bearing key in env")
+
+
+@case("a package that would ship compiled bytecode",
+      "the check reports bytecode that a ZIP of this directory would carry - the guide refuses "
+      "平台专属二进制, and a GitHub source never sees a file the gitignore hides, so the ZIP "
+      "route is the one that has to be guarded on its own")
+def _(ks, js):
+    def _break(root):
+        ignore = root / ".gitignore"
+        # Line-based, not a substring replace: this file is CRLF, and "…/\n" is not a substring
+        # of "…/\r\n", so the obvious version of this break quietly edits nothing and then
+        # reports OK - which is what the first version of this case did.
+        kept = [line for line in ignore.read_text(encoding="utf-8").splitlines()
+                if line.strip() not in ("__pycache__/", "*.py[cod]")]
+        ignore.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        cache = root / "mcp" / "__pycache__"
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / "kaggle_server.cpython-312.pyc").write_bytes(b"\x00" * 32)
+    return not _catches("check_the_package_ships_no_built_artifact", _break,
+                        "gitignore carries '__pycache__/'")
 
 
 @case("the manifest declaring a darkIcon again",
