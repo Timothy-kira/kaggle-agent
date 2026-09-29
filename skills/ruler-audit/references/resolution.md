@@ -53,24 +53,30 @@ off to rebuild the metric when the arm was the noisy thing.
 
 ## The two variance layers
 
-Upstream's hardest-won measurement is build variance, and it is worth being precise about because
-it is the case that makes "add more repetitions" the wrong advice.
+## Build variance, verbatim
 
-Some flows put a stochastic step between the lever and the score. The prompt you iterate on
-**builds** something — a memory store, a retrieval index, a synthesised corpus — and the eval then
-scores *reads* against the built thing. When the build runs once per variant and every repeat
-reads the same build, the repeats and their confidence intervals measure only the noise of scoring
-a fixed build. **The build's own run-to-run variance is sampled once per variant, invisible to
-every gate, and often the larger term.**
+This is upstream's hardest-won measurement and the one that makes "add more repetitions" the wrong
+advice. Quoted in full from `eval-hillclimb.md` Step 0.5, readable at
+`upstream/eval-hillclimb.md:41`:
 
-Upstream's measured case: three builds of one unchanged prompt spanned about 7 points of train-mean
-score, against rescore noise near ±1.4. Every edit had been compared against a single baseline
-build, and the loop could not tell any of them from the default.
+> **If the artifact you score is generated from the artifact you tune, measure its build variance
+> first.** Some flows put a stochastic generation step between the lever and the score: the prompt
+> you're iterating on *builds* something - a memory store, a retrieval index, a synthesized corpus
+> - and the eval then scores reads against the built thing. When that build runs once per variant
+> and every rep reads the same build, reps and their CIs measure only the noise of scoring a fixed
+> build; the build's own run-to-run variance is sampled once per variant, invisible to every gate,
+> and can be the larger term. Before round 1, rebuild the baseline artifact two or three times
+> with the prompt *unchanged* and score each build the same way: the spread across those no-change
+> rebuilds is the floor a one-edit effect has to clear. In one climb, three builds of the same
+> prompt spanned ~7 points against rescore noise near ±1.4 on the train mean - every edit had been
+> compared against a single baseline build, and the loop could not tell any of them from the
+> default. If the build spread exceeds a plausible one-edit effect, build K times per variant and
+> compare build-pooled means, or move the lever closer to the score; adding reps over one build
+> can't see it.
 
-**The fix is not more repetitions.** It is to rebuild the baseline two or three times with nothing
-changed, score each the same way, and take the spread across those no-change rebuilds as the floor
-any single edit has to clear. If the build spread exceeds a plausible one-edit effect, build K
-times per variant and compare build-pooled means, or move the lever closer to the score.
+Nothing in that argument depends on what is being evaluated. The structure is: a stochastic step
+sits between the lever and the score, it runs once per variant, and the repetitions downstream of it
+therefore measure only half the variance.
 
 ### In a competition
 

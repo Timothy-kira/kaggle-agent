@@ -1,10 +1,14 @@
 # Stall triage: five buckets
 
-Adapted from Anthropic's `eval-hillclimb.md` Step 4.5 (Apache-2.0). The five buckets are
-upstream's. Four of them are **not new mechanisms here** — this plugin already implements them
-under different names, and the table's value is that it puts them side by side so "should I change
-the code or the yardstick" becomes a lookup. The fifth is the one with no home, and it is the one
-worth stopping for.
+The five buckets below are **quoted verbatim** from Anthropic's `eval-hillclimb.md` Step 4.5
+(Apache-2.0), with the original wording intact. Read them at `upstream/eval-hillclimb.md:285-293`
+against the full step, and `upstream/README.md` for the licence and the rest of the sources.
+
+Four of the five are **already implemented in this plugin under other names** — they predate the
+upstream material and were not adapted from it. The table's value is that it puts upstream's
+reasoning and this package's existing mechanisms side by side, so "should I change the code or the
+yardstick" becomes a lookup. The fifth bucket is the only one with no home, and it is the one worth
+stopping for.
 
 ## When to do this
 
@@ -18,15 +22,56 @@ rounds spent learning nothing.
 Read every remaining failure and bucket it by root cause. Then dispatch **per bucket** rather than
 running another round against all of them.
 
-## The table
+## The upstream table, verbatim
 
-| Bucket | Tell | Where this plugin handles it | Do |
-|---|---|---|---|
-| **Artifact gap** | the approach never had the fact it needed; the log shows it guessing or reaching for a default | the tree's home case | keep going — this is the loop working |
-| **Harness / infra** | it broke before producing a scoreable output: quota, OOM, timeout, a cell that died. Some harnesses *score* the failure instead of erroring it — a zero whose log carries infra markers (retries exhausted, slot ceilings, empty output) belongs here too | `failureLayer`: `tool-recovery`, `output-contract`, `state-continuity` | fix the harness; exclude errored rows from the denominator until then, and decide the handling rule for scored-in zeros before comparing scores |
-| **Structural** | the content exists in the artifact but the run never reaches it; or the same finding recurs across rounds; or one dimension underperforms regardless of which feature you target | `parent: null` swap | reorganise — consolidate, split, fix the route — rather than adding more unreached content |
-| **Variance** | the same code flips between pass and fail by as much as the round-over-round delta | `partial` verdicts, `ablate`'s repeats | you are at the noise floor on this lever. Report the best arm; raise repetitions or change the target |
-| **Judge / ruler disagreement** | a correct submission scores badly; or the metric and the objective ask for different things | **new: a research node with `targets: ["ruler"]`** | fix the metric, re-judge every node in place, then regrade |
+> | Bucket | Tell | What to do instead of another content round |
+> |---|---|---|
+> | **Artifact gap** | Model never had the fact it needed; transcript shows it guessing or searching | This is the loop's home turf - keep going |
+> | **Grader disagreement** | Model's output looks correct to you but the grader marks it wrong; or the prompt and the rubric ask for different things | Fix the grader, then re-grade *every* variant in place from stored outputs. Before overwriting, compare old vs new grades - how many cases moved, and did the variant ranking change? If the previous best is still the best and its lead over baseline held, keep going. If the ranking flipped or the lead collapsed to noise, the prior rounds were tuned to the wrong signal: show the before/after table and propose restarting the loop from baseline. |
+> | **Harness / infra** | Case errored before the model produced a scorable output - auth failure, timeout, rate-limit, env setup. Some harnesses *score* the failure instead of erroring it: zero-scored cases whose transcripts carry infra markers (retries exhausted, stall ceilings, empty outputs) belong here too | Fix the harness; exclude errored cases from the denominator until then. For scored-in zeros, decide the handling rule before comparing scores |
+> | **Structural** | The content exists in the artifact but the model didn't reach it; or the same review finding recurs across rounds; or one dimension (a language, a provider) underperforms regardless of which feature you target | Reorganize - consolidate duplicated facts into one table, split a monolith file, fix the routing - rather than adding more of the unreached content |
+> | **Variance** | Pass<->fail flips between identical-code runs are as large as the round-over-round delta | You're at the noise floor on this lever. Report best-so-far; offer to raise reps or change target |
+>
+> A failure that fits none of these is itself a signal: the artifact you're tuning may not be the
+> bottleneck for that slice - offer to change target rather than forcing it into a bucket.
+
+## The same table, mapped to what this plugin already has
+
+The third column is the only part that is not upstream's. Each row names a mechanism that already
+exists in `mcp/experiment_tree.py` — none of these four were introduced by this skill.
+
+| Upstream bucket | Already here as | The node or field that carries it |
+|---|---|---|
+| **Artifact gap** | the tree's home case | an experiment node whose `change` is real and whose `hypothesis` predicted a move |
+| **Harness / infra** | `failureLayer` on a reverted node | `output-contract`, `tool-recovery`, `artifact-persistence`, `state-continuity` — required whenever `verdict: "revert"` |
+| **Structural** | the `parent: null` swap | a node with an explicit null parent opens a new direction instead of extending a spent one |
+| **Variance** | `partial` verdicts, and `ablate`'s repeats | `factorsIntent: "repeat"` changes nothing on purpose; `ablate` derives the floor from configurations that appear twice |
+| **Grader disagreement** | **new — no existing node carries it** | a research node with `targets: ["ruler"]` |
+
+**Grader disagreement is the only bucket this skill adds.** It has no home in the four mechanisms
+above, which is why `RESEARCH_TARGETS` gained `"ruler"`: a research node that goes back to the
+measurement rather than to a forum, a paper or a repository. It is the one worth stopping for,
+because concluding that the yardstick is wrong invalidates the work already recorded — and that is
+the most expensive conclusion in a competition search, so the one most likely to be avoided.
+Having a named bucket is what makes it cheap to say out loud.
+
+## The new bucket, in this package's terms
+
+The upstream action for this bucket is quoted above and applies unchanged: fix the grader, re-grade
+every variant in place from stored outputs, and **compare before overwriting** — how many moved, and
+did the ranking change. Three details map onto what exists here:
+
+- **Re-grading in place** is `action="regrade"`. The stored results are evidence and do not need
+  re-running; the metric does. Nothing is written.
+- **Comparing before and after** is `priorBestStillBest` read together with
+  `collapsesIntoNoise`, and `verdictsFlipped` for the size of the move.
+- **Restarting the loop from baseline** on a rank flip is `verdict: "revert"` on the chain, not a
+  deletion — the tree is append-only and ids are never reused.
+
+**`failureLayer` has a `"metric"` entry and is still not this bucket.** One asks which runtime
+layer broke; the other asks whether the fault is the measurement itself. Sharing one enum would
+make "the run crashed and scored zero" and "the metric marked a correct answer wrong" the same
+value, and those call for opposite responses.
 
 A failure that fits none of these is itself a signal: the approach may not be the bottleneck for
 that slice. Offer to change target rather than forcing it into a bucket.

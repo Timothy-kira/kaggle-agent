@@ -1804,5 +1804,71 @@ def _(ks, js):
                     "the larger one sets the floor and says so")
 
 
+# ------------------------------------------------- the upstream quotations
+#
+# ruler-audit quotes Anthropic's guides and says the quotes are verbatim. A paraphrase under
+# quotation marks is the exact failure this package is built to catch, so the claim is
+# checked mechanically rather than trusted - and a mechanical claim about quotation is only
+# worth anything if the break is one a reader would actually make.
+
+def _paraphrase_a_quotation(root):
+    """Reword one clause of a quoted stall bucket, the way an editor tightening prose would.
+
+    Three words change and the sentence still reads as English and still means nearly the
+    same thing. That is what makes it the right break: a checker that only caught gross
+    tampering would pass this, and the difference between 'Fix the grader, then re-grade'
+    and 'Fix the judge, then regrade' is invisible to anyone skimming the diff.
+    """
+    p = root / "skills" / "ruler-audit" / "references" / "triage.md"
+    text = p.read_text(encoding="utf-8")
+    old = "Fix the grader, then re-grade"
+    if text.count(old) != 1:
+        raise AssertionError(f"fixture anchor matched {text.count(old)} times, not 1")
+    p.write_text(text.replace(old, "Fix the judge, then regrade", 1), encoding="utf-8", newline="")
+
+
+def _truncate_an_upstream_copy(root):
+    """Ship a shortened copy of an upstream guide, which still parses and still reads.
+
+    The size assertion is the one that has to catch this: a file cut in half is present,
+    is valid UTF-8, and opens as markdown, so every other check in this suite passes on it.
+    """
+    p = root / "skills" / "ruler-audit" / "references" / "upstream" / "cost-hillclimb.md"
+    text = p.read_text(encoding="utf-8")
+    p.write_text(text[: len(text) // 2], encoding="utf-8", newline="")
+
+
+def _edit_an_upstream_copy(root):
+    """Change the upstream file in place, which is the thing the word 'verbatim' forbids."""
+    p = root / "skills" / "ruler-audit" / "references" / "upstream" / "eval-audit.md"
+    text = p.read_text(encoding="utf-8")
+    old = "## 5. Can it detect the change you're after?"
+    if text.count(old) != 1:
+        raise AssertionError(f"fixture anchor matched {text.count(old)} times, not 1")
+    p.write_text(text.replace(old, "## 5. Can it see the win?", 1), encoding="utf-8", newline="")
+
+
+@case("checker: a paraphrase under quotation marks is caught",
+      "a quoted passage is byte-for-byte upstream, so a reader can tell Anthropic's wording "
+      "from this package's")
+def _(ks, js):
+    return _catches("check_quoted_upstream_is_verbatim", _paraphrase_a_quotation,
+                    "every quoted block is byte-for-byte upstream")
+
+
+@case("checker: a shortened upstream copy is caught",
+      "the sources are shipped complete - a half-file still parses, so only the size can see it")
+def _(ks, js):
+    return _catches("check_quoted_upstream_is_verbatim", _truncate_an_upstream_copy,
+                    "is the size the README records")
+
+
+@case("checker: an edited upstream file is caught",
+      "'verbatim' is a claim about the bytes, and a reworded heading breaks it")
+def _(ks, js):
+    return _catches("check_quoted_upstream_is_verbatim", _edit_an_upstream_copy,
+                    "is the size the README records")
+
+
 if __name__ == "__main__":
     sys.exit(main())

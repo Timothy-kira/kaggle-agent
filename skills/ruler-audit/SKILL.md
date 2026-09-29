@@ -1,7 +1,7 @@
 ---
 name: "ruler-audit"
 description: "Use before declaring the next experiment, or when the tree has gone flat - establishes whether the metric can resolve the change you are about to make, keeps seed noise and rebuild noise apart because they call for opposite remedies, tells a hard task from one this leaderboard happens to punish, and decides whether a stall belongs to the approach or to the ruler. Adapted from Anthropic's public claude-api eval guides (Apache-2.0); the experiment tree is the ledger here, so none of the upstream file layout is carried over."
-license: "Apache-2.0. Adapted from Anthropic claude-api shared/evals (build-eval.md, eval-audit.md, eval-hillclimb.md, cost-hillclimb.md), Copyright 2026 Anthropic, PBC. Adapted here: competition vocabulary, the tree as the single ledger, the two variance layers Kaggle adds, and the four buckets this plugin already implements under other names. See NOTICE.md."
+license: "Apache-2.0. Adapted from Anthropic claude-api shared/evals (build-eval.md, eval-audit.md, eval-hillclimb.md, cost-hillclimb.md) and the blog post 'Automating eval design and hillclimbing with Claude' (2026-09-28), Copyright 2026 Anthropic, PBC. The four guides are shipped byte-for-byte under references/upstream/ and the domain-neutral reasoning is quoted from them; what is adapted here is the vocabulary - competition data, validation splits, metrics and the tree as the single ledger - the two variance layers Kaggle adds, and the four stall buckets this plugin already implements under other names. Every quoted block is asserted verbatim by tools/verify_upstream_quotes.py. See NOTICE.md."
 ---
 
 # Ruler audit: is the metric able to see what you are about to do?
@@ -211,12 +211,24 @@ as `ask_user` interviews, because upstream's `AskUserQuestion` is the same gestu
 
 ## References
 
+The upstream guides are shipped whole, byte-for-byte, in `references/upstream/`. The passages
+quoted in the files below are quoted from them, and `tools/verify_upstream_quotes.py` fails the
+build if a quoted block cannot be found in an upstream source character for character.
+
 | File | What it holds |
 |---|---|
+| `references/upstream/` | Anthropic's four guides, unmodified, plus the cited blog sections |
 | `references/checklist.md` | The five audit groups, mapped to competition semantics |
 | `references/resolution.md` | The three numbers, and the two variance layers in detail |
-| `references/triage.md` | The five stall buckets, with the upstream cases behind each |
+| `references/triage.md` | The five stall buckets, quoted, and which four are already implemented here |
 | `references/where-hard.md` | Adversarial sampling, and the leaderboard as a fitted ruler |
-| `references/adoption.md` | Three registration gates, for a tree that is also buying something |
+| `references/adoption.md` | Three registration gates, quoted, for a tree that is also buying something |
+
+What is quoted and what is restated: the reasoning in these guides is about measurement and holds
+whatever is being measured, so the noise-floor arithmetic, the build-variance finding, the five
+buckets, the three gates and the adversarial-sampling argument are quoted intact. What is restated
+is the vocabulary they are applied in — `results.jsonl`, `traces/`, `runner-scaffold.mjs`,
+`AskUserQuestion`, transcripts and memory stores belong to an application evaluated by an LLM, and
+none of them exist in this package.
 
 `NOTICE.md` carries the Apache-2.0 attribution.

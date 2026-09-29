@@ -1,28 +1,46 @@
 # Adoption gates
 
-Adapted from Anthropic's `cost-hillclimb.md` §"Adoption gates" (Apache-2.0). Upstream registers
-three gates before the first round so that a candidate is accepted against criteria fixed in
-advance, rather than against whatever the round happened to show. The same discipline applies to a
-competition tree buying a cheaper or faster pipeline, and to any change where the thing being
-optimised is not the score.
+The three gates are **quoted verbatim** from Anthropic's `cost-hillclimb.md` §"Adoption gates"
+(Apache-2.0), reproduced in full below and readable at `upstream/cost-hillclimb.md:328-346`.
+Upstream registers them before the first round so that a candidate is accepted against criteria
+fixed in advance, rather than against whatever the round happened to show.
 
-## The three gates
+## The three gates, verbatim
 
-A candidate change is adopted only if **all three** pass.
+> A candidate change (prompt edit, effort cut, model swap) is adopted only if ALL three
+> pre-registered gates pass:
+>
+> 1. **Quality band** - held-out score within a named band of the incumbent (state the
+>    band before running).
+> 2. **Cost margin** - strictly cheaper beyond a registered margin, measured at the
+>    stated pricing basis.
+> 3. **Mechanism** - the *predicted* mechanism appears in the measurements (e.g. "this
+>    edit removes duplicate lookups" must show up as fewer tool calls, not just a lower
+>    bill). A cost tie with the right mechanism and a cost win with the wrong mechanism
+>    are both rejections: the first is an edit that didn't bite, the second is an
+>    unexplained confound that will not survive contact with production.
+>
+> The final joint confirm (Step 5 of the search order) reports against these same gates;
+> three sequential selections, each made on the data that chose it, overstate the
+> combined win, so the confirm's number - not the per-round selection scores - is the
+> headline.
 
-1. **Quality band** — the held-out score stays within a **named band** of the incumbent. State the
-   band before running.
-2. **Margin** — strictly better beyond a **registered margin**, on the stated basis. Upstream
-   measures cost; the competition form measures quota hours, wall-clock, or memory, whichever the
-   change was actually meant to move.
-3. **Mechanism** — the **predicted** mechanism appears in the measurements.
+Two of those carry over without change. The **quality band** is the tree's `anchor` — a held-out set
+the search may not score on, which upstream takes as given and which `kaggle_experiment_tree`
+enforces. The paragraph on **three sequential selections** is a statement about statistics, not
+about LLMs, and it is the reason a run of kept nodes is reported as the final configuration's
+measurement rather than as the sum of individual deltas.
 
-The third is the sharpest, and upstream's formulation is worth quoting in full because the
-asymmetry is the whole point:
+## What changes for a competition
 
-> A cost tie with the right mechanism and a cost win with the wrong mechanism are both rejections:
-> the first is an edit that didn't bite, the second is an unexplained confound that will not
-> survive contact with production.
+**Cost margin** is the one gate that needs restating: a competition run optimises a leaderboard
+score, so the quantity being bought is usually quota hours, wall-clock, or memory — whichever the
+change was actually meant to move. The gate keeps its shape: strictly better beyond a margin
+registered *before* the run, measured on a stated basis.
+
+**Mechanism** transfers intact, and it is the sharpest of the three because the asymmetry is the
+whole point — a tie with the right mechanism and a win with the wrong one are both rejections, and
+the second is the dangerous one.
 
 ## The mechanism gate, in competition terms
 
@@ -93,6 +111,7 @@ Register a gate in the places the tree already treats as declarations:
 
 So a gated `declare` looks like:
 
+> (this plugin's own syntax, not a quotation)
 > change: replace the full-sample fit with a 60% subsample
 > hypothesis: score within 0.002 of the parent on the held-out slice, at 0.6× the training cost,
 > with the mechanism showing as roughly half the fitted rows in the log
