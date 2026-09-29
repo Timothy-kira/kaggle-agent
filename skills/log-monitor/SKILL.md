@@ -111,16 +111,31 @@ This skill only supplies the tick body, because that part is specific to a Kaggl
 
 ```
 1. kaggle_log_monitor action="get"        # targets, watch rules, cadence, repair progress
-2. read the run's log, using the route that worked last time (see below)
+2. ask what the RUN is doing, and pass it in
+   kaggle_kernels_status  (local target: is the pid still alive?)
+   → run_state="running"|"queued"|"starting"|"complete"|"error"
+   → active_versions= how many versions of this ref are in flight
+3. read the run's log, using the route that worked last time (see below)
    could not read it → kaggle_log_monitor action="attempt" ok=false reason="..."
-                      → it hands back the next route; take it and try again THIS tick
+                     → it hands back the next route; take it and try again THIS tick
    read it          → kaggle_log_monitor action="observe" text="<the tail>"
-                      → it says which rules matched and what the cadence should do
-   error / terminal / decision → report it, settle the node, delete this cron
-   nothing          → say nothing
-3. kaggle_log_monitor action="tick" verdict=<observe's verdict>
-4. cron update schedule=<the interval it returns>
+                                                     run_state="..." active_versions=N
+                     → it says which rules matched and what the cadence should do
+4. kaggle_log_monitor action="tick" verdict=<observe's verdict>
+5. cron update schedule=<the interval it returns>
 ```
+
+**A tick reads the log AND the run's state; neither alone decides anything.** Step 2 is not
+optional bookkeeping. A kernel that is queued has **no log at all** — `kaggle_kernels_logs`
+returns nothing, and every digest of an empty log is the same digest. Reading only the log, a
+queued run is indistinguishable from a finished one, and two quiet checks later the watch
+concludes the run is steady and retires itself while the run is still waiting for a machine.
+`observe` counts silence; only `run_state` decides whether silence means anything.
+
+**A state you did not read is not a state.** Leave `run_state` off and it counts as **alive**.
+It does not inherit the last one seen, because a terminal state carried forward is a stale
+signal: the run finished an hour ago, has since been re-pushed, and a watch that trusted its
+own memory would retire over a run that is spending quota now.
 
 **A tick reads the log; it does not consult a clock to decide whether that mattered.**
 `action="observe"` is what makes that true: the log's own content decides both whether this
@@ -131,7 +146,13 @@ tick is news and how soon the next one comes. Pass it what you read and it answe
 |---|---|---|
 | `tighten` | the log moved since the last tick — the run is doing something | watch closely, exit quietly |
 | `hold` | one quiet check; a run can go quiet mid-training | same cadence, exit quietly |
-| `relax` | quiet twice running — genuinely steady | stretch the interval, exit quietly |
+| `waiting` | quiet again, **but the run is still going** | **hold the rung, keep the cron**, exit quietly |
+| `relax` | quiet **and the run has finished** | stretch the interval, and only now may the watch end |
+
+`waiting` and `relax` separate two things that used to be one. Both look like "nothing
+happened"; only one of them means there is nothing left to watch. `waiting` is the normal
+state of a six-hour run between epochs, and it is the state that used to end watches by
+accident.
 
 **A log that moved snaps the ladder back to its tightest rung.** That is the point: a run
 that wakes up in the middle of the 20-minute steady state is interesting again, and a monitor
@@ -170,10 +191,26 @@ interval to re-arm with, so the schedule follows the run instead of a guess you 
 run that needs 6 hours does not need 720 reads of an endpoint with nothing to say. `action="get"`
 shows which rung you are on. **Registering a run resets the ladder to the first rung.**
 
-**Delete the cron when the watch is over.** That is not tidy-up, it is the exit condition: a
-loop with no exit is a leak that bills API calls forever. Delete it when `observe` reports
-something, or when `attempt` says every route to the log has failed. `cron list` shows you
-what is still watching, and `kaggle_log_monitor action="clear"` retires the stale targets.
+**Delete the cron only when the watch is actually over.** A loop with no exit is a leak that
+bills API calls forever — but a loop that exits early is a run nobody is watching, which costs
+a GPU an hour. There are exactly two endings, and both need the run's state, not the log's
+silence:
+
+| ending | needs |
+|---|---|
+| the run reached a terminal state | `observe` reports `canStop: true` — `complete` or `error` |
+| the log cannot be read at all | `attempt` reports `exhausted` **and** `run_state` is not alive |
+
+Neither is "the log went quiet". `observe` prints the same sentence every time — *"the run is
+still 'running', so this cron STAYS. Quiet is not the same as over."* — and that sentence is
+the one to read before doing anything clever.
+
+`exhausted` alone is not an ending. A queued kernel has no log, so every log route fails while
+the run is perfectly healthy; that is a **route** problem, and it is fixed by asking
+`kaggle_kernels_status` and passing the answer in as `run_state`, not by retiring. Only when
+the run is genuinely gone as well does the watching end, and then the reason goes on the node.
+`kaggle_log_monitor action="clear"` retires stale targets, and `cron list` shows what is still
+watching.
 
 **The slider still works, and it overrides the ladder.** `kaggle_log_monitor action="set"`, or the
 GUI from `log-monitor-visualizer`, changes the fetch interval a tick reads *within* its rung. The
@@ -220,8 +257,8 @@ the design, not a fault, so scope it to a bounded wait.
 ## Step 4: report only on the three conditions
 
 A tick stays silent otherwise. Not quiet in the chat - absent. Progress that is
-merely progress is not news. `action="observe"` decides this from the log's content, and its
-`report` list is the authority on what is worth interrupting someone for.
+merely progress is not news. `action="observe"` decides this from the log's content and the
+run's state, and its `report` list is the authority on what is worth interrupting someone for.
 
 **Report when:**
 
@@ -235,6 +272,12 @@ merely progress is not news. `action="observe"` decides this from the log's cont
    failure with two plausible causes, a point where the next step depends on intent. Say
    the question and what the options are. Do not decide unilaterally and do not ask the user
    directly; that is the main agent's job.
+4. **More than one version of the ref is in flight** (`active_versions > 1`). No line of any
+   log says this, so it is read off the ref rather than the text — and it is the one condition
+   the log itself can never raise. Two live versions of the same kernel are two accelerators
+   being paid for to produce the same answer, and Kaggle has no command to stop the newer one:
+   `kernels` offers `delete`, which takes every version with it. Report it the moment it is
+   seen; catching it at hour two is worth more than catching it at hour six.
 
 **Do not report:** a successful step, a metric that looks normal, a changed ETA with no
 decision attached, a repeat of a line already reported, or "still running" on its own.

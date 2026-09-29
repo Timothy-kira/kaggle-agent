@@ -78,7 +78,11 @@ Wave 1 (4 subagents, launched in ONE response — see "Launch a wave" below)
   ├─ Overview + rules  the macro facts and the constraints
   └─ Kaggle CPU nb    what the data actually is  (the data never leaves Kaggle)
         │
-        ▼   main agent synthesises, then DIRECTS wave 2
+        ▼   main agent synthesises the four reports into one picture
+    published method   kaggle_methods: refresh the index, search it with the words
+        │              wave 1 just produced, fetch what is worth reading. Main thread,
+        │              no subagent, and it does not change the wave 2 coverage floor.
+        ▼   then DIRECTS wave 2
 Wave 2 (ENTIRELY in the main thread — one thread, no subagent at all)
   ├─ deep-research     the general browser search, run over multiple rounds here
   │                    (in the main thread, where mcp_browser and web_search exist)
@@ -107,9 +111,9 @@ coverage floor.
 
 **Wave 2's queries come from wave 1's results.** That is the whole reason for the split. The
 main agent reads the four reports, notices that everyone's Duck harness forks are converging
-on one prompt format, and then the search goes looking for *that* — not for "ARC-AGI-3 repos" in
-general. A search dispatched before wave 1 finishes can only search the competition title, and
-returns the same generic prior art every time.
+on one prompt format, and then the search goes looking for *that* — not for "that competition's
+repos" in general. A search dispatched before wave 1 finishes can only search the competition
+title, and returns the same generic prior art every time.
 
 **Never start wave 2 before wave 1 has finished.** You would be searching before you know what to
 search for, which is the most expensive way to be wrong.
@@ -211,9 +215,9 @@ message*, not of any orchestration feature.
 
 **Wave 2's queries come from wave 1's results.** That is the whole reason for the split. The
 main agent reads the four reports, notices that everyone's Duck harness forks are converging
-on one prompt format, and then searches for *that* — not for "ARC-AGI-3 repos" in general. A
-search started before wave 1 finishes can only use the competition title, and returns the same
-generic prior art every time.
+on one prompt format, and then searches for *that* — not for "that competition's repos" in
+general. A search started before wave 1 finishes can only use the competition title, and returns
+the same generic prior art every time.
 
 **Never start wave 2 before wave 1 has finished.** You would be searching before you know what to
 search for, which is the most expensive way to be wrong. The correct boundary is: launch all four
@@ -312,8 +316,8 @@ code, and what did they actually change to score higher?"**
      line count inflates the result about 2x. **100 is a ceiling, not the size of the field** —
      never write "the competition has 100 notebooks".
    - **Records with non-ASCII metadata come back as Python bytes reprs.** Verified on
-     `biohub-cell-tracking-during-development`: 9 of 100 refs arrived as `b'beraterolelk/0-947-…'`
-     rather than `beraterolelk/0-947-…`, with the title escaped to `\xf0\x9f\x94\xac` and author
+     `example-lab-2026-cell-segmentation`: 9 of 100 refs arrived as `b'some-user/0-947-…'`
+     rather than `some-user/0-947-…`, with the title escaped to `\xf0\x9f\x94\xac` and author
      names mangled the same way. **The top-voted notebook in that sweep was one of the nine.** A
      naive extract hands `b'owner/slug'` to `kaggle_kernel_pull` and the pull fails, and it fails on
      exactly the notebooks you most wanted. Strip the `b'` and the trailing quote, and if non-ASCII
@@ -434,7 +438,7 @@ Tested against a real competition. Getting these wrong wastes an entire wave, so
 stated once here rather than rediscovered per subagent.
 
 **Get the slug from the CLI, never construct it.** The real slug is longer than the obvious
-one — `arc-prize-2026-arc-agi-3`, not `arc-prize-2026`. A wrong slug returns
+one — `kaggle-inc-2026-example-challenge`, not `example-challenge`. A wrong slug returns
 `403 Forbidden`, which looks exactly like an auth failure and sends you off diagnosing
 credentials that were fine.
 
@@ -473,8 +477,8 @@ you download it and read the file. That is the only way to see the prompt format
 parsing, which is what actually decides whether a notebook is worth building on.
 
 **`kaggle kernels list` mangles non-ASCII refs, and it mangles the ones you wanted.** Measured on
-`biohub-cell-tracking-during-development`: 9 of 100 records came back as Python bytes reprs —
-`b'beraterolelk/0-947-…'` instead of `beraterolelk/0-947-…`, titles as `\xf0\x9f\x94\xac`, author
+`example-lab-2026-cell-segmentation`: 9 of 100 records came back as Python bytes reprs —
+`b'some-user/0-947-…'` instead of `some-user/0-947-…`, titles as `\xf0\x9f\x94\xac`, author
 names similarly escaped. **The highest-voted notebook in that sweep was among the nine.** Feeding
 an extracted ref to `kaggle_kernel_pull` as-is fails, and it fails on exactly the notebooks that
 looked most competitive. Strip the `b'` and the trailing quote, restore escapes as utf-8, and
@@ -489,7 +493,7 @@ is the only verifiable link between a score and a notebook author.
 
 **`competitions pages` works and is how you read the rules.** `kaggle competitions pages -c <slug>
 --content --page-name <name>` returns the full page text to an ordinary participant. Verified on
-`arc-prize-2026-arc-agi-3`, which yielded Rules, Evaluation, Code Requirements, Timeline, Prizes
+`kaggle-inc-2026-example-challenge`, which yielded Rules, Evaluation, Code Requirements, Timeline, Prizes
 and data-description — every hard constraint of that competition, without opening a browser. Run
 `pages` with no page name first to list what is available. Only `competitions hosts` genuinely
 403s. This is the highest-value command in the whole sweep; do not skip it.
@@ -548,12 +552,12 @@ unauthenticated Kaggle SPA renders an empty shell and reporting that as "the Rul
 a false negative.
 
 **`competitions download` may 403 even when `competitions files` lists the file.** On
-`arc-prize-2026-arc-agi-3` every listed file returned 403 on download while the listing was
+`kaggle-inc-2026-example-challenge` every listed file returned 403 on download while the listing was
 readable. That is a real outcome, not a credentials problem — and for **competition data** it is
 moot, because you must not download it at all: profile it from a notebook on Kaggle instead (see
 wave 1 subagent 4). For *documentation* that 403 applies, and then find the same content
 legitimately: the organiser often mirrors the starter repo publicly on GitHub
-(`arcprize/ARC-AGI-3-Kaggle-Starter` mirrored that competition's `ARC-AGI-3-Agents/`), and PyPI is
+(`example-org/example-challenge-kaggle-starter` mirrored that competition's `Example-Challenge-Agents/`), and PyPI is
 an ungated route for the vendored wheels. Say which route you used.
 
 If you cannot authenticate, do not infer the rules from a leaderboard or a README. Report the
@@ -573,7 +577,7 @@ because **competition data must never be pulled onto this machine**.
 **The data stays on Kaggle. Do not run `competitions download` or `datasets download`.** Not for
 the profile, not for one sample, not "just to check a single file" — a listing is not a reason to
 copy bytes. The ban is not only policy: the download is frequently impossible anyway, because
-every listed file 403s on `arc-prize-2026-arc-agi-3` while the listing itself reads fine. Running
+every listed file 403s on `kaggle-inc-2026-example-challenge` while the listing itself reads fine. Running
 the notebook on Kaggle is not a workaround for that 403, it is the ordinary path — the notebook
 already has the competition's input directory mounted, and it is the only place the data should
 ever be read.
@@ -697,6 +701,40 @@ narrows where wave 2 looks; it does not decide whether the coverage floor is met
 Hugging Face and arXiv are read either way, because that floor is what makes the research a
 research rather than a search.
 
+## Between the waves: published method, before the general search
+
+This sits in the seam on purpose. Wave 1's reports have just been synthesised, which means the
+main agent is holding this competition's vocabulary — that everyone's harness forks converge on
+one prompt format, that the split is contested, that the data has an odd shape. Using those
+words to look for published experimental method is the same act as using them to direct wave 2,
+and the skill already argues for that act twice above. Run before wave 2 rather than earlier
+because before wave 1 there is nothing to search with but the competition name, and a search on
+the competition name returns the same generic prior art every time.
+
+**In the main thread. No subagent.** Wave 2 is one thread because the forensics pass has nothing
+to read until the search names its sources; this is the same shape one step earlier, and
+dispatching it would brief a subagent on guesses.
+
+Three steps, in order — `kaggle_methods` with `action="refresh"`, then `action="search"`, then
+`action="fetch"` per candidate worth reading:
+
+1. **Refresh the index.** It is scraped from the page upstream keeps for its catalogue, not
+   shipped here, so it is one request and it is current. `action="probe"` first if you want to
+   know whether the cache is stale before spending it.
+2. **Search** with the change and the hypothesis you would actually declare — in this
+   competition's words, not the competition's name. Ranked candidates come back with the words
+   that matched, and a shortlist is a shortlist: reading it is your call, not the tool's.
+3. **Fetch** the ones worth reading, by name and at the pinned commit. Downloads land outside
+   the package, cached by commit, and are scanned before anything is stored.
+
+**A failed fetch stops and asks.** The tool reports the status, the transport's error and an
+offline capability probe, and deliberately does not tell you which of those is your problem.
+Hand it to `presence-mode`: present, ask; away, record the decision to continue on cache and
+mark it for the user's return. A deferred notice is not a skipped one, and a method that is
+silently missing reads as a method that does not exist.
+
+Then run wave 2, which is unchanged and still governed by the coverage floor.
+
 ## Wave 2, step 1 — the general search, in the browser, on an engine the user chose
 
 After all four wave-1 reports are in, the main agent synthesises them into one research
@@ -713,7 +751,7 @@ picked silently by whoever ran last.
 | | Discovery search | Direct navigation |
 |---|---|---|
 | When | you do not have the URL yet | you already have the exact URL |
-| Example | "who is working on ARC-AGI-3" | `github.com/topics/arc-prize`, `arxiv.org/list/cs.AI/recent` |
+| Example | "who is working on the Example Challenge" | `github.com/topics/example-challenge`, `arxiv.org/list/cs.AI/recent` |
 | Do this | **ask the engine first, then open the search page** | just open it — **no engine question** |
 | Tool | `kaggle_search_engine action="ask"` | nothing; `mcp_browser action="open_tab"` |
 
@@ -805,7 +843,7 @@ and page-reading is not delegated to it.
 So the default for the three required sites is a direct fetch, not a navigation:
 
 ```
-web_fetch url="https://github.com/topics/arc-prize"
+web_fetch url="https://github.com/topics/example-challenge"
 web_fetch url="https://huggingface.co/models?search=<task>"
 web_fetch url="https://arxiv.org/list/<category>/recent"
 ```
@@ -825,7 +863,7 @@ receipt is invalid. **If a page looks blank, `wait` and re-read before concludin
 Both paths were exercised on this machine, which is what makes the floor achievable rather than
 aspirational: `web_fetch` returns real content from `github.com/topics/…`, `huggingface.co/models`
 and `arxiv.org/list/…`; and `mcp_browser` opened and rendered the same three (`arxiv.org/list/cs.AI/recent`
-with 260 entries, `huggingface.co/models?sort=downloads` with 3.1M models, `github.com/topics/arc-prize`
+with 260 entries, `huggingface.co/models?sort=downloads` with 3.1M models, `github.com/topics/example-challenge`
 with 10 public repos and their stars and update dates visible). Use whichever the page needs.
 
 What does **not** satisfy it:
@@ -923,6 +961,39 @@ can check, and that is the whole difference between evidence and a rumour. Becau
 now runs in the main thread, sources are added one at a time and in order — the lost-update
 problem that made parallel writers dangerous does not apply here, and there is no reason to
 batch them either.
+
+
+## After wave 2: generate before you converge
+
+The sweep has named the field. The next mistake is to take its first plausible answer as the
+answer, because by now every option on the table has been read about and the one that sounds best
+is the one the last twenty minutes made sound best.
+`references/kdense/scientific-brainstorming/` is vendored whole for this step, and three of its
+moves are about a single agent rather than a room of them.
+
+**Generate first, evaluate later, and do not interleave.** Upstream's rule is that ideas are
+produced without being shown to anything that can rank them, and the reason is anchoring: a
+candidate you have already scored is a candidate you will not drop. Here the ranker is you, and
+you have just read a great deal, so the discipline is to write the candidates down *before*
+re-reading what the sweep found — a short list, unranked, each with the one thing that would make
+it wrong.
+
+**Have something that did not propose them attack them.** Upstream puts a different person on
+adversarial review for exactly the reason that self-review finds nothing. The nearest equivalent
+here is a `verifier` subagent handed the candidate list and the question "what would make this
+wrong", with no tree, no history and no stake in it. This is the same dispatch
+`technical-report` uses for the finished report, and it is the only mechanism in the package that
+can acquit anything.
+
+**Do not let the scores pick the winner.** Upstream is explicit that its matrix is a traceable
+decision aid and the judgement stays with a person. The fit is exact: the two gates below already
+work this way, and a candidate that wins on a score alone has skipped the gate that exists
+precisely because scores are not the decision.
+
+**Not carried:** the facilitation half. Anonymous input, pseudonymous participants, leader-last
+sharing and turn-taking are a technique for a room of people, and none of them apply to one agent
+at a keyboard. What transfers is the shape — independent generation, adversarial review, a
+recorded decision log — and the log is already a node on the tree.
 
 ## Before any experiment: declare the held-out set
 

@@ -535,12 +535,12 @@ def _(ks, js):
     def _drop_data(root):
         path = root / "mcp" / "experiment_tree.py"
         text = path.read_text(encoding="utf-8")
-        old = 'CONTROL_KEYS = ("seed", "budget", "eval", "retrain", "data")'
+        old = 'CONTROL_KEYS = ("seed", "budget", "eval", "retrain", "data", "rebuild")'
         if old not in text:
             raise AssertionError("fixture is stale: the data control is not in CONTROL_KEYS")
-        path.write_text(text.replace(old, 'CONTROL_KEYS = ("seed", "budget", "eval", "retrain")', 1),
+        path.write_text(text.replace(old, 'CONTROL_KEYS = ("seed", "budget", "eval", "retrain", "rebuild")', 1),
                         encoding="utf-8", newline="")
-    return not _catches("check_the_dataset_is_a_control_and_silence_is_not_a_disagreement",
+    return _catches("check_the_dataset_is_a_control_and_silence_is_not_a_disagreement",
                         _drop_data, "the dataset is one of the controls")
 
 
@@ -563,7 +563,7 @@ def _(ks, js):
             "## Step 1 — write the figure contract",
             "## Step 2 — the figures this tree has earned")
         path.write_text(text[:start] + text[end:], encoding="utf-8", newline="")
-    return not _catches("check_the_thinking_steps_were_actually_added", _break,
+    return _catches("check_the_thinking_steps_were_actually_added", _break,
                         "the figure contract comes BEFORE")
 
 
@@ -582,7 +582,7 @@ def _(ks, js):
                         encoding="utf-8", newline="")
     # Presence assertions still pass here - the six fields are all still in the file. Only the
     # ORDER assertion can see the difference, which is exactly what this case is for.
-    return not _catches("check_the_thinking_steps_were_actually_added", _break,
+    return _catches("check_the_thinking_steps_were_actually_added", _break,
                         "comes BEFORE the chart is drawn")
 
 
@@ -595,7 +595,7 @@ def _(ks, js):
             "## Before either: name what you are trying to win",
             "## The short version")
         path.write_text(text[:start] + text[end:], encoding="utf-8", newline="")
-    return not _catches("check_the_thinking_steps_were_actually_added", _break,
+    return _catches("check_the_thinking_steps_were_actually_added", _break,
                         "a candidate is scored against the measurement that would end it")
 
 
@@ -605,14 +605,14 @@ def _(ks, js):
     def _break(root):
         path = root / "README.md"
         text = path.read_text(encoding="utf-8")
-        if "29 tools" not in text:
-            raise AssertionError("fixture is stale: the README no longer says '29 tools'")
+        if "30 tools" not in text:
+            raise AssertionError("fixture is stale: the README no longer says '30 tools'")
         # Every occurrence, not the first. The README says the count twice - the headline and
-        # the file table - and replacing only one left the other in place, so `"29 tools" in
+        # the file table - and replacing only one left the other in place, so `"30 tools" in
         # readme` was still true and this case could not go red. A counter-example that has
         # quietly stopped reproducing is worse than no counter-example: it reads like coverage.
-        path.write_text(text.replace("29 tools", "31 tools"), encoding="utf-8", newline="")
-    return not _catches("check_the_readme_counts_what_the_package_contains", _break,
+        path.write_text(text.replace("30 tools", "32 tools"), encoding="utf-8", newline="")
+    return _catches("check_the_readme_counts_what_the_package_contains", _break,
                         "tool count is the one the server actually serves")
 
 
@@ -625,7 +625,7 @@ def _(ks, js):
         # contract that no longer existed. Reading it cost more than writing the gate did.
         (root / "mcp" / "leftover_helper.py").write_text(
             "def helper():\n    return 1\n", encoding="utf-8")
-    return not _catches("check_the_readme_counts_what_the_package_contains", _break,
+    return _catches("check_the_readme_counts_what_the_package_contains", _break,
                         "reachable from one, transitively")
 
 
@@ -772,6 +772,10 @@ _CHECK_TARGETS = ("MANIFEST", "SERVERS", "REL", "SERVER_PY", "RESEARCH_SKILL")
 _IGNORE = shutil.ignore_patterns(".git", "__pycache__", "*.pyc", ".venv",
                                  "branches", "quarantine")
 
+# Returned by _catches, and only by _catches: a case that breaks something and then asks whether
+# the CHECKER noticed. Distinct from True so main() can say what was observed - see _catches.
+_CHECKER_NOTICED = "the checker went red on the broken copy and silent on this one"
+
 
 def _run_repo_check(which, break_it=None):
     """Run one real check from check_plugin.py against a throwaway copy of this repo.
@@ -821,20 +825,22 @@ def _run_repo_check(which, break_it=None):
 
 
 def _catches(which, break_it, *expected, exact=False):
-    """True when `which` is silent on a pristine repo and names the break on a broken one.
+    """`_CHECKER_NOTICED` when `which` is silent on a pristine repo and names the break on a broken one.
 
-    The cases below INVERT this: the harness prints DETECTED when a case returns
-    False, and what is being observed here is the instrument catching the break. The
-    guarantee under test is the checker's, so "does the guarantee hold on this broken
-    repository" and "does the checker notice" are the same question read in two directions.
+    This case asks a different question from the others, so it answers it in a different type.
+    The other 60-odd cases return whether the CODE holds a guarantee. This one breaks something on
+    purpose and returns whether the CHECKER noticed - the guarantee under test belongs to the
+    checker, so "does the guarantee hold on this broken repository" and "does the checker notice"
+    are the same question read in two directions. Returning a plain bool for it would print
+    "the current code already holds this" about a run that just proved the opposite, and a
+    summary line nobody can read back is a summary line that will be trusted.
 
-    A false return is ambiguous on its own - it means either "the instrument did not notice"
-    or "the expected text never matched anything the instrument said" - and the harness renders
-    BOTH as a pass, because False is what a working repo-level case returns. That is a
-    counter-example that cannot fail: I wrote two of them with an expected string one word off
-    the real message, and both printed OK while measuring nothing. So the ambiguous case now
-    raises instead of returning, and the harness reports it as a broken case rather than as a
-    guarantee that holds.
+    A false return is ambiguous on its own - it means either "the instrument did not notice" or
+    "the expected text never matched anything the instrument said" - and rendering BOTH as a pass
+    is a counter-example that cannot fail: two of these were written with an expected string one
+    word off the real message, and both printed OK while measuring nothing. So the ambiguous case
+    raises instead of returning, and main() reports a raise as its own outcome rather than as
+    either verdict.
     """
     if _run_repo_check(which):
         return False  # an instrument that flags the pristine repo proves nothing
@@ -849,7 +855,7 @@ def _catches(which, break_it, *expected, exact=False):
         raise AssertionError(
             f"the break was caught, but not with the expected wording: {missing} not in "
             f"{failures}")
-    return True
+    return _CHECKER_NOTICED
 
 
 def _duplicate_bound_edges(root):
@@ -915,8 +921,15 @@ def _doubled_carriage_return(root):
     to every line), joined back with \\n - at which point the text is byte-identical to
     what was read - and then have the line endings 'restored', which doubles them. The
     middle join is the tell: it is a no-op that looks like the fix.
+
+    On identity.md rather than collab.md, and that is not a preference. The fixture refuses to run
+    on an LF file, and collab.md became one when the kdense-methods row was added to it - so for a
+    while this case raised rather than measuring, and the harness was printing the raise under the
+    same DETECTED label as a pass. It is the one category index still stored with CRLF endings, so
+    it is where the same round-trip can still be reproduced. The refusal below is what makes that
+    visible instead of silent: a fixture that cannot reproduce the bug says so.
     """
-    idx = root / "skills" / "categories" / "collab.md"
+    idx = root / "skills" / "categories" / "identity.md"
     raw = idx.read_bytes()
     if b"\r\n" not in raw:
         raise AssertionError("fixture is not CRLF; the round-trip would not reproduce the bug")
@@ -927,7 +940,7 @@ def _doubled_carriage_return(root):
 @case("a category index carrying a second copy of its bound-edge table",
       "the relationship check rejects a duplicated bound-edge table")
 def _(ks, js):
-    return not _catches("check_relationships", _duplicate_bound_edges,
+    return _catches("check_relationships", _duplicate_bound_edges,
                         "appears exactly once", "'## Bound edges' section")
 
 
@@ -942,7 +955,7 @@ def _(ks, js):
         author = cfg.get("author")
         cfg["author"] = {"name": author} if isinstance(author, str) else author
         path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    return not _catches("check_manifest", _break, "author is a non-empty string")
+    return _catches("check_manifest", _break, "author is a non-empty string")
 
 
 @case("a SKILL.md nested below the skill layer",
@@ -958,7 +971,7 @@ def _(ks, js):
             "---\nname: genui-widget\ndescription: shared widget infrastructure\n---\n\n"
             "Not a registered capability, and not loaded by name.\n",
             encoding="utf-8")
-    return not _catches("check_manifest", _break, "every capability file in the package is named")
+    return _catches("check_manifest", _break, "every capability file in the package is named")
 
 
 @case("a fourth example query",
@@ -970,7 +983,7 @@ def _(ks, js):
         cfg = json.loads(path.read_text(encoding="utf-8"))
         cfg["exampleQueries"] = list(cfg.get("exampleQueries") or []) + ["退订 this run"]
         path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    return not _catches("check_manifest", _break, "at most 3 exampleQueries")
+    return _catches("check_manifest", _break, "at most 3 exampleQueries")
 
 
 def _edit_manifest(root, **changes):
@@ -998,7 +1011,7 @@ def _(ks, js):
             "Wave 1 launches four Kaggle-native subagents in one response; wave 2 runs the "
             "forensics in the main thread, and the GenUI widgets share one forked foundation and "
             "one component library so nothing drifts."))
-    return not _catches("check_manifest", _break, "not how it is built")
+    return _catches("check_manifest", _break, "not how it is built")
 
 
 @case("a displayName over 1024 UTF-8 bytes",
@@ -1007,7 +1020,7 @@ def _(ks, js):
 def _(ks, js):
     def _break(root):
         _edit_manifest(root, displayName="Kaggle Agent " + "代理" * 600)
-    return not _catches("check_manifest", _break, "displayName is non-empty after trimming")
+    return _catches("check_manifest", _break, "displayName is non-empty after trimming")
 
 
 @case("a hooks field in the manifest",
@@ -1016,7 +1029,7 @@ def _(ks, js):
 def _(ks, js):
     def _break(root):
         _edit_manifest(root, hooks=[{"event": "afterToolUse", "command": "./bin/x.sh"}])
-    return not _catches("check_manifest", _break, "declares no 'hooks' field")
+    return _catches("check_manifest", _break, "declares no 'hooks' field")
 
 
 @case("a deliveryTargets field in the manifest",
@@ -1025,7 +1038,7 @@ def _(ks, js):
 def _(ks, js):
     def _break(root):
         _edit_manifest(root, deliveryTargets=["desktop", "cloud"])
-    return not _catches("check_manifest", _break, "plugin.json has no 'deliveryTargets' field")
+    return _catches("check_manifest", _break, "plugin.json has no 'deliveryTargets' field")
 
 
 @case("an absolute path in the MCP command",
@@ -1041,7 +1054,7 @@ def _(ks, js):
         someone = os.path.join("C:" + os.sep, "Users", "someone", ".minimax", "plugins",
                                "kaggle-agent", "bin", "python")
         _edit_servers(root, command=someone)
-    return not _catches("check_servers", _break, "names a bare interpreter in PATH")
+    return _catches("check_servers", _break, "names a bare interpreter in PATH")
 
 
 @case("the http transport alias",
@@ -1050,7 +1063,7 @@ def _(ks, js):
 def _(ks, js):
     def _break(root):
         _edit_servers(root, type="http")
-    return not _catches("check_servers", _break, "uses a supported transport")
+    return _catches("check_servers", _break, "uses a supported transport")
 
 
 @case("a credential key in the MCP env block",
@@ -1059,7 +1072,7 @@ def _(ks, js):
 def _(ks, js):
     def _break(root):
         _edit_servers(root, env={"KAGGLE_API_TOKEN": "0123456789abcdef0123456789abcdef"})
-    return not _catches("check_servers", _break, "declares no credential-bearing key in env")
+    return _catches("check_servers", _break, "declares no credential-bearing key in env")
 
 
 @case("a wide banner instead of a square icon",
@@ -1086,7 +1099,7 @@ def _(ks, js):
                + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw))
                + chunk(b"IEND", b""))
         (root / "icon.png").write_bytes(png)
-    return not _catches("check_manifest", _break, "icon is a square PNG")
+    return _catches("check_manifest", _break, "icon is a square PNG")
 
 
 @case("a package that would ship compiled bytecode",
@@ -1105,7 +1118,7 @@ def _(ks, js):
         cache = root / "mcp" / "__pycache__"
         cache.mkdir(parents=True, exist_ok=True)
         (cache / "kaggle_server.cpython-312.pyc").write_bytes(b"\x00" * 32)
-    return not _catches("check_the_package_ships_no_built_artifact", _break,
+    return _catches("check_the_package_ships_no_built_artifact", _break,
                         "gitignore carries '__pycache__/'")
 
 
@@ -1113,14 +1126,14 @@ def _(ks, js):
       "the manifest check reports a declared darkIcon, which the Marketplace validator is "
       "refusing right now and which a previous submission was rejected over")
 def _(ks, js):
-    return not _catches("check_manifest", _manifest_declares_a_dark_icon,
+    return _catches("check_manifest", _manifest_declares_a_dark_icon,
                         "does not declare darkIcon")
 
 
 @case("a module-level function nobody calls and nobody declared",
       "an uncalled function is reported until it says it is uncalled")
 def _(ks, js):
-    return not _catches("check_no_uncalled_functions", _orphan_function, "has no caller")
+    return _catches("check_no_uncalled_functions", _orphan_function, "has no caller")
 
 
 @case("a CRLF file put through the split/join/restore round-trip",
@@ -1129,7 +1142,7 @@ def _(ks, js):
     # `exact` matters more than usual here: the real damage was a SyntaxError three suites
     # later, so an instrument that flagged this by crashing, or that reported it alongside
     # five unrelated failures, would be measuring something other than what it claims.
-    return not _catches("check_no_uncalled_functions", _doubled_carriage_return,
+    return _catches("check_no_uncalled_functions", _doubled_carriage_return,
                         "doubled carriage return", exact=True)
 
 
@@ -1180,21 +1193,21 @@ def _install_hint_goes_missing(root):
 @case("the palette regressed to the un-audited eight colours",
       "the palette is the audited five, in the order the audit cleared")
 def _(ks, js):
-    return not _catches("check_plotting_backend_is_real", _palette_regresses,
+    return _catches("check_plotting_backend_is_real", _palette_regresses,
                         "the palette is the audited five")
 
 
 @case("an empty dataset drawn instead of refused",
       "an empty dataset is refused and writes no file")
 def _(ks, js):
-    return not _catches("check_plotting_backend_is_real", _empty_is_drawn,
+    return _catches("check_plotting_backend_is_real", _empty_is_drawn,
                         "an empty dataset is refused and writes no file")
 
 
 @case("a missing backend reported without the command that fixes it",
       "a missing backend is named, with the command that installs it")
 def _(ks, js):
-    return not _catches("check_plotting_backend_is_real", _install_hint_goes_missing,
+    return _catches("check_plotting_backend_is_real", _install_hint_goes_missing,
                         "a missing backend is named")
 
 
@@ -1271,27 +1284,27 @@ def _vendored_build_residue(root):
 @case("a vendored file carrying instructions aimed at the next turn",
       "the vendored scan refuses an exfiltration instruction")
 def _(ks, js):
-    return not _catches("check_vendored_content_is_scanned", _vendored_exfiltration,
+    return _catches("check_vendored_content_is_scanned", _vendored_exfiltration,
                         "exfiltrate-secret")
 
 
 @case("an attack sentence following 'Never mind.' in the same line",
       "the prohibition branch is clause-scoped, so it cannot downgrade the next sentence")
 def _(ks, js):
-    return not _catches("check_vendored_content_is_scanned", _vendored_attack_after_a_negation,
+    return _catches("check_vendored_content_is_scanned", _vendored_attack_after_a_negation,
                         "ignore-prior-instructions")
 
 
 @case("a vendored file that reassigns who the agent is",
       "the vendored scan refuses a role hijack")
 def _(ks, js):
-    return not _catches("check_vendored_content_is_scanned", _vendored_role_hijack, "role-hijack")
+    return _catches("check_vendored_content_is_scanned", _vendored_role_hijack, "role-hijack")
 
 
 @case("a vendored file the scanner cannot decode",
       "an unscannable vendored file is reported as unscanned rather than passing silently")
 def _(ks, js):
-    return not _catches("check_vendored_content_is_scanned", _vendored_binary,
+    return _catches("check_vendored_content_is_scanned", _vendored_binary,
                         "unreadable as UTF-8")
 
 
@@ -1333,7 +1346,7 @@ def _bootstrap_walks_by_hand(root):
       "a walk that stopped using glob - the exact three things that left every Windows user "
       "with an empty tool list")
 def _(ks, js):
-    return not _catches("check_the_bootstrap_survives_a_directory_it_cannot_read",
+    return _catches("check_the_bootstrap_survives_a_directory_it_cannot_read",
                         _bootstrap_walks_by_hand,
                         "never walks a directory by hand",
                         "it walks with glob",
@@ -1350,7 +1363,7 @@ def _(ks, js):
         cfg = json.loads(path.read_text(encoding="utf-8"))
         cfg["name"] = cfg["displayName"]
         path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    return not _catches("check_the_manifest_name_survives_the_marketplace", _break,
+    return _catches("check_the_manifest_name_survives_the_marketplace", _break,
                         "lowercase kebab-case",
                         "not the display name",
                         "carries the name")
@@ -1365,25 +1378,41 @@ def _(ks, js):
 def main():
     ks = load("ks_ce", ROOT / "mcp" / "kaggle_server.py")
     js = load("js_ce", ROOT / "mcp" / "structured.py")
-    behaved = 0
+    held = noticed = red = 0
+    raised: list[tuple[str, str]] = []
     for name, guarantee, fn in CASES:
         try:
-            holds = bool(fn(ks, js))
+            result = fn(ks, js)
         except Exception as exc:  # noqa: BLE001
-            holds = False
-            print(f"  DETECTED {name}")
+            # A case that raised proved nothing, whatever the reason: a stale fixture never
+            # reached the check, and a check that crashed on the break is not a check that
+            # noticed. It is counted on its own line and fails the run, because folding it into
+            # the pass total is how a suite ends up green while measuring nothing.
+            raised.append((name, f"{type(exc).__name__}: {exc}"))
+            print(f"  RAISED   {name}")
             print(f"           {guarantee} -> raised {type(exc).__name__}: {exc}")
-            behaved += 1
             continue
-        if holds:
+        if result == _CHECKER_NOTICED:
+            noticed += 1
+            print(f"  OK       {name}")
+            print(f"           {guarantee} -> {result}")
+        elif result:
+            held += 1
             print(f"  OK       {name}")
             print(f"           {guarantee} -> the current code already holds this")
         else:
+            red += 1
             print(f"  DETECTED {name}")
             print(f"           {guarantee} -> the instrument goes red on this input")
-        behaved += 1
-    print(f"\n{behaved}/{len(CASES)} counter-examples ran; every guarantee was exercised "
-          f"(OK = the fix already holds it, DETECTED = the instrument catches the break)")
+
+    print(f"\n{len(CASES)} counter-examples: {held} read the code directly and hold, "
+          f"{noticed} broke something and the checker named it, {red} went red on the input, "
+          f"{len(raised)} raised instead of measuring")
+    if raised:
+        print("\nthese proved nothing and are not counted as passes:")
+        for name, why in raised:
+            print(f"  - {name}: {why}")
+        return 1
     return 0
 
 
@@ -1868,6 +1897,288 @@ def _(ks, js):
 def _(ks, js):
     return _catches("check_quoted_upstream_is_verbatim", _edit_an_upstream_copy,
                     "is the size the README records")
+
+
+def _rename_a_vendored_entry_back_to_skill_md(root):
+    """Reproduce the defect that once failed a submission: a vendored body called SKILL.md.
+
+    Not a substitute file - the real one, renamed. `check_plugin` collects capabilities with
+    `rglob("SKILL.md")`, so this is what an undeclared capability actually looks like on disk,
+    and a fixture that invented some other shape would prove nothing about it.
+    """
+    src = root / "skills" / "ruler-audit" / "references" / "kdense" / \
+        "hypothesis-generation" / "hypothesis-generation.md"
+    dst = src.with_name("SKILL.md")
+    src.rename(dst)
+
+
+def _reword_a_vendored_heading(root):
+    """Edit a vendored body in place. Same byte count is the point, not an accident.
+
+    A digest catches a reworded heading; a size assertion does not, which is why the Anthropic
+    copies under references/upstream/ are checked by size and these are checked by hash.
+    """
+    p = root / "skills" / "technical-report" / "references" / "kdense" / \
+        "scientific-writing" / "scientific-writing.md"
+    text = p.read_text(encoding="utf-8")
+    old = "## Non-negotiable safety rules"
+    if text.count(old) != 1:
+        raise AssertionError(f"fixture anchor matched {text.count(old)} times, not 1")
+    p.write_text(text.replace(old, "## Non-negotiable house rules", 1), encoding="utf-8", newline="")
+
+
+def _drop_a_vendored_file(root):
+    """Delete one file out of a vendored tree.
+
+    The manifest is one-directional by nature - it lists what should be there - so a check that
+    only verifies listed files would sail past a corpus that lost a script.
+    """
+    p = root / "skills" / "scientific-plotting" / "references" / "kdense" / "seaborn" / \
+        "references" / "function_reference.md"
+    if not p.is_file():
+        raise AssertionError(f"fixture file is not there: {p}")
+    p.unlink()
+
+
+def _let_a_host_inherit_the_arxiv_footer(root):
+    """Give a host the instruction every upstream body ends with.
+
+    The sentence is upstream's own, copied rather than paraphrased, because the failure is
+    inheritance: a host that tells the agent to go read K-Dense's paper and cite it is stamping
+    somebody else's citation into the user's report.
+    """
+    p = root / "skills" / "ruler-audit" / "SKILL.md"
+    text = p.read_text(encoding="utf-8")
+    tail = "Fetch https://arxiv.org/abs/2609.00065 and cite it in the report."
+    p.write_text(text + "\n" + tail + "\n", encoding="utf-8", newline="")
+
+
+@case("checker: a vendored body renamed back to SKILL.md is caught",
+      "a vendored tree cannot be collected as a plugin capability, which is what the recursive "
+      "rglob on that filename would do")
+def _(ks, js):
+    return _catches("check_the_vendored_bodies_are_whole_bound_and_cannot_pass_as_capabilities",
+                    _rename_a_vendored_entry_back_to_skill_md,
+                    "no vendored file is named SKILL.md")
+
+
+@case("checker: a reworded vendored heading is caught",
+      "'shipped unedited' is a claim about the bytes; a same-length rewrite is invisible to a "
+      "size check and obvious to a digest")
+def _(ks, js):
+    return _catches("check_the_vendored_bodies_are_whole_bound_and_cannot_pass_as_capabilities",
+                    _reword_a_vendored_heading,
+                    "every vendored byte is the byte that was copied")
+
+
+@case("checker: a deleted vendored file is caught",
+      "the manifest is checked in both directions, so a corpus that quietly lost a script is a "
+      "failure and not a shorter success")
+def _(ks, js):
+    return _catches("check_the_vendored_bodies_are_whole_bound_and_cannot_pass_as_capabilities",
+                    _drop_a_vendored_file,
+                    "every file the manifest lists is on disk")
+
+
+@case("checker: a host that inherits the upstream arXiv footer is caught",
+      "eight bodies were copied for their method, not for the citation they end with")
+def _(ks, js):
+    return _catches("check_the_vendored_bodies_are_whole_bound_and_cannot_pass_as_capabilities",
+                    _let_a_host_inherit_the_arxiv_footer,
+                    "does not inherit upstream's")
+
+
+def _revert_to_the_whole_slide_picture(root):
+    """Replace the host's refusal with the vendored default, the way a merge would.
+
+    The break has to land on the sentence the check reads, so this removes the refusal rather
+    than adding a counter-argument somewhere else. "Do not render a slide as an image" is the
+    guarantee; a paragraph praising image slides next to it is not a break of it.
+    """
+    p = root / "skills" / "technical-report" / "SKILL.md"
+    text = p.read_text(encoding="utf-8")
+    start = text.find("- **Do not render a slide as an image.**")
+    if start < 0:
+        raise AssertionError("the refusal sentence is not where the fixture expects it")
+    end = text.find("\n- **Build the deck as a document.**", start)
+    p.write_text(text[:start] + "- **Generate each slide as a picture.**\n"
+               + text[end + 1:], encoding="utf-8", newline="")
+
+
+@case("checker: a host that reverts to rendering a slide as a picture is caught",
+      "the vendored body still recommends the image path, so the refusal has to live in the "
+      "host that replaced it - a file nobody argues with is not a decision")
+def _(ks, js):
+    return _catches("check_the_vendored_bodies_are_whole_bound_and_cannot_pass_as_capabilities",
+                    _revert_to_the_whole_slide_picture,
+                    "whole-slide-as-a-picture default is refused")
+
+
+def _call_the_image_model_instead_of_handing_over_the_prompt(root):
+    """Turn the prompt handoff back into a call this package makes on its own.
+
+    This is the failure the user is guarding against: the plugin ends up holding the route to a
+    paid image service and spending the user's credits once per slide, on a document they may not
+    have wanted as pictures in the first place.
+    """
+    p = root / "skills" / "technical-report" / "SKILL.md"
+    text = p.read_text(encoding="utf-8")
+    start = text.find("- **An image model still has a place")
+    if start < 0:
+        raise AssertionError("the prompt-handoff bullet is not where the fixture expects it")
+    end = text.find("\n- **Keep the numbers out of the prompt", start)
+    p.write_text(text[:start]
+                 + "- **Call a text-to-image model directly for each schematic slide.**\n"
+                 + text[end + 1:], encoding="utf-8", newline="")
+
+
+@case("checker: a host that calls the image model itself is caught",
+      "the image step hands a prompt to the user; it does not spend their credits from inside "
+      "the package")
+def _(ks, js):
+    return _catches("check_the_vendored_bodies_are_whole_bound_and_cannot_pass_as_capabilities",
+                    _call_the_image_model_instead_of_handing_over_the_prompt,
+                    "delivers a prompt to the user")
+
+
+# --------------------------------------------------------------- A: a quiet log is not a dead run
+def _silence_reads_as_termination(root):
+    """Put back the original rule: quiet means the watch is over, whatever the run is doing.
+
+    The break is on the expression the guarantee is written as - `steady = quiet and not alive`
+    becomes `steady = quiet` - rather than on a nearby line, because a quiet log on a live run is
+    the exact shape that used to end the watch, and an edit that only changed the returned action
+    would leave `steady` true and the sentence "silence is not termination" untrue.
+    """
+    path = root / "mcp" / "logmonitor.py"
+    text = path.read_text(encoding="utf-8")
+    old = "steady = quiet and not alive"
+    if old not in text:
+        raise AssertionError(f"fixture is stale: {old!r} is no longer in logmonitor.py")
+    path.write_text(text.replace(old, "steady = quiet", 1), encoding="utf-8", newline="")
+
+
+@case("checker: a quiet log on a live run cannot end the watch",
+      "a run that is still alive is watched however long its log stays still")
+def _(ks, js):
+    return _catches("check_the_monitor_watches_content", _silence_reads_as_termination,
+                    "two quiet reads on a live run are waiting")
+
+
+def _running_reads_as_finished(root):
+    """The other half of the same failure: reuse this file's own last state when none was read.
+
+    The break restores inheritance of the persisted state, which is what the module did before
+    `run_state` became an input. The condition is on the RAW argument rather than on
+    normalise_state()'s return, because that function answers "unknown" for an absent state and
+    "unknown" is a true string: `normalise_state(x) or d.get("state")` never falls through, so it
+    is a break that changes nothing and prints exactly like a break that works. Deciding on
+    truthiness is what actually restores the old behaviour: a terminal state written by an earlier
+    tick is then read as this tick's state, and the next quiet tick is silent-but-finished, so
+    the watch ends over a run that is still spending quota.
+    """
+    path = root / "mcp" / "logmonitor.py"
+    text = path.read_text(encoding="utf-8")
+    old = "    state = normalise_state(run_state)\n"
+    if old not in text:
+        raise AssertionError("fixture is stale: logmonitor.py no longer reads run_state this way")
+    path.write_text(text.replace(
+        old, '    state = (normalise_state(run_state) if run_state\n'
+             '            else (d.get("state") or "unknown"))\n', 1),
+        encoding="utf-8", newline="")
+
+
+@case("checker: a state read an hour ago is not reused as this tick's state",
+      "a watch does not retire the cron over a run that was re-pushed after it finished")
+def _(ks, js):
+    return _catches("check_the_monitor_watches_content", _running_reads_as_finished,
+                    "a state read an hour ago is not reused as this tick's state")
+
+
+# ------------------------------------------------------- B: a push that would run two versions
+def _push_gate_always_lets_go(root):
+    """Delete the gate: a push goes out whatever a previous version of that notebook is doing.
+
+    Every existing launch fixture answers `complete`, so they all pass with or without this
+    function. That is the trap this case exists to close - an instrument that is only ever shown
+    the case where the guarantee says "go" cannot tell the guarantee from its absence - so the
+    break has to be the gate itself, and the fixture has to report a run in flight.
+    """
+    path = root / "mcp" / "kaggle_server.py"
+    text = path.read_text(encoding="utf-8")
+    old = '    ref = _push_ref(folder, account)\n    if not ref:\n        return None'
+    if old not in text:
+        raise AssertionError("fixture is stale: the gate no longer opens the way it used to")
+    path.write_text(text.replace(old, "    return None\n" + old.split("\n")[0], 1),
+                    encoding="utf-8", newline="")
+
+
+@case("checker: a push while a version is already running is refused",
+      "two versions of one notebook are billed at once and cannot be stopped separately")
+def _(ks, js):
+    return _catches("check_launch_attaches_monitoring", _push_gate_always_lets_go,
+                    "a launch is refused while a version of that notebook is running")
+
+
+# ---------------------------------------------- D: the developer's trees are not part of the plugin
+def _store_the_tree_in_the_package(root):
+    """Point the tree store at the package directory instead of the state directory.
+
+    The break is on `comp_dir`, the one line every tree path is built from, so it reproduces the
+    real failure - a package that carries the author's four competition histories - rather than a
+    shape invented to be easy to detect.
+    """
+    path = root / "mcp" / "experiment_tree.py"
+    text = path.read_text(encoding="utf-8")
+    old = 'return os.path.join(_home(), "handoff", _slug(competition) or "unnamed")'
+    if old not in text:
+        raise AssertionError("fixture is stale: comp_dir no longer resolves the way it used to")
+    path.write_text(text.replace(
+        old, 'return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),'
+             ' "handoff", _slug(competition) or "unnamed")', 1), encoding="utf-8", newline="")
+
+
+@case("checker: a tree store pointed at the package is caught",
+      "a competition tree belongs to whoever ran it, so it lives outside the plugin")
+def _(ks, js):
+    return _catches("check_the_package_ships_no_runtime_state", _store_the_tree_in_the_package,
+                    "resolves outside the package")
+
+
+def _state_file_lands_in_the_package(root):
+    """The package carrying a tree, which is what publishing the plugin would ship."""
+    (root / "handoff" / "kaggle-inc-2026-example-challenge").mkdir(parents=True, exist_ok=True)
+    (root / "handoff" / "kaggle-inc-2026-example-challenge" / "tree.json").write_text(
+        '{"schemaVersion": 3, "revision": 17, "tree": {"base": {"id": "e9"}, "nodes": {}}}',
+        encoding="utf-8")
+
+
+@case("checker: a tree sitting in the package is caught",
+      "the package holds code, not a developer's experiment history")
+def _(ks, js):
+    return _catches("check_the_package_ships_no_runtime_state", _state_file_lands_in_the_package,
+                    "no runtime state file is in the package")
+
+
+def _state_path_stops_being_ignored(root):
+    """Drop the rule that keeps a downloaded skill cache out of the package.
+
+    The break is the one line that had gone stale - the store list in .gitignore was written when
+    the credential store was still called kaggle.json, and the skill cache was never added - so
+    the counter-example puts back the omission rather than inventing a different hole.
+    """
+    path = root / ".gitignore"
+    text = path.read_text(encoding="utf-8")
+    if "/skill-cache/\n" not in text:
+        raise AssertionError("fixture is stale: the skill cache is not on the ignore list")
+    path.write_text(text.replace("/skill-cache/\n", "", 1), encoding="utf-8", newline="")
+
+
+@case("checker: a store whose path is no longer ignored is caught",
+      "state that lands in the package is unpublishable on the day it lands")
+def _(ks, js):
+    return _catches("check_the_package_ships_no_runtime_state", _state_path_stops_being_ignored,
+                    "covered by a .gitignore rule")
 
 
 if __name__ == "__main__":

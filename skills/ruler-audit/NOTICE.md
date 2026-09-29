@@ -86,8 +86,40 @@ Listed for completeness; each carries its own attribution in its own file.
 |---|---|---|
 | K-Dense Scientific Agent Skills — `experimental-design`, `uncertainty-and-units` | `skills/ablation-design/` | MIT (scripts not vendored) |
 | K-Dense Scientific Agent Skills — `scientific-visualization` | `skills/scientific-plotting/` | MIT (scripts vendored) |
+| K-Dense Scientific Agent Skills — `hypothesis-generation`, `scientific-critical-thinking` | `skills/ruler-audit/references/kdense/` | MIT (shipped whole) |
+| K-Dense Scientific Agent Skills — `seaborn` | `skills/scientific-plotting/references/kdense/` | BSD-3-Clause as declared upstream (shipped whole) |
+| K-Dense Scientific Agent Skills — `scientific-writing`, `scientific-slides` | `skills/technical-report/references/kdense/` | MIT (shipped whole) |
+| K-Dense Scientific Agent Skills — `scientific-brainstorming` | `skills/kaggle-competition-research/references/kdense/` | MIT (shipped whole) |
 | Frontis-MA1 / OpenMLE, arXiv 2607.28568 | `mcp/experiment_tree.py` (parent selection) | cited in `skills/relationships.json` |
 | The Last AI Built by Humans, arXiv 2609.11873 | `skills/rsi-experiment-tree/` | cited in `skills/relationships.json` |
 | Dream-RSI, arXiv 2609.14858 | `skills/rsi-experiment-tree/` | cited in `skills/relationships.json` |
 | Scaling Laws for Agent Harnesses, arXiv 2605.29682 | `skills/rsi-experiment-tree/` | cited in `skills/relationships.json` |
 | ModularRSI, arXiv 2609.14857 | `skills/relationships.json` (`divisionOfLabour`) | cited in `skills/relationships.json` |
+
+### The K-Dense bodies under `references/kdense/`
+
+Seven skills from the same project, pinned at commit
+`065b734670d7d990627dbc06a05b5a99be33f1f1`, copied byte-for-byte with no edit. The upstream
+`LICENSE.md` (MIT, Copyright (c) 2025 K-Dense Inc.) travels with each host's copy. `seaborn`
+declares BSD-3-Clause in its own frontmatter, which is recorded as declared rather than resolved;
+the repository-level MIT covers the tree either way, and both are permissive.
+
+`experimental-design` was vendored and then removed. It is a laboratory protocol — its worked
+examples are mice, plate edges and reagent ageing — and the only part that transfers to a
+competition, blocking and what counts as a true independent replicate, is already carried by
+`ablation-design` and `ruler-audit`. Shipping it would have added a `pyDOE3` dependency for a
+fractional-factorial matrix this package can already enumerate. Its adaptation in
+`ablation-design/` predates that and stays.
+
+Two conventions were **not** carried into the host skills, and each is refused by name in the host
+that refuses it:
+
+- Every upstream body ends by instructing the agent to fetch an arXiv page and add a K-Dense
+  citation to the user's output. That is a courtesy of their distribution, not a step of ours.
+- Three of them install packages unconditionally (`experimental-design` pulls `pyDOE3`; `seaborn`
+  and `scientific-visualization` pin versions through `uv`). This package asks first, via
+  `kaggle_sources action="doctor"` and `presence-mode`.
+
+The bodies are reproduced unedited on purpose. Each host skill states what it takes, what it
+declines and why, so the judgement lives in prose somebody can argue with rather than in a diff
+nobody reads. Re-fetch with `python tools/fetch_kdense_bodies.py <commit>`.

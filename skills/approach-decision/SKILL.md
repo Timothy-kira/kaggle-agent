@@ -7,8 +7,8 @@ description: Use when facing the choice of what to build and how - choosing betw
 
 This is a recurring fork in a competition run, and it is worth deciding explicitly rather than
 drifting. The two paths have different costs and different failure modes, and the evidence from
-ARC-AGI-3 is instructive: the leading teams are *not* all writing from scratch, and the ones who
-are winning publicly are the ones whose harness everyone else forked.
+a recent arcade-reasoning challenge is instructive: the leading teams are *not* all writing from
+scratch, and the ones who are winning publicly are the ones whose harness everyone else forked.
 
 ## Before either: name what you are trying to win
 
@@ -84,8 +84,8 @@ one puts you in a cluster where only luck separates you. Diversity is a score.
 
 ## When writing wins
 
-- The top public solutions are **not open**. For ARC-AGI-3's current leader, the winning harness
-  is deliberately unpublished, so forking is not an option at all.
+- The top public solutions are **not open**. For the current leader of a recent challenge, the
+  winning harness is deliberately unpublished, so forking is not an option at all.
 - The public material is a leaderboard score with no mechanism behind it. A number you cannot
   explain is a number you cannot improve on, and you cannot debug.
 - You need to change something structural, and the fork's architecture fights you.
@@ -107,8 +107,8 @@ one puts you in a cluster where only luck separates you. Diversity is a score.
 5. **Make one change, then measure.** The tree's one-variable rule applies to forks exactly as it
    does to your own code.
 6. **Check the licence.** A public notebook is not automatically licensed for reuse. Several
-   strong ARC-AGI-3 repositories carry no licence file, which is a real constraint on derivative
-   work and worth surfacing to the user rather than ignoring.
+   strong repositories in one recent challenge's GitHub topic carry no licence file, which is a
+   real constraint on derivative work and worth surfacing to the user rather than ignoring.
 
 ## The decision, recorded
 

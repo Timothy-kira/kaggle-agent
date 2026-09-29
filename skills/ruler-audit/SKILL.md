@@ -122,6 +122,37 @@ spread rather than the feature".
 features against it has falling returns; the moves left are the model, ensembling, or a different
 objective. Say so before spending the next twelve hours on a lever whose ceiling is in reach.
 
+**Then, and only then, look for published method.** The order is not a preference. A change the
+metric cannot resolve produces a finding that is real, legible and unreadable, so hunting for
+a better method to make it is twelve hours spent on a number that will mean nothing. Once the
+ruler is known to see the result, `consider` carries a `skills` block: `kaggle_methods
+action="search"` against the same change and hypothesis, read from the local index with no
+network call. If it returns a candidate that is already on disk, read it before you declare. If
+it returns one that is not, it comes back marked `not downloaded` — fetching is a separate,
+explicit call, and never a thing that happens by itself between one declaration and the next.
+
+**Then write the hypothesis properly, because the declaration is where it gets written.**
+`references/kdense/hypothesis-generation.md` is vendored for this. Three of its moves earn their
+place, and they are moves about *shape* rather than about biology:
+
+- **A rival, not a preference.** "Warm-starting helps" cannot lose. "Warm-starting helps *because*
+  the encoder is under-trained at this budget" can, because at twice the budget it stops. The rival
+  goes in the `declare`'s own `hypothesis` field, so the tree carries it and the next reader sees
+  what would have counted against it.
+- **One observation that would refute it, under the assumptions you are actually making.** A
+  change with no refuter is a preference wearing a delta, and it survives its own disconfirmation
+  because nothing was ever going to disconfirm it.
+- **Keep the labels apart.** A mechanistic story is not a prediction, and a prediction is not
+  evidence. The `metric` you declare against is evidence about the base, not about your idea, and
+  the delta is a prediction's worth of one.
+
+**One upstream rule is not carried, and the disagreement is informative.** Upstream forbids the
+tool scoring, ranking or rejecting a hypothesis. This plugin does exactly that: `consider`
+returns a verdict and `settle` records one. The two are answering different questions — upstream's
+is a scientific claim, this one's is an experimental action — and the useful reading of upstream's
+rule is "the judge is not the author of the claim", which is the same reason a `verifier` reviews
+the report in `technical-report` and does not write it.
+
 ## Stage 3 · Verdict review, after every settle
 
 `settle` already refuses to call a node `confirmed` when the delta is inside
@@ -141,6 +172,27 @@ delta and the floor an effect, or the resolution limit?** Read `floorFrom`.
 `floorFrom` names only the terms that **tied** for the floor. A ruler well below the arm's spread
 is not named, because it did not cause this downgrade and putting it in the explanation sends you
 off to fix the metric when the arm was the noisy thing.
+
+**Then grade it, because a downgrade is not one kind of event.**
+`references/kdense/scientific-critical-thinking.md` is vendored for this. Its contribution is
+severity grading: "the finding is a bit soft" hides which remedy applies, and the two remedies
+here are opposites.
+
+| Severity | What it looks like on this tree | What it costs |
+|---|---|---|
+| **Critical** | the measurement cannot support the verdict as recorded — a split that leaked, `parent` and `result` scored by different metrics, a node carrying no `controls` at all | re-run, do not re-read |
+| **Important** | the verdict stands and its stated reason is wrong — a `floorFrom` naming the wrong term, a `reason` citing a bottleneck the log does not show | correct the node's prose; the number stands |
+| **Minor** | presentational — a missing unit, an unstated `n`, a figure with no noise band | noted, fixed in the next settle |
+
+Two of upstream's rules are load-bearing and are taken as written: **judge the methodology, not
+the result** — a stage-3 review that recommends a bigger delta because the current one was small is
+reviewing the result, and will recommend a bigger one forever — and **name the specific bias, not
+the category**. "The calibration was taken on the same folds every arm is scored on" tells you what
+to do; "selection bias" does not.
+
+Not carried: upstream's optional GRADE and Cochrane Risk-of-Bias figures, which are drawn by a
+separate skill through a paid external image API this package does not have. The grading survives
+without them, which is the only reason to take it.
 
 ## Stage 4 · Stall triage, after two or three flat rounds
 
@@ -169,6 +221,15 @@ other asks whether the fault is the measurement. Two orthogonal spaces sharing o
 value, and those call for opposite responses.
 
 Full classification, with the upstream cases behind each row, in `references/triage.md`.
+
+**A flat line is also a reason to look outside the tree.** Every row above is a bucket this
+plugin already has a mechanism for, and that is exactly why a stall can persist through all of
+them: an approach can be correctly diagnosed as a variance problem, repaired, re-run, and still
+be the wrong approach. After the triage, ask `kaggle_methods action="search"` what published
+experimental method exists for the thing being attempted, using the same change and hypothesis
+you would declare. Local index, no network, no download unless you ask for one by name. A stall
+is the moment where re-deriving something that was published is most likely, because the
+attempts that would have found it have all been spent.
 
 ## Stage 5 · Re-judge after the ruler changes
 

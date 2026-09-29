@@ -5,12 +5,13 @@ Why the engine is a decision and not a constant
 Discovery search and direct navigation are different acts, and conflating them is how a
 workflow ends up asking a question that has no answer.
 
-**Discovery search** is when the target is not yet known: "who is working on ARC-AGI-3 and
-what did they publish". You need a search engine, and different engines genuinely differ —
+**Discovery search** is when the target is not yet known: "who is working on the Example
+Challenge and what did they publish". You need a search engine, and different engines genuinely
+differ —
 Bing's result mix and Google's are not the same page, region routing changes the language, and
 one may render where the other does not. That is a real choice, so it is asked.
 
-**Direct navigation** is when the URL is already known. Opening ``github.com/topics/arc-prize``
+**Direct navigation** is when the URL is already known. Opening ``github.com/topics/example-challenge``
 or ``arxiv.org/list/cs.AI/recent`` is not a search; there is no engine to choose, and asking
 "which engine?" before opening a URL you already have would be noise pretending to be a
 question. The three coverage sources are reached this way, so they never ask.

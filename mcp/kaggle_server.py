@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -67,9 +68,11 @@ import github_sync  # noqa: E402
 import graphstate  # noqa: E402
 import deps  # noqa: E402
 import handoff  # noqa: E402
+import kdense_index  # noqa: E402
 import logmonitor  # noqa: E402
 import presence  # noqa: E402
 import searchengine  # noqa: E402
+import skill_fetch  # noqa: E402
 import sources as srclib  # noqa: E402
 import structured as jsonarg  # noqa: E402  (structured args may arrive as JSON text)
 
@@ -77,6 +80,19 @@ PROTOCOL_VERSION = "2024-11-05"
 MAX_OUTPUT = 20000
 SUBPROCESS_TIMEOUT = 900  # kernels push downloads the notebook; give it room
 MAX_RUN_SECONDS = 43200  # 12h, the platform ceiling for one notebook run
+
+
+def _home() -> str:
+    """The one directory this plugin writes to, same rule as every other store here.
+
+    This module used to compose the local-run log path from ``expanduser("~")`` directly, which
+    made it the only store in the package that ignored KAGGLE_AGENT_HOME. A test that points the
+    override at a throwaway home therefore still wrote into the developer's real one - so the
+    fresh-home question could not be asked honestly about the one store a local run creates.
+    """
+    return os.environ.get("KAGGLE_AGENT_HOME") or os.path.join(
+        os.path.expanduser("~"), ".kaggle-agent"
+    )
 
 
 _KAGGLE_CMD: list[str] | None = None
@@ -236,6 +252,186 @@ def _live_accelerator(ref: str) -> Optional[str]:
         return f"machine:{shape}" if shape else "none"
     return None
 
+
+# ------------------------------------------------------------------------- is a version already running
+#
+# `kernels push` does not warn when the notebook already has a version in flight. It starts
+# another one, and both are billed, and there is no command to stop the newer of the two:
+# `kernels` offers list/files/get/init/push/pull/output/status/logs/update/delete/topics, so
+# the only way to stop a run is `delete`, which takes every version of the notebook with it.
+# That makes the moment BEFORE the push the only place a duplicate can be prevented, and it
+# is a place nothing currently looks.
+#
+# So a push asks first. The question is not "has a run ever been launched" but "is one going
+# right now", and the answer is retried before it is believed, because a status read that
+# fails is a transport event rather than evidence that the notebook is idle.
+IN_FLIGHT_STATES: tuple[str, ...] = ("running", "queued", "starting", "pending", "in queue")
+FINISHED_STATES: tuple[str, ...] = ("complete", "error")
+
+
+def _account_username(account: str = "") -> str:
+    """The Kaggle username this call acts as. Empty when the store cannot say.
+
+    Empty is not fatal here: a ref is still usable when kernel-metadata.json carries a full
+    owner/slug, and the push itself does not need one.
+    """
+    data = credentials.load()
+    accounts = data.get("accounts") or {}
+    name = (account or "").strip() or str(data.get("active") or "")
+    entry = accounts.get(name) or {}
+    return str(entry.get("username") or "").strip()
+
+
+def _push_ref(folder: str, account: str = "") -> str:
+    """The notebook ref a push of this folder would update, or "" when it cannot be derived.
+
+    ``kernel-metadata.json``'s ``id`` is a bare slug; the owner is whoever the call runs as.
+    Deriving the ref rather than trusting the caller means the gate checks the notebook that
+    is ACTUALLY about to be pushed, not one the caller remembered.
+    """
+    kernel_id = str((_read_metadata(folder) or {}).get("id") or "").strip()
+    if not kernel_id:
+        return ""
+    if "/" in kernel_id:
+        return kernel_id
+    owner = _account_username(account)
+    return f"{owner}/{kernel_id}" if owner else kernel_id
+
+
+def _parse_kernel_status(text: str) -> dict[str, Any]:
+    """Read a `kernels status` line into {state, version}. Never guesses past what it read.
+
+    The CLI's wording has moved between versions, so this looks for a ``key: value`` pair
+    first and falls back to scanning the whole line for a state word. An unrecognised line
+    yields ``state="unknown"`` and a false ``known`` flag - and the caller treats unknown as
+    "possibly running", because the two mistakes here are not symmetric: one wastes a status
+    call, the other silently doubles an accelerator bill.
+    """
+    raw = (text or "").strip()
+    fields: dict[str, str] = {}
+    for line in raw.splitlines():
+        if ":" in line:
+            key, _, value = line.partition(":")
+            fields[key.strip().lower()] = value.strip()
+
+    state = fields.get("state") or fields.get("status") or ""
+    version = fields.get("version") or fields.get("currentversion") or ""
+    low = raw.lower()
+
+    if not state:
+        for word in FINISHED_STATES:
+            if re.search(rf"\b{word}\b", low):
+                state = word
+                break
+        else:
+            for word in IN_FLIGHT_STATES:
+                if re.search(rf"\b{re.escape(word)}\b", low):
+                    state = word
+                    break
+    normalised = state.strip().lower()
+    known = normalised in IN_FLIGHT_STATES or normalised in FINISHED_STATES
+    return {
+        "state": normalised if known else "unknown",
+        "version": version or None,
+        "known": known,
+        "raw": raw[:400],
+    }
+
+
+def _wait_for_quiet(ref: str, account: str = "", attempts: int = 3, gap: int = 45,
+                     sleeper: Any = time.sleep) -> dict[str, Any]:
+    """Ask whether a version is running, and re-ask before believing a bad answer.
+
+    Returns ``{inFlight, state, version, checks, waitedSeconds, last}``. ``inFlight`` is
+    True when a run is known to be going OR when every check failed to say - the direction
+    that costs a push to be sure about, rather than a push to be careful about.
+
+    The retry count and the total wait are both returned so a caller can print them. A gate
+    that silently retried three times reads in the log exactly like one that never did, and
+    "we waited a minute and a half" is the sentence that tells the user what is happening
+    with their quota.
+    """
+    checks: list[dict[str, Any]] = []
+    waited = 0
+    for i in range(max(1, int(attempts))):
+        code, out, err = run_kaggle(["kernels", "status", ref], account)
+        parsed = _parse_kernel_status(out or err)
+        parsed["exitCode"] = code
+        checks.append(parsed)
+        if parsed["state"] in IN_FLIGHT_STATES:
+            return {"inFlight": True, "confirmed": True, "state": parsed["state"],
+                    "version": parsed["version"], "checks": checks,
+                    "waitedSeconds": waited, "last": parsed}
+        if parsed["known"]:
+            return {"inFlight": False, "confirmed": True, "state": parsed["state"],
+                    "version": parsed["version"], "checks": checks,
+                    "waitedSeconds": waited, "last": parsed}
+        if i < max(1, int(attempts)) - 1:
+            sleeper(gap)
+            waited += gap
+    last = checks[-1] if checks else {"state": "unknown", "version": None, "raw": ""}
+    # Every check came back unreadable. That is not the same as "idle", and the difference is
+    # the whole reason this function exists.
+    return {"inFlight": True, "confirmed": False, "state": "unknown",
+            "version": last.get("version"), "checks": checks,
+            "waitedSeconds": waited, "last": last}
+
+
+def _ref_from_output(result: dict[str, Any]) -> str:
+    """Recover owner/slug from a push result, which prints the notebook's Kaggle URL."""
+    try:
+        text = result["content"][0]["text"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    m = re.search(r"kaggle\.com/code/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", text)
+    return f"{m.group(1)}/{m.group(2)}" if m else ""
+
+
+def _push_gate(folder: str, account: str, label: str) -> Optional[dict[str, Any]]:
+    """Refuse a notebook push while a version of it is already running. None means go.
+
+    The refusal exists because the alternative is not recoverable. Kaggle bills both versions
+    from the moment the second one starts, and the only command that stops a run is
+    ``kernels delete``, which stops every version of that notebook - so the mistake cannot be
+    undone by cancelling the newer run, only by losing the older one too.
+
+    ``force`` skips the gate, and that is a decision this tool deliberately does not make on
+    the caller's behalf: it is only ever passed after the user has been asked and has said so.
+    Every refusal says so in the same words, because the text of a refusal is what a
+    subagent reads when it is deciding whether to try again on its own.
+    """
+    ref = _push_ref(folder, account)
+    if not ref:
+        return None
+    probe = _wait_for_quiet(ref, account)
+    if not probe["inFlight"]:
+        return None
+
+    version = probe.get("version") or "(the CLI did not report one)"
+    if not probe["confirmed"]:
+        why = (f"I could not read the state of {ref} after {probe['checks']} attempt(s) and "
+               f"{probe['waitedSeconds']}s: {probe['last'].get('raw') or 'no output'!r}")
+        headline = f"refusing to push {ref}: its state could not be determined"
+    else:
+        why = (f"{ref} is already {probe['state']}"
+               + (f" on version {version}" if version != "(the CLI did not report one)" else "")
+               + f" - checked {probe['checks']} time(s) over {probe['waitedSeconds']}s")
+        headline = f"refusing to push {ref}: a version of it is already running"
+    return text_response(
+        f"{label} (blocked before push)", 3, f"{headline}\n\n{why}\n\n"
+        "Two versions of one notebook are billed from the moment the second starts, and "
+        "`kaggle kernels` has no stop or cancel: the only command that ends a run is "
+        "`delete`, and that takes EVERY version of the notebook with it. So this cannot be "
+        "undone by stopping the newer run.\n\n"
+        "Do not push again on your own. Ask the user first, with these as the options:\n"
+        "  1. wait for the current version to finish, then push (nothing is lost - the run is "
+        "doing what it was launched to do)\n"
+        "  2. push anyway, knowing both run at once and both are billed\n"
+        "  3. if the current run is not wanted, retire the notebook with kaggle_kernel_retire, "
+        "which backs up its source and output first\n\n"
+        "Only after the user has chosen 2 should this be retried with force=true.", "",
+    )
+
 # One account, named per call, on every tool that talks to Kaggle as an account. Naming it is
 # scoped to that call and never rewrites which account is active — a tool that switched identity
 # to answer "run this as B" makes every later call run as B too, and when B is the account holding
@@ -281,12 +477,22 @@ TOOLS: list[dict[str, Any]] = [
             "Returns the ref to poll with kaggle_kernels_status and to read with kaggle_kernels_logs. "
             "REFUSES to launch unless the run was declared first: pass declares=<node id> from "
             "kaggle_experiment_tree action=\"declare\", so the result has somewhere to land instead "
-            "of existing only in the conversation."
+            "of existing only in the conversation. "
+            "It also refuses while a version of that notebook is already running, and reads the "
+            "pushed notebook's real accelerator back before reporting."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "folder": {"type": "string", "description": "Folder with notebook.ipynb and kernel-metadata.json."},
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Launch even though a version of this notebook is already running. Both "
+                        "are billed from the moment the second starts and Kaggle cannot stop just "
+                        "the newer one, so this is a user decision and never a default."
+                    ),
+                },
                 "timeout_seconds": {
                     "type": "integer",
                     "description": "Run time limit in seconds. Values above 43200 are clamped to 12h.",
@@ -504,7 +710,11 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Upload a folder containing notebook.ipynb and kernel-metadata.json to Kaggle, "
             "creating the notebook or updating an existing one. This starts a run. "
-            "Use --tags to label it."
+            "Use --tags to label it. "
+            "Before pushing it checks whether a version of that notebook is already running, "
+            "retries a status read it could not make sense of, and refuses if one is - naming "
+            "the version and asking you which of the two you want. Pass force=true only after "
+            "the user has chosen to run both at once."
         ),
         "inputSchema": {
             "type": "object",
@@ -513,6 +723,14 @@ TOOLS: list[dict[str, Any]] = [
                 "folder": {"type": "string", "description": "Local folder to upload."},
                 "tags": {"type": "string", "description": "Optional comma-separated tags."},
                 "privacy": {"type": "string", "enum": ["public", "private"], "description": "Default private."},
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Push even though a version of this notebook is already running. Both are "
+                        "billed from the moment the second starts and Kaggle cannot stop just the "
+                        "newer one, so this is a user decision and never a default."
+                    ),
+                },
             },
             "required": ["folder"],
         },
@@ -808,14 +1026,35 @@ TOOLS: list[dict[str, Any]] = [
                         "file you pass by path."
                     ),
                 },
+                "run_state": {
+                    "type": "string",
+                    "description": (
+                        "For action='observe': what the RUN is doing, from kaggle_kernels_status "
+                        "(running/queued/starting/complete/error). This is a different fact from "
+                        "the log, and it is the one that decides whether the watch is over: a "
+                        "kernel prints nothing at all while it is queued. Omit it and the run is "
+                        "treated as alive - silence from the tick is never read as termination."
+                    ),
+                },
+                "active_versions": {
+                    "type": "integer",
+                    "description": (
+                        "For action='observe': how many versions of this ref are in flight. "
+                        "Anything above 1 is reported as a duplicate-version event, because no "
+                        "line of any log says it and two of them cost quota for as long as both "
+                        "run."
+                    ),
+                },
                 "verdict": {
                     "type": "string",
-                    "enum": ["tighten", "relax", "hold"],
+                    "enum": ["tighten", "relax", "hold", "waiting"],
                     "description": (
                         "For action='tick': what action='observe' concluded. The cadence follows "
                         "the log rather than the clock, so pass it every cycle - 'tighten' after "
-                        "a moved log, 'relax' once it has been quiet, 'hold' if it has not "
-                        "settled yet."
+                        "a moved log, 'relax' once a finished run has been quiet, 'waiting' when "
+                        "the run is alive and simply has not printed, 'hold' if it has not settled "
+                        "yet. 'waiting' holds the rung and keeps the watch; it is not a cue to "
+                        "retire the cron."
                     ),
                 },
                 "ok": {
@@ -917,7 +1156,8 @@ TOOLS: list[dict[str, Any]] = [
             "method family, or if its 'change' contains an 'and' (that is two experiments). Two "
             "node kinds: 'experiment' changes one thing and measures it; 'research' changes "
             "nothing and goes BACK to a source (forum / code / web / paper / model / dataset / "
-            "rules / leaderboard) because a result made the current picture insufficient. "
+            "rules / leaderboard / ruler / skill) because a result made the current picture "
+            "insufficient. "
             "action='read' is MANDATORY before recording: it returns readRevision, and 'record' "
             "refuses a stale or missing one. action='select' does NON-GREEDY parent selection "
             "over quality + progress + novelty with visit cooling, so the search is not "
@@ -1119,7 +1359,18 @@ TOOLS: list[dict[str, Any]] = [
                         "competition get two folders under branches/, so one approach cannot "
                         "overwrite another's checkpoints. action='branch' name=<branch> creates "
                         "it and prints the path; action='abandon' branch=<branch> moves that "
-                        "folder aside."
+                        "folder aside. For action='consider': the line the caller is on, which "
+                        "is what stops a refutation earned on another line from vetoing here."
+                    ),
+                },
+                "data": {
+                    "type": "string",
+                    "description": (
+                        "For action='consider': what this run reads - the dataset, a path, a "
+                        "version tag. Compared against the matched node's controls.data; a "
+                        "mismatch makes the refutation evidence rather than a veto. Omit it and "
+                        "the tool will not guess, because guessing a difference would silence "
+                        "the veto rather than sharpen it."
                     ),
                 },
                 "metric": {
@@ -1197,6 +1448,64 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["competition"],
+        },
+    },
+    {
+        "name": "kaggle_methods",
+        "description": (
+            "Published experimental method, and whether you are already following it. The index "
+            "of scientific-agent skills is scraped from the page upstream keeps for exactly this "
+            "list, so it is never a snapshot this package shipped and went stale. action='search' "
+            "ranks the index against a change or a bottleneck - local only, no network, because it "
+            "runs on every declaration and a round trip in the experiment loop is a dependency the "
+            "loop should not have - and when nothing clears the bar it says so and returns the "
+            "nearest candidates rather than an empty list that reads as certainty. "
+            "action='refresh' re-reads the page; action='fetch' downloads one allowed skill at a "
+            "pinned commit, cached first and scanned before anything is stored. A download that "
+            "fails reports the HTTP status, the transport's own error and an offline capability "
+            "probe, and stops: which of those is the user's problem, or a stale pin, or a rate "
+            "limit is your judgement to make, not a table this tool decides for you."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["search", "refresh", "fetch", "probe", "allowed"],
+                    "default": "search",
+                    "description": (
+                        "search = rank locally, touching no network; refresh = re-read the "
+                        "upstream page and cache it; fetch = download one skill through the four "
+                        "gates; probe = one call that says whether the cache is current; "
+                        "allowed = which skills this package will download."
+                    ),
+                },
+                "change": {
+                    "type": "string",
+                    "description": "The step you are about to take, in one line.",
+                },
+                "hypothesis": {
+                    "type": "string",
+                    "description": "Why you expect it to matter, in one line.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "For action='fetch': the skill to download.",
+                },
+                "commit": {
+                    "type": "string",
+                    "description": (
+                        "The upstream commit to read at. A branch is refused: 'main' moves, and "
+                        "the point of pinning is that the plan and the method it followed are the "
+                        "same two things."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many candidates to return. Default 5.",
+                },
+            },
+            "required": [],
         },
     },
     {
@@ -1333,7 +1642,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.31.1"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.32.0"}
 
 
 def run_kaggle(args: list[str], account: str = "") -> tuple[int, str, str]:
@@ -1515,6 +1824,41 @@ def _acct(args: dict[str, Any]) -> str:
     return str((args or {}).get("account") or "").strip()
 
 
+def _verify_accelerator(ref: str, expected: str) -> dict[str, Any]:
+    """What the pushed notebook is actually running on, and what that does and does not mean.
+
+    Read once by ``kaggle_kernel_verify`` and once by ``kaggle_kernel_launch`` after a push,
+    so "did the run get the accelerator it was asked for" is answered by one function rather
+    than by two that agree today.
+
+    The word MISMATCH carries no verdict about whether the run is alive. A queued kernel has
+    no machine assigned yet, and a read taken while one is running has reported ``none`` for a
+    notebook that the Kaggle UI was simultaneously showing as GPU T4 x2. So an accelerator
+    that cannot be read is UNKNOWN, and unknown is not a reason to push again - pushing on
+    the strength of a MISMATCH is what puts two versions of one notebook in flight.
+    """
+    actual = _live_accelerator(ref) or "unknown"
+    want = (expected or "").strip().lower()
+    verdict = "unknown"
+    if want and actual != "unknown":
+        verdict = "match" if actual == want else "MISMATCH"
+    return {
+        "ref": ref,
+        "actual": actual,
+        "expected": want,
+        "verdict": verdict,
+        "readsAs": (
+            "the notebook is on the accelerator it was launched for"
+            if verdict == "match" else
+            "the record says a different accelerator; this is NOT evidence that the run is not "
+            "running, and it is not a reason to launch a second version"
+            if verdict == "MISMATCH" else
+            "the kernel record could not be read - a queued or starting kernel has no machine "
+            "assigned yet, so this is 'not yet known', not 'not running'"
+        ),
+    }
+
+
 def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Map a tool name plus arguments to a Kaggle CLI invocation."""
     if name == "kaggle_quota":
@@ -1605,6 +1949,14 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         if args.get("accelerator"):
             _, note = _set_accelerator_in_metadata(folder, str(args["accelerator"]))
             notes.append("accelerator: " + note)
+        # After the declaration gate and after the metadata is settled, but before the push
+        # itself. Placing it here means the accelerator this run is asking for is the one the
+        # check is about, and it means a launch cannot become a second bill on a notebook the
+        # gate never looked at.
+        if not args.get("force"):
+            blocked = _push_gate(folder, _account, "kaggle kernel launch")
+            if blocked is not None:
+                return blocked
         cmd = ["kernels", "push", "-p", folder]
         requested = args.get("timeout_seconds")
         if requested is not None:
@@ -1622,6 +1974,20 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         result = text_response(" ".join(cmd), *run_kaggle(cmd, account=_account))
         if notes:
             result["content"][0]["text"] += "\nnotes: " + "; ".join(notes)
+        # Read the notebook back before saying anything about it. This used to be reachable
+        # only as a separate tool the caller had to remember, and nothing in this package
+        # called it - so "did the run get the accelerator it asked for" was answered by
+        # nobody, and a bad answer was never available to be over-read. It is a fact about the
+        # run, recorded where the run is announced; what it MEANS is left to the reader,
+        # because a MISMATCH is not evidence that the run is not running.
+        if not result.get("isError"):
+            _pref = _push_ref(folder, _account) or _ref_from_output(result)
+            if _pref:
+                _ver = _verify_accelerator(_pref, str(args.get("accelerator") or "none"))
+                result["content"][0]["text"] += (
+                    f"\nreadback: accelerator={_ver['actual']} verdict={_ver['verdict']} "
+                    f"({_ver['readsAs']})"
+                )
         # Monitoring is attached here, not left to the caller to remember. A run that nothing is
         # watching is a run whose failure you learn about hours later, and "set up the log monitor
         # after launching" is exactly the instruction a long turn forgets. Targeting is local,
@@ -1653,25 +2019,19 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         return result
 
     if name == "kaggle_kernel_verify":
-        ref = str(args["ref"])
-        actual = _live_accelerator(ref) or "unknown"
-        expected = (str(args.get("expected")) if args.get("expected") else "").strip().lower()
-        body = f"ref: {ref}\nactual accelerator: {actual}"
-        verdict = "unknown"
-        if expected and actual != "unknown":
-            verdict = "match" if actual == expected else "MISMATCH"
-            body += f"\nexpected: {expected}\nverdict: {verdict}"
-        if verdict == "MISMATCH":
+        res = _verify_accelerator(str(args["ref"]), str(args.get("expected") or ""))
+        body = (f"ref: {res['ref']}\nactual accelerator: {res['actual']}")
+        if res["verdict"] != "unknown":
+            body += f"\nexpected: {res['expected']}\nverdict: {res['verdict']}"
+        body += f"\n\n{res['readsAs']}"
+        if res["verdict"] == "MISMATCH":
             body += (
-                f"\n\nThis notebook is NOT on the {expected} it was launched for. Retire it with "
-                f"kaggle_kernel_retire (source and output are backed up first) and re-launch, or it "
-                f"keeps consuming quota without doing the work."
+                "\n\nCheck the Kaggle page's active-runs panel, which is the only reliable "
+                "reading, or wait for the notebook's own stdout. Do NOT re-launch to correct "
+                "it: a second version is billed from the moment it starts and cannot be "
+                "stopped on its own."
             )
-        elif verdict == "match":
-            body += "\n\nAccelerator is as requested. No action needed."
-        elif actual == "unknown":
-            body += "\n\nCould not read the kernel record. Check it is pushed and the account is active."
-        return text_response(f"kaggle kernels verify {ref}", 0, body, "")
+        return text_response(f"kaggle kernels verify {args['ref']}", 0, body, "")
 
     if name == "kaggle_kernel_retire":
         ref = str(args["ref"])
@@ -1863,6 +2223,10 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 f"folder does not exist: {folder}. A push folder needs notebook.ipynb and "
                 "kernel-metadata.json side by side.",
             )
+        if not args.get("force"):
+            blocked = _push_gate(folder, _acct(args), "kaggle kernels push")
+            if blocked is not None:
+                return blocked
         cmd = ["kernels", "push", "-p", folder]
         if args.get("tags"):
             cmd += ["--tags", str(args["tags"])]
@@ -1890,6 +2254,102 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "kaggle_competitions_list":
         cmd = ["competitions", "list", "--csv", "--search", str(args["search"])]
         return text_response(" ".join(cmd), *run_kaggle(cmd, _acct(args)))
+
+    if name == "kaggle_methods":
+        _mact = str(args.get("action") or "search")
+        if _mact == "allowed":
+            return text_response("kaggle_methods allowed", 0,
+                                 "skills this package will download:\n"
+                                 + "\n".join("  - " + s for s in skill_fetch.ALLOWED), "")
+        if _mact == "probe":
+            _p = kdense_index.probe()
+            return text_response("kaggle_methods probe", 0,
+                                 "upstream: %s\ncached:  %s\ncurrent: %s\n%s"
+                                 % (_p.get("upstreamCommit"), _p.get("indexCommit"),
+                                    "yes" if _p.get("indexIsCurrent") else "no",
+                                    _p.get("note") or ""), "")
+        if _mact == "refresh":
+            _mcommit = str(args.get("commit") or "").strip()
+            if not _mcommit:
+                # No pin: ask upstream where main is, then read the page at THAT commit rather than
+                # at a branch. The pin is recorded, not assumed.
+                _head = kdense_index.probe()
+                _mcommit = str(_head.get("upstreamCommit") or "").strip()
+                if not _mcommit:
+                    return text_response("kaggle_methods refresh", 1,
+                                         "no commit to read at: %s\nstatus: %s\ntransport: %s\n"
+                                         "capabilities: %s"
+                                         % (_head.get("note") or "", _head.get("status"),
+                                            _head.get("transportError"),
+                                            json.dumps(_head.get("capabilities") or {},
+                                                       ensure_ascii=False)), "")
+            _r = kdense_index.fetch_index(_mcommit)
+            if _r.get("outcome") != "ok":
+                # Report what was seen and stop. Whether this is a missing token, a rate limit or a
+                # bad pin is the caller's call to make, and a generic "download failed" would hide
+                # the one fact that tells them which it was.
+                return text_response("kaggle_methods refresh", 1,
+                                     "the index was not read.\n"
+                                     "  page:      %s\n  commit:    %s\n  status:    %s\n"
+                                     "  transport: %s\n  detail:    %s\n"
+                                     "  local:     %s\n"
+                                     % (_r.get("page"), _r.get("commit"), _r.get("status"),
+                                        _r.get("transportError"), _r.get("detail") or "-",
+                                        json.dumps(_r.get("capabilities") or {},
+                                                   ensure_ascii=False)), "")
+            return text_response("kaggle_methods refresh", 0,
+                                 "read %s at %s\n%s skills cached at\n  %s"
+                                 % (_r.get("page"), str(_r.get("commit"))[:12], _r.get("count"),
+                                    _r.get("cached")), "")
+        if _mact == "fetch":
+            _f = skill_fetch.fetch(str(args.get("name") or ""), str(args.get("commit") or ""))
+            if not _f.get("ok"):
+                _bits = ["staged at: %s" % _f.get("stage"), "name:     %s" % _f.get("name")]
+                if _f.get("detail"):
+                    _bits.append("detail:   %s" % _f["detail"])
+                if _f.get("status") is not None:
+                    _bits.append("status:   %s" % _f.get("status"))
+                if _f.get("transportError"):
+                    _bits.append("transport: %s" % _f.get("transportError"))
+                scan = _f.get("scan") or {}
+                if scan:
+                    _bits.append("scanner:  %d hit(s)" % len(scan.get("hits") or []))
+                    for h in (scan.get("hits") or [])[:3]:
+                        _bits.append("          line %s: pattern %s" % (h.get("line"), h.get("pattern")))
+                if _f.get("capabilities"):
+                    _bits.append("capabilities: %s" % json.dumps(_f["capabilities"], ensure_ascii=False))
+                return text_response("kaggle_methods fetch", 1, "\n".join(_bits), "")
+            return text_response("kaggle_methods fetch", 0,
+                                 "%s (%s, network: %s)\nscanner: %s\n"
+                                 % (_f.get("name"), _f.get("source"), _f.get("network"),
+                                    "clean" if (_f.get("scan") or {}).get("clean") else "HITS"), "")
+        # search - local only
+        _mlimit = args.get("limit")
+        try:
+            _mlimit = int(_mlimit) if _mlimit is not None else 5
+        except (TypeError, ValueError):
+            _mlimit = 5
+        _s = kdense_index.recommend(str(args.get("change") or ""),
+                                     str(args.get("hypothesis") or ""), limit=_mlimit)
+        _lines = ["index: %s (%s skills, %s, network: %s)"
+                  % (_s.get("source"), _s.get("indexSize"),
+                     "may be stale" if _s.get("indexMayBeStale") else "from cache",
+                     _s.get("network"))]
+        for _m in _s.get("matches") or []:
+            _lines.append("")
+            _lines.append("  %s  score %s, %d word(s) in common: %s"
+                          % (_m.get("name"), _m.get("score"), _m.get("shared"),
+                             ", ".join(_m.get("matchedOn") or [])))
+            _lines.append("    %s" % (_m.get("description") or "")[:400])
+        if not (_s.get("matches") or []):
+            _lines.append("")
+            _lines.append("  no match: %s" % (_s.get("whyNoMatch") or _s.get("note") or "nothing to say"))
+            for _c in _s.get("closest") or []:
+                _lines.append("    nearest: %s  score %s, %d word(s): %s"
+                              % (_c.get("name"), _c.get("score"), _c.get("shared"),
+                                 ", ".join(_c.get("matchedOn") or [])))
+                _lines.append("      %s" % (_c.get("description") or "")[:240])
+        return text_response("kaggle_methods search", 0, "\n".join(_lines), "")
 
     if name == "kaggle_config_view":
         return text_response("kaggle config view", *run_kaggle(["config", "view"]))
@@ -2284,10 +2744,18 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                         "action='observe' needs text: the log you just read, or its tail. "
                         "Passing the last few thousand characters is plenty.",
                     )
-                res = logmonitor.observe(text)
+                res = logmonitor.observe(
+                    text,
+                    run_state=str(args.get("run_state") or ""),
+                    active_versions=int(args.get("active_versions") or 0),
+                )
                 body = [
                     f"log moved since the last tick: {res['changed']}"
                     f"   quiet checks: {res['stillChecks']}",
+                    f"run state: {res['runState']}"
+                    f"   still running: {res['runAlive']}"
+                    + (f"   active versions: {res['activeVersions']}"
+                       if res["activeVersions"] else ""),
                     f"cadence verdict: {res['action']}",
                 ]
                 if res["fired"]:
@@ -2301,6 +2769,20 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     body.append(
                         f"\nREPORT THESE to the main agent ({names}) and, if the run is over, "
                         f"record or settle the node and delete this cron."
+                    )
+                if res["canStop"]:
+                    body.append(
+                        "\nthe run has reached a terminal state, so the watch is over: settle the "
+                        "node and delete this cron."
+                    )
+                elif res["runAlive"]:
+                    # The line the old answer got wrong, and the one that costs a GPU an hour
+                    # when it is wrong. Silence is not an ending: a queued or running kernel
+                    # that has printed nothing is still a run, and the cron stays.
+                    body.append(
+                        f"\nthe run is still {res['runState']!r}, so this cron STAYS. Quiet is not "
+                        f"the same as over. Re-arm with action=\"tick\" verdict={res['action']!r} "
+                        f"and exit quietly."
                     )
                 else:
                     body.append(
@@ -2345,8 +2827,10 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     f"because: {res['why']}"
                     + ("\nsteady state - the run is plainly just running; leave it here"
                        if res["atSteadyState"] else "")
-                    + "\n\nthis watch deletes itself on a report from action=\"observe\", or "
-                      "when action=\"attempt\" says every route to the log has failed."
+                    + "\n\nthis watch deletes itself in exactly two cases: action=\"observe\" "
+                      "reports canStop (the run reached a terminal state), or action=\"attempt\" "
+                      "says every route to the log has failed AND the run is no longer alive. "
+                      "A quiet run is not either of those - keep the cron."
                 )
                 return text_response("kaggle_log_monitor tick", 0, body, "")
 
@@ -3231,6 +3715,11 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 hypothesis=str(args.get("hypothesis") or ""),
                 operator=str(args.get("operator") or ""),
                 family=str(args.get("family") or ""),
+                # Both are the caller's own words about its own run. Empty by default so an
+                # existing call keeps the behaviour it had; naming a branch is what lets a
+                # refutation earned elsewhere be reported as evidence rather than used as a veto.
+                branch=str(args.get("branch") or ""),
+                data=str(args.get("data") or ""),
             )
             if not res.get("ok"):
                 return text_response(
@@ -3257,6 +3746,25 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             if others:
                 lines += ["", "other nodes that overlap: "
                               + ", ".join(f"{x['id']} ({x['score']})" for x in others)]
+            # Comparability is shown on the line that carries the id, not in a separate section:
+            # a reader deciding whether to run something is reading the list, and a node that is
+            # in the list but held back deserves to say why where it appears.
+            for x in (res.get("matches") or []):
+                if not x.get("comparable", True):
+                    lines += ["", f"held at arm's length: {x['id']} — {x.get('notComparableBecause')}"]
+            sk = res.get("skills") or {}
+            if sk.get("matches"):
+                lines += ["", "published method that might already answer this "
+                              f"(index: {sk.get('source')}, network: {sk.get('network')}):"]
+                for s in sk["matches"]:
+                    lines += [f"  {s['name']}  (score {s['score']}, "
+                              f"words: {', '.join(s.get('matchedOn') or [])})"]
+            elif sk.get("closest"):
+                lines += ["", f"no published method matched: {sk.get('whyNoMatch') or ''}".rstrip()]
+                for s in sk["closest"]:
+                    lines.append(f"  nearest: {s['name']} (score {s['score']})")
+            elif sk.get("note"):
+                lines += ["", f"published method: unavailable — {sk['note']}"]
             return text_response("kaggle_experiment_tree consider", 0, "\n".join(lines), "")
 
         if action == "prune":
@@ -3559,8 +4067,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         log_path = str(args.get("log_path") or "").strip()
         if not log_path:
             stamp = time.strftime("%Y%m%d-%H%M%S")
-            log_dir = os.path.join(
-                os.path.expanduser("~"), ".kaggle-agent", "local-runs", lcomp)
+            log_dir = os.path.join(_home(), "local-runs", lcomp)
             try:
                 os.makedirs(log_dir, exist_ok=True)
             except OSError as exc:

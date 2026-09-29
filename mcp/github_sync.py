@@ -32,9 +32,15 @@ Two ways to get a token, because different users are comfortable with different 
 * **Fine-grained PAT (env or store).** ``GITHUB_TOKEN`` / ``GH_TOKEN`` or the plugin's
   per-user store. Simpler for users who already have one, and it needs no app registration.
 
-Token precedence: ``GITHUB_TOKEN`` -> ``GH_TOKEN`` -> plugin store. A token is never
-written to the config file, never printed by a tool, and never committed; only its
-source and the authenticated login are ever reported.
+Token precedence: ``GITHUB_TOKEN`` -> ``GH_TOKEN`` -> the GitHub CLI's own login -> plugin
+store. A token is never written to the config file, never printed by a tool, and never
+committed; only its source and the authenticated login are ever reported.
+
+The GitHub CLI sits above the plugin store because a browser login there is a credential the
+user created deliberately, and reading it is how a user who never touched a token still gets a
+transport. It is read from ``hosts.yml`` where the gh version keeps it there, and from
+``gh auth token`` where the version keeps it in the OS keyring - see :func:`_gh_cli_token`
+for why reading the file alone stopped being enough.
 
 Nothing here reaches the network unless a tool explicitly asks it to. ``capabilities()``
 is a pure local probe, so a user can ask "can this machine sync?" without any request
@@ -139,6 +145,14 @@ def _gh_cli_token() -> Optional[str]:
     dependency this plugin otherwise does not need. Anything unexpected returns None, which
     falls through to the next source rather than guessing.
     """
+    tok = _gh_token_from_hosts_file()
+    if tok:
+        return tok
+    return _gh_token_from_cli()
+
+
+def _gh_token_from_hosts_file() -> Optional[str]:
+    """The token, if this gh version keeps it in ``hosts.yml``. See :func:`_gh_cli_token`."""
     if os.name == "nt":
         base = os.environ.get("APPDATA") or os.path.join(
             os.path.expanduser("~"), "AppData", "Roaming")
@@ -180,6 +194,42 @@ def _gh_cli_token() -> Optional[str]:
                     return value
             want_value = False
     return None
+
+
+def _gh_token_from_cli() -> Optional[str]:
+    """Ask the GitHub CLI for the token, for the gh versions that keep it in the OS keyring.
+
+    Reading ``hosts.yml`` used to be enough, and was what this function did. It no longer is:
+    gh stores the token in the platform credential store (Windows Credential Manager,
+    libsecret, the macOS Keychain) and leaves a ``hosts.yml`` that holds the account name and
+    the protocol but no ``oauth_token`` key at all. A machine that ran ``gh auth login`` and
+    answered "keyring" at ``gh auth status`` is fully authenticated, and this reader called it
+    unauthenticated - which is the worst kind of wrong answer, because it points the user at a
+    credential that already exists.
+
+    So the file is tried first (free, no process) and the CLI is asked second. ``gh auth token``
+    is used rather than ``gh auth status`` because the latter prints the account and scopes as
+    well, and only the token is wanted here. Nothing is logged and no shell is involved; the
+    value never reaches a transcript, a log line, or a crash report.
+    """
+    exe = shutil.which("gh")
+    if not exe:
+        return None
+    try:
+        proc = subprocess.run(
+            [exe, "auth", "token"],
+            capture_output=True, text=True, timeout=10, check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # A missing binary, a hung keyring prompt, a timeout: none of them are worth
+        # reporting as a failure, because the caller simply falls through to the next source.
+        return None
+    if proc.returncode != 0:
+        return None
+    tok = (proc.stdout or "").strip()
+    return tok or None
+
 
 
 def resolve_token() -> tuple[Optional[str], str]:

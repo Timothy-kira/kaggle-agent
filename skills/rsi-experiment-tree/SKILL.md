@@ -270,6 +270,8 @@ kaggle_experiment_tree action="consider" competition="<slug>"
   hypothesis="<why you expect it to matter>"
   operator="draft|improve|debug|crossover"     # if you already know
   family="<method family>"                      # if you already know
+  branch="<the line of work you are on>"        # if you know it
+  data="<what this run reads>"                  # if you know it
 ```
 
 | Verdict | What it means | What you do |
@@ -290,6 +292,22 @@ refuted list, the kept chain and the open declarations, and hands you the eviden
 finding matters enough to become a node is judgement, and that is deliberately left to you. What
 the tool removes is the excuse: after `already_refuted`, running it anyway is no longer an
 oversight, it is a decision you made against a record.
+
+**Name your branch and your data when you know them.** A refutation is a statement about a
+measurement, and a measurement belongs to the conditions it was taken under. A node refuted on
+`baseline-v1` over `fold-a` did not refute anything on `baseline-v2` over `fold-b`, and `consider`
+knows the difference: a match from another branch, or one whose `controls.data` differs from the
+data you named, stays in `matches` and stays the top hit, but stops being a veto. Omit both
+parameters and you get exactly the behaviour you always had — the tool will not guess a branch
+on your behalf, because a guessed boundary silences the veto rather than sharpening it.
+
+**The same answer also carries `skills`.** It is published experimental method that might already
+answer this change, ranked from a local index with no network call, because this runs on every
+declaration and the experiment loop must not carry a network dependency. Read it *after*
+`ruler-audit` stage 2 has said the metric can resolve the change — a method cannot rescue a
+measurement that cannot see the result. When the tree stalls, read it again: a stall is where
+re-deriving something published is most likely. Fetching anything it recommends is a separate
+call, by name; see `kdense-methods`.
 
 ## Useless collected material can be pruned. Nothing else can.
 

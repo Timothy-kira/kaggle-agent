@@ -2,13 +2,18 @@
 
 **What this category answers:** what is this competition actually, and what should I build?
 
-Research exists to produce a plan. A plan is only as good as the evidence under it, so both
+Research exists to produce a plan. A plan is only as good as the evidence under it, so the
 skills here are organised around *how* the evidence was gathered, not around what it found.
 
 | Skill | Use it when |
 |---|---|
 | [`kaggle-competition-research`](../kaggle-competition-research/SKILL.md) | Before committing to an approach. Two waves of parallel subagents: four on Kaggle-native sources, then three external ones whose queries the main agent derives from the first wave. Each wave is launched by issuing every subagent task in one assistant response. |
 | [`approach-decision`](../approach-decision/SKILL.md) | Which angle to attack before the first node exists — each candidate costed, given a killer, and scored against how converged the public cluster already is — and then the write-it-myself vs fork-the-top-notebook call. |
+
+| [`kdense-methods`](../kdense-methods/SKILL.md) | Before an experiment is declared, while the tree has
+  stalled, or when a branch opens on different data — whether published experimental method
+  already answers it. Scrapes the upstream catalogue, searches it with the words this
+  competition produced, and fetches what is worth reading through four gates. |
 
 ## The shape of a research sweep
 
@@ -98,3 +103,10 @@ by that visualizer, `gate` = decides whether a widget is warranted, `loops` = fe
 | `presence-mode` -> asks `search-engine` | present: ask which engine for a discovery search. away: use the default and record it. Direct navigation to a known URL is exempt either way. | <!-- edge:presence-mode->search-engine:asks --> |
 | `kaggle-competition-research` -> produces `evidence-sources` | every paper and repo the sweep opened is stored once, so a later review can re-read it instead of re-searching | <!-- edge:kaggle-competition-research->evidence-sources:produces --> |
 | `kaggle-competition-research` -> needs `ruler-audit` | the held-out set is declared at plan time, so the calibration that decides whether the search split is comparable is written then too, not on the day of the first declare | <!-- edge:kaggle-competition-research->ruler-audit:needs --> |
+| `kaggle-competition-research` -> needs `kdense-methods` | between wave 1 and wave 2, in the main thread, the index is refreshed and searched with the words wave 1 just produced; it is the same act as directing the general search, one step earlier | <!-- edge:kaggle-competition-research->kdense-methods:needs --> |
+| `rsi-experiment-tree` -> needs `kdense-methods` | consider returns published method on every declaration, and re-reads it when the tree stalls or a branch opens on data the old findings do not cover | <!-- edge:rsi-experiment-tree->kdense-methods:needs --> |
+| `ruler-audit` -> needs `kdense-methods` | stage 2 and stage 4 each hand off to it, and only after the ruler has said the metric can resolve the change - a method cannot rescue a measurement that cannot see the result | <!-- edge:ruler-audit->kdense-methods:needs --> |
+| `kdense-methods` -> produces `evidence-sources` | a skill that was actually downloaded and read is stored with its name and the upstream commit, on the same relations as a paper, so a later review can re-read it instead of re-searching | <!-- edge:kdense-methods->evidence-sources:produces --> |
+| `kdense-methods` -> needs `github-auth` | the scrape and the download are authenticated, and a refused request is not evidence that anything is missing - the two have to stay distinguishable or the index is retired for a reason nobody can see | <!-- edge:kdense-methods->github-auth:needs --> |
+| `presence-mode` -> asks `kdense-methods` | a download that fails stops and asks, because a method that is silently missing reads as a method that does not exist; away, the decision to continue on cache is recorded and marked for the user's return | <!-- edge:presence-mode->kdense-methods:asks --> |
+| `genui-scenarios` -> gates `kdense-methods` | whether asking about a failed download is a sentence or a panel - never whether to ask, which is presence-mode's call | <!-- edge:genui-scenarios->kdense-methods:gate --> |

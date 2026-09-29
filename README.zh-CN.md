@@ -194,10 +194,28 @@ tools/                        强制层
 
 ## 出处
 
-`ablation-design` 改编自 MIT 许可的
-[K-Dense-AI/claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)
-项目里的实验设计与不确定性材料。取的是方法，没有取那些依赖繁重的脚本。原始 MIT 许可和上游
-提交都记录在 skill 里。
+八份正文取自 MIT 许可的
+[K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills)
+项目（原名 `K-Dense-AI/claude-scientific-skills`），pin 在提交
+`065b734670d7d990627dbc06a05b5a99be33f1f1`；其中七份整份 vendor，各自放在会读它的宿主 skill 下，
+并附一份上游许可原文：
+
+| Vendor 的正文 | 读它的 skill |
+|---|---|
+| `hypothesis-generation`、`scientific-critical-thinking` | `ruler-audit` —— 声明与裁定复核 |
+| `seaborn`、`scientific-visualization` | `scientific-plotting` —— 出图阶段 |
+| `scientific-writing`、`scientific-slides` | `technical-report` —— 报告与汇报 |
+| `scientific-brainstorming` | `kaggle-competition-research` —— 调研之后 |
+
+`experimental-design` 取过又去掉了：它是一份实验室方案书，能迁移到比赛的两点——block 干扰因素、
+什么才算真正的独立重复——`ablation-design` 和 `ruler-audit` 已经在承担；带上它的脚本等于为一张
+本包自己能列的实验臂矩阵引入 `pyDOE3` 依赖。
+
+正文一律不改，这是有意的：每个宿主 skill 都用自己的文字写明取了什么、拒了什么、为什么。重新
+vendor 用 `python tools/fetch_kdense_bodies.py <commit>`。
+
+`ablation-design` 另外改编了实验设计与不确定性材料。取的是方法，没有取那些依赖繁重的脚本。原始
+MIT 许可和上游提交都记录在 skill 里。
 
 回放与非贪心选择的设计来自 *Dream-RSI*（arXiv 2609.14858），从线性子链改编为多子节点 DAG；
 按标准计成本核算来自 *Effective Feedback Compute*（arXiv 2605.29682）。两者都在 skill 和

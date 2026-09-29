@@ -1,5 +1,5 @@
 {
-  "version": "1.31.1",
+  "version": "1.32.0",
   "comment": "Single source of truth for how the skills, agents and required sources in this package relate, AND for the live state those relationships are gated on. The per-category 'Bound edges' tables in each INDEX.md are RENDERED from this file, and tools/check_plugin.py fails the build when they drift. Edit this file, then re-run the checker, or it will tell you exactly which table is stale.",
   "state": {
     "_comment": "Live state, declared here and read through its own tool. The graph does not store the values - it points at the readers - so it cannot drift from reality. Read it all with kaggle_presence action='status', which reports the graph state and the ask-or-auto answer together. Anything unreadable fails toward asking: the cost of a wrong 'ask' is a pause, the cost of a wrong 'auto' is an unattended irreversible action.",
@@ -95,6 +95,25 @@
           "who": "genui-scenarios",
           "edge": "gate",
           "decides": "whether the destination is offered as a picker; no visualizer exists yet, so it is text"
+        }
+      ]
+    },
+    "kdense-methods": {
+      "owners": [
+        {
+          "who": "ruler-audit",
+          "edge": "needs",
+          "decides": "whether the metric can resolve the change at all, and only then whether a published method is worth looking up"
+        },
+        {
+          "who": "presence-mode",
+          "edge": "asks",
+          "decides": "whether a failed download asks the user now or is recorded for their return"
+        },
+        {
+          "who": "genui-scenarios",
+          "edge": "gate",
+          "decides": "whether that question is rendered as a panel or answered in text"
         }
       ]
     }
@@ -354,6 +373,12 @@
       "category": "experiment",
       "path": "skills/ruler-audit/SKILL.md",
       "note": "Metric resolution and stall triage, adapted from Anthropic claude-api shared/evals (Apache-2.0), NOTICE in its own directory. Owns the question the tree cannot ask: whether the metric can resolve the change being declared. calibrate records the noise floor with the two variance layers apart (seedSpread wants more repetitions, rebuildSpread wants the rebuild out of the measured path); declare then refuses an atLeast below that floor; settle judges against the largest of the declared floor, the arm spread and the calibrated one, naming in floorFrom only the terms that tied; regrade re-judges stored results under a new ruler without writing. Its four other stall buckets are not new mechanisms - artifact gap, harness (failureLayer), structural (parent null) and variance (partial + ablate repeats) already exist - and pointing at those existing ones is the point of the table. Only judge-disagreement is new, and it is the one worth stopping for."
+    },
+    {
+      "id": "kdense-methods",
+      "kind": "skill",
+      "category": "research",
+      "path": "skills/kdense-methods/SKILL.md"
     }
   ],
   "edges": [
@@ -794,6 +819,48 @@
       "to": "evidence-sources",
       "type": "needs",
       "when": "the two variance layers and the five stall buckets are adapted from published work, and an adaptation whose source cannot be re-read is indistinguishable from a guess"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "kdense-methods",
+      "type": "needs",
+      "when": "between wave 1 and wave 2, in the main thread, the index is refreshed and searched with the words wave 1 just produced; it is the same act as directing the general search, one step earlier"
+    },
+    {
+      "from": "rsi-experiment-tree",
+      "to": "kdense-methods",
+      "type": "needs",
+      "when": "consider returns published method on every declaration, and re-reads it when the tree stalls or a branch opens on data the old findings do not cover"
+    },
+    {
+      "from": "ruler-audit",
+      "to": "kdense-methods",
+      "type": "needs",
+      "when": "stage 2 and stage 4 each hand off to it, and only after the ruler has said the metric can resolve the change - a method cannot rescue a measurement that cannot see the result"
+    },
+    {
+      "from": "kdense-methods",
+      "to": "evidence-sources",
+      "type": "produces",
+      "when": "a skill that was actually downloaded and read is stored with its name and the upstream commit, on the same relations as a paper, so a later review can re-read it instead of re-searching"
+    },
+    {
+      "from": "kdense-methods",
+      "to": "github-auth",
+      "type": "needs",
+      "when": "the scrape and the download are authenticated, and a refused request is not evidence that anything is missing - the two have to stay distinguishable or the index is retired for a reason nobody can see"
+    },
+    {
+      "from": "presence-mode",
+      "to": "kdense-methods",
+      "type": "asks",
+      "when": "a download that fails stops and asks, because a method that is silently missing reads as a method that does not exist; away, the decision to continue on cache is recorded and marked for the user's return"
+    },
+    {
+      "from": "genui-scenarios",
+      "to": "kdense-methods",
+      "type": "gate",
+      "when": "whether asking about a failed download is a sentence or a panel - never whether to ask, which is presence-mode's call"
     }
   ]
 }

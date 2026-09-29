@@ -125,9 +125,24 @@ So after every launch:
 kaggle_kernel_verify  ref=<owner/slug>, expected=<gpu|tpu|none>
 ```
 
-It reads the kernel's live record and reports `match` or `MISMATCH`. A `MISMATCH` means the job is
-running on CPU: it burns no accelerator quota, but it also does not do the work, and it will sit
-there looking alive. Fix the metadata and re-launch; do not leave it.
+It reads the kernel's live record and reports `match`, `MISMATCH` or `unknown`. The launchers
+already call it for you and put the answer in the launch result, so this is a re-read, not the
+only one.
+
+**A `MISMATCH` is not a reason to launch again.** It is a reading, and readings of this field
+have been wrong in the expensive direction: a kernel that is still **queued** has no machine
+assigned yet, so the record legitimately reads empty; and a run that the Kaggle active-runs
+panel was simultaneously showing as *GPU T4 x2* has been read as `none` here. So:
+
+| answer | what it means | what to do |
+|---|---|---|
+| `match` | the notebook is on the accelerator it was launched for | nothing |
+| `MISMATCH` | the record says a different accelerator | **not** evidence that the run is not running. Check the Kaggle page's active-runs panel, or wait for the notebook's own stdout. Do **not** re-launch |
+| `unknown` | the record could not be read | nothing yet. A queued kernel has nothing to read |
+
+The one reliable reading is the **active-runs panel on the Kaggle page**; the notebook's own
+stdout is the next best. This tool's readback is a useful early signal and a bad sole basis for
+a decision, and the decision it must never drive is "start another copy".
 
 ## Retiring a kernel without losing it or leaking quota
 
@@ -209,6 +224,37 @@ report but **not enforced** — kill the pid if it overruns.
 
 A stopped run is not a finished run. `kernels push` against the **same folder** updates the same
 notebook and starts a new version - that is the resume path, not a new experiment.
+
+### The gate before a re-push, and why it exists
+
+Both pushers check, before anything leaves the machine, whether a version of that notebook is
+already running. If one is, the push is **refused** and the refusal names the version. You do
+not have to remember to run `kernels status` first, and you should not try to push past it on
+your own.
+
+The reason is that this mistake has no undo. Two versions of one notebook are billed from the
+moment the second starts, and `kaggle kernels` has **no stop and no cancel** — the only command
+that ends a run is `delete`, which ends *every* version of that notebook at once. So you cannot
+start a second copy and then stop the newer one. The moment before the push is the only place
+this can be prevented, which is why it is a gate and not advice.
+
+**When the gate refuses, ask the user.** It is not a hiccup to retry past; it is the tool
+telling you that this notebook is already doing the thing you were about to pay for twice.
+`ask_user`, with those three options:
+
+1. **wait** for the running version to finish, then push — nothing is lost, the run is doing
+   what it was launched to do;
+2. **push anyway**, knowing both run at once and both are billed;
+3. **retire** the notebook with `kaggle_kernel_retire` if the running version is not wanted —
+   it backs up source and output before deleting.
+
+Only after the user picks 2 does the retry carry `force=true`. That parameter is the record of
+a decision somebody made, and it should never be the thing that lets a quiet retry through.
+
+A status read the tool cannot make sense of is retried before it is believed, and the retry
+count and total wait are in the refusal text. If every attempt comes back unreadable the push is
+still refused, and the refusal says the state could not be determined rather than pretending the
+notebook is idle.
 
 - Keep the workspace and `kernel-metadata.json` byte-identical between attempts. Changing the `id`
   creates a different notebook and orphans the previous run's logs.

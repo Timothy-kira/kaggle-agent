@@ -135,6 +135,60 @@ This is the same rule the rest of the plugin is built on: a deterministic gate m
 decision and it may refuse, but it may never **acquit** a claim. The check decides whether a
 write happens; the reviewer decides whether the result is true.
 
+## Two vendored bodies, and what each is actually for
+
+Both are shipped whole under `references/kdense/`, with the upstream licence beside them.
+
+**`scientific-writing/` — the claim/evidence id scheme.** Steps 3 to 5 above are prose discipline:
+"every sentence traces to a row". Upstream makes that mechanical by numbering every claim
+(`C001`) and every piece of evidence (`E001`), and a sentence that cites neither is a sentence the
+linter flags. It is worth taking for a report this size, and it costs two columns. Two of its rules
+are stricter than anything above, and both are adopted verbatim:
+
+- **A source may not be marked verified until a human has opened it.** The same rule
+  `evidence-sources` enforces with an extracted quote, arriving from the other direction.
+- **Only an accountable human sets `submission_ready`.** In this package's idiom that is
+  `ask_user`, at the same tier-3 point `genui-scenarios` puts every other mid-task prompt.
+
+Its eight offline linters are vendored. They are not wired to a step here, because this package's
+own `action="audit-report"` already refuses the three failures that matter mechanically and a
+second gate that covers the same ground reads as two gates rather than as one.
+
+**`scientific-slides/` — a talk, which is a different document.** Upstream's *default* path renders
+each slide as one picture and hands it to a paid image model, then asks the model to look at the
+previous slide so the next one matches its style. Take the structure and take the other two paths
+upstream also ships; the picture path is the one to leave.
+
+- **Do not render a slide as an image.** The slide's text becomes pixels: unselectable, unsearchable,
+  and wrong whenever the image model mis-renders a symbol or a number. In a talk the text *is* the
+  argument, and a research talk is exactly where a garbled confidence interval hurts most.
+  Upstream's own PowerPoint route says as much — generated visuals, *separate text*.
+- **Build the deck as a document.** Two real formats ship with the vendored body and neither needs
+  an API: the Beamer templates in its `assets/` (conference, seminar, defence) with
+  `references/beamer_guide.md`, or a PPTX through the `pptx` skill. Style consistency is then
+  structural rather than something a model is asked to copy from its own previous output.
+- **The figures go in as themselves.** `scientific-plotting` already produced them as real files at
+  the export resolution it inspected. A slide embeds those files; it does not ask anything to
+  redraw them.
+- **An image model still has a place — on the schematic, not on the slide.** A method diagram or
+  an illustrative graphic is what text-to-image is actually good at. The deliverable of that step
+  is a **prompt, handed to the user**, not a call this package makes: one prompt per slide that
+  needs art, written so it can be pasted straight into whatever tool the user already pays for —
+  GPT, Gemini, or the upstream generator. They run it, the image comes back, and the deck is
+  assembled around it.
+- **Keep the numbers out of the prompt, every time.** Say "no text, no numerals, no labels" in
+  the prompt itself. A rendered citation or a rendered confidence interval is a wrong number on a
+  slide, and it is wrong in a way nobody catches until the talk. The text, the figures and the
+  numbers are typeset by this package, from the tree, after the picture is in.
+- **Set the author.** Upstream defaults it to "K-Dense" unless told otherwise, which would stamp
+  somebody else's name on your talk. Set it, and check it before you present.
+- **Timing survives all of it.** Results get 40-50% of the time, and three to five timed rehearsals
+  come before finalising. `assets/timing_guidelines.md` and `references/talk_types_guide.md` cover
+  the per-talk-type splits.
+- **Its accessibility line conflicts with this package's.** Upstream treats "high contrast 7:1" as
+  a presentation preference. `scientific-plotting` forbids claiming that a palette makes a figure
+  accessible at all, and the stricter rule wins where they meet.
+
 ## Cross-references
 
 - `rsi-experiment-tree` — the tree these numbers come from, and the read-gate behind them

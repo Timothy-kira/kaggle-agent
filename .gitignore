@@ -18,14 +18,17 @@ __pycache__/
 # disk; only the repository was short a skill. A published package that fails to import is
 # exactly the failure this file is supposed to prevent, so the rules stay anchored and
 # `tools/check_plugin.py` asserts that no manifest path is gitignored.
-presence.json
-log-monitor.json
-search-engine.json
-config.json
-credentials.json
+/presence.json
+/log-monitor.json
+/search-engine.json
+/config.json
+/credentials.json
+/accounts.json
 /handoff/
 /sources/
 /plots/
+/local-runs/
+/skill-cache/
 *.tmp
 
 # Agent Plugins 1.0 view of this package, written by the runtime at import time

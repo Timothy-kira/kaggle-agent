@@ -158,6 +158,33 @@ References: `references/publication_guidelines.md` (integrity and deceptive enco
 `references/color_palettes.md`, `references/journal_requirements.md`,
 `references/matplotlib_examples.md`, `references/sources.md`.
 
+## Two more vendored bodies, and the one rule each of them loses
+
+Both are shipped whole under `references/kdense/`, with the upstream licence beside them.
+
+**`scientific-visualization.md` is where this skill came from.** The `assets/`, `references/`
+and `scripts/` above are its files, lightly adjusted; the body is carried here unedited so the
+adaptation can be compared against its source. Read it when you want the original reasoning for a
+guardrail and not the competition-shaped restatement of it.
+
+**`seaborn/` answers a different question: not "is this encoding honest" but "which seaborn call
+draws it".** Reach for it when a figure needs a statistical layer rather than a custom chart —
+`errorbar`, faceting through the figure-level functions, and the categorical encodings. Its real
+value here is version knowledge this skill does not carry: in seaborn 0.12/0.13 `errorbar`
+replaces `ci`, `density_norm=` replaces `scale=`, `native_scale=True` became available, and
+`palette` without `hue` is deprecated. Writing 0.11-era calls against a 0.13 install fails at
+runtime, not at review.
+
+Two of its instructions are **not** carried, and both because the body above already ruled on them:
+
+- **`fig.savefig(..., bbox_inches='tight')` is not how a figure is exported here.** It crops the
+  canvas, so the physical width you configured is not the width of the file — which defeats the
+  point of asking for a single-column width. Use `scripts/figure_export.py`, which sets the canvas
+  from the target and records it in the manifest.
+- **`sns.load_dataset()` downloads.** Every figure this skill draws comes from the experiment tree,
+  and the research sweep is often offline. A plotting step that needs the network is a plotting
+  step that fails on the machine where it mattered.
+
 ## Reading order after a run
 
 1. `analyze` — get the figures.

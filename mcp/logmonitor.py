@@ -109,10 +109,16 @@ def ladder_state(data: dict[str, Any] | None = None) -> dict[str, Any]:
 def note_tick(data: dict[str, Any] | None = None, action: str = "") -> dict[str, Any]:
     """Record that a check happened, and report the rung to re-arm with.
 
-    ``action`` is what :func:`observe` concluded - "tighten", "relax" or "hold". Without it
-    this is pure arithmetic that drifts on its own; with it, a run that just printed something
-    goes back to being watched closely instead of sliding towards the 20-minute steady state
-    while it is in the middle of doing the interesting part.
+    ``action`` is what :func:`observe` concluded - "tighten", "relax", "hold" or "waiting".
+    Without it this is pure arithmetic that drifts on its own; with it, a run that just
+    printed something goes back to being watched closely instead of sliding towards the
+    20-minute steady state while it is in the middle of doing the interesting part.
+
+    "waiting" holds the rung rather than stretching it, and that is the whole distinction.
+    A finished run that went quiet deserves to be read less often. A run that is still
+    running and has simply printed nothing for twenty minutes deserves to be read on the
+    cadence it has reached - which is the same 20 minutes, so the interval is unchanged
+    either way; what changes is that the watch is still alive, and says so.
     """
     d = load() if data is None else data
     before = ladder_state(d)
@@ -137,9 +143,12 @@ def note_tick(data: dict[str, Any] | None = None, action: str = "") -> dict[str,
         "atSteadyState": rung >= len(LADDER_SECONDS) - 1,
         "ticks": d["ticks"],
         "action": action or "hold",
+        "keepWatching": True,
         "why": ("the log moved, so it is being watched closely again" if action == "tighten"
-                else "the log has been quiet, so the checks can stretch out"
+                else "the run has finished, so the checks can stretch out"
                 if action == "relax" else
+                "the run is alive and quiet, so the cadence holds and the watch continues"
+                if action == "waiting" else
                 "the log has not settled yet, so the cadence holds"),
     }
 
@@ -159,6 +168,7 @@ def _clear_ladder(d: dict[str, Any]) -> None:
     d["tried"] = []
     d["still"] = 0
     d["digest"] = None
+    d["state"] = "unknown"
 
 
 # ------------------------------------------------------------------ watching content, not a clock
@@ -188,9 +198,43 @@ WATCH_RULES: tuple[dict[str, Any], ...] = (
      r"\bval_(?:loss|acc|auc)\b|\btrain\b.*\d"},
 )
 
+# ------------------------------------------------------------------ the run is not the log
+#
+# Everything above reads the log, and the log cannot say whether the run is over. A queued
+# kernel has no log at all, a run between epochs has an unchanged one, and a crashed run has
+# a final one. Those three look identical to a digest, so "the log has not moved" was read as
+# "nothing is happening" - which is how a watch deleted itself while the run was still
+# spending quota.
+#
+# So the run's own state is a first-class input to every tick, and the ladder reads both.
+# The asymmetry is deliberate and is the whole safety property here: `unknown` counts as
+# ALIVE, because following a dead run for a while costs requests, and missing one that is
+# still burning a GPU costs hours.
+ALIVE_STATES: tuple[str, ...] = ("running", "queued", "starting", "unknown")
+TERMINAL_STATES: tuple[str, ...] = ("complete", "error")
+KNOWN_STATES: tuple[str, ...] = ALIVE_STATES + TERMINAL_STATES
+
+
+def normalise_state(value: Any) -> str:
+    """One of KNOWN_STATES, or ``unknown`` for anything this module does not recognise.
+
+    An unrecognised or absent state is never treated as terminal. Silence from the tick is
+    not evidence that a run finished.
+    """
+    text = str(value or "").strip().lower()
+    if text in KNOWN_STATES:
+        return text
+    if text in ("done", "finished", "succeeded", "success", "ok", "failed", "failure", "stopped"):
+        return "complete" if text not in ("failed", "failure", "stopped") else "error"
+    return "unknown"
+
+
 # A log that has not moved for this many consecutive checks is steady, not interesting.
 # Two, not one: a run can legitimately go quiet for a while mid-training, and treating the
 # first silent tick as "steady" is how a real change gets slept through.
+#
+# This counts silence only. Whether silence means anything at all is decided by the run's
+# state, below - a quiet run that is still going is WAITING, and waiting is not steady.
 STILL_CHECKS_TO_STEADY = 2
 
 # How a fetch is retried when the log cannot be read. Ordered, bounded, and explicit: the
@@ -243,11 +287,18 @@ def _report_line(body: str, start: int) -> str:
     return first[:200]
 
 
-def observe(text: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+def observe(text: str, data: dict[str, Any] | None = None, run_state: str = "",
+            active_versions: int = 0) -> dict[str, Any]:
     """Read what the tick just fetched, and decide what it means.
 
     Returns which rules fired, whether the log moved at all since the last tick, and what
-    the ladder should do next. The content, not the clock, is the input.
+    the ladder should do next. The content decides, not the clock - and the run's own state
+    decides alongside the content, because a log that has not moved says nothing about
+    whether the run is still going.
+
+    ``run_state`` is the normalised lifecycle state (``running``/``queued``/``starting``/
+    ``complete``/``error``/``unknown``) and ``active_versions`` how many versions of the ref
+    are in flight. Anything unrecognised becomes ``unknown``, which counts as alive.
     """
     d = data if data is not None else load()
     rules = d.get("watch") or [dict(r) for r in WATCH_RULES]
@@ -266,6 +317,18 @@ def observe(text: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
             fired.append({"name": rule.get("name") or "?", "act": rule.get("act") or "report",
                           "line": _report_line(body, hit.start())})
 
+    # Not a log pattern, and deliberately not one: no line of any log says "you have two
+    # versions of this kernel running at once". That is a property of the ref, so it arrives
+    # as a field and fires like a rule. The cost of that mistake is two GPUs an hour, and
+    # the thing that is supposed to notice it is exactly the thing watching the run.
+    try:
+        versions = max(0, int(active_versions or 0))
+    except (TypeError, ValueError):
+        versions = 0
+    if versions > 1:
+        fired.append({"name": "duplicate-version", "act": "report",
+                      "line": f"{versions} versions of this ref are active at once"})
+
     reporting = [f for f in fired if f["act"] == "report"]
     woke = [f for f in fired if f["act"] == "wake"]
 
@@ -276,34 +339,54 @@ def observe(text: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     changed = before != digest
     still = 0 if changed else int(d.get("still") or 0) + 1
 
-    # The cadence is driven by ONE thing: did the log move. A run that printed something new
-    # is doing something worth watching closely; a run that printed the same bytes twice
-    # running is steady, and stretching out is not neglect, it is the whole point of the
-    # ladder. Watch rules decide whether to REPORT, never how fast to look - a heartbeat line
-    # that re-matches on an unchanged log is the same text read twice, and letting it
-    # re-tighten the ladder every tick is the timer-by-another-name this replaces.
+    # Deliberately NOT the last state this file saw. A terminal state persisted by an earlier
+    # tick and then carried forward without a fresh reading is exactly the stale signal this
+    # whole change exists to remove: the run went complete an hour ago and has since been
+    # re-pushed, and a watch that trusted its own memory would retire the cron over a run that
+    # is spending quota right now. Absent a reading, the run is unknown, and unknown is alive.
+    state = normalise_state(run_state)
+    alive = state in ALIVE_STATES
+    quiet = still >= STILL_CHECKS_TO_STEADY
+
+    # The cadence is driven by TWO things, and neither alone decides. A run that printed
+    # something new is doing something worth watching closely. A run that printed the same
+    # bytes twice is quiet - but quiet is only "steady" once the run has actually finished.
+    # While it is alive, quiet is WAITING, and waiting holds the rung rather than stretching
+    # it: a six-hour run that prints every twenty minutes should be read every twenty
+    # minutes, not abandoned, and a run that has died quietly should not be read at all.
     if changed:
         action = "tighten"
-    elif still >= STILL_CHECKS_TO_STEADY:
+    elif not alive:
         action = "relax"
+    elif quiet:
+        action = "waiting"
     else:
         action = "hold"
 
     d["digest"] = digest
     d["still"] = still
+    d["state"] = state
     d["lastSeen"] = _now()
     if fired:
         d["fired"] = [f["name"] for f in fired]
     _write(d)
 
+    # The invariant, stated once so it is readable: silence is not termination. `steady` and
+    # `canStop` are both false for anything still alive, however many ticks have passed.
+    steady = quiet and not alive
     return {
         "ok": True,
         "fired": fired,
-        "report": [f for f in reporting],
+        "report": reporting,
         "action": action,
         "changed": changed,
         "stillChecks": still,
-        "steady": still >= STILL_CHECKS_TO_STEADY,
+        "runState": state,
+        "runAlive": alive,
+        "activeVersions": versions,
+        "waiting": action == "waiting",
+        "steady": steady,
+        "canStop": state in TERMINAL_STATES,
         "rung": d.get("rung", 0),
         "ticks": d.get("ticks", 0),
         "rules": [r.get("name") for r in rules],
@@ -377,6 +460,12 @@ def defaults() -> dict[str, Any]:
         "rung": 0,
         "ticks": 0,
         "targets": [],
+        # The last state a tick actually read. Stored so that a monitor restarted mid-run can
+        # say what it last knew, and read back so that field is real rather than a line that
+        # writes a key nobody can observe. A tick does NOT inherit it - see observe() - because a
+        # state read an hour ago is not this tick's evidence, and acting on it is how a watch
+        # deletes itself over a run that is still spending quota.
+        "state": "unknown",
         # What the log has to look like for this tick to matter. Stored, not hard-coded, so a
         # user can watch for their own field without a plugin update.
         "watch": [dict(r) for r in WATCH_RULES],
@@ -441,6 +530,8 @@ def load() -> dict[str, Any]:
     for key in ("attempts", "still"):
         if isinstance(stored.get(key), int) and stored[key] >= 0:
             data[key] = stored[key]
+    if isinstance(stored.get("state"), str):
+        data["state"] = normalise_state(stored["state"])
     for key in ("lastRecipe", "lastFailure", "lastSeen"):
         if isinstance(stored.get(key), dict):
             data[key] = stored[key]
@@ -540,6 +631,10 @@ def set_target(kind: str, ref: str = "", path: str = "") -> dict[str, Any]:
     # one. `lastRecipe` deliberately survives - knowing which fetch route worked last time
     # is exactly what should carry over.
     _clear_ladder(data)
+    # A new target has not reported a state yet, and an unreported state counts as alive.
+    # Starting a watch on a run that is over is one wasted read; starting it on a run that
+    # is spending a GPU and then treating silence as an ending is the expensive direction.
+    data["state"] = "unknown"
     data["updatedAt"] = _now()
     _write(data)
     return {"ok": True, "target": target, "targets": data["targets"], "path": config_path()}

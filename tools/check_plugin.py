@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import hashlib
 import importlib.util
 import json
 import os
@@ -2738,17 +2739,30 @@ def check_version_sync():
     JSON in the package that declares a `version` has to agree with the manifest, and
     SERVER_INFO is matched by regex wherever it lives. Adding a fourth distribution format
     now costs one edit instead of producing a silent lie.
+
+    Vendored third-party JSON is excluded, and the exclusion is reported rather than applied
+    quietly. Shipping a file is not the same as owning its contents: upstream's reporting
+    -guidelines asset holds CONSORT 2010, PRISMA 2020, STROBE 2007 and a dozen other
+    publication years under the same ``version`` key, and reading those as this package's
+    version is not a near miss. It is a different quantity under an identical name, and a
+    checker that cannot tell them apart will eventually be "fixed" by editing a third party's
+    published guideline years to match a plugin release number.
     """
     print("version sync")
     data, _ = parse_json(MANIFEST)
     ver = data.get("version")
     check(bool(ver), f"the manifest declares a version ({ver})")
 
+    vendored = {p.relative_to(ROOT).as_posix() for p in vendored_files()}
     found: list[tuple[str, str]] = []
+    skipped: list[str] = []
     for path in sorted(ROOT.rglob("*.json")):
         if ".git" in path.parts:
             continue
         rel = path.relative_to(ROOT).as_posix()
+        if rel in vendored:
+            skipped.append(rel)
+            continue
         try:
             raw = path.read_text(encoding="utf-8")
         except Exception:
@@ -2757,6 +2771,9 @@ def check_version_sync():
         for match in re.finditer(r'"version"\s*:\s*"([^"]+)"', raw):
             found.append((rel, match.group(1)))
     check(bool(found), "the package declares at least one version to compare")
+    check(bool(skipped),
+          f"vendored third-party JSON is skipped by name and the skip is printed, not silent "
+          f"({len(skipped)}: {[s.split('/')[-3:] for s in skipped]})")
     for rel, declared in found:
         check(declared == ver,
               f"{rel} version matches the manifest ({ver}) - found {declared}")
@@ -2882,6 +2899,200 @@ def check_the_package_ships_no_built_artifact():
     check(not unignored,
           f"every bytecode path in the working tree is covered by a .gitignore rule "
           f"({len(residue)} such path(s) present; uncovered: {unignored or 'none'})")
+
+
+# ------------------------------------------------------ the package is not the state directory
+# A competition tree is a developer's record of what their runs taught them. It belongs to the
+# person who ran them, so it lives in the state directory and never in the package - otherwise
+# the first person to publish the plugin publishes four other people's experiments, and the
+# RSI tree arrives pre-loaded with a history that is not theirs.
+#
+# That leaves two separate questions, and this checks both. The first is what happens WHEN the
+# tree is used; the second is what is lying in the tree right now. Neither is answered by reading
+# the source, because the path that decides it is assembled three functions away from the store
+# that owns it, and because "no state file present" is what a broken scanner also reports.
+#
+# No git call, for the reason spelled out in check_the_package_ships_no_built_artifact: the
+# counter-example harness copies the tree without .git, and a check that needs the index cannot be
+# broken on purpose there. An instrument that cannot be broken is an instrument whose OK means
+# nothing.
+_STATE_STORE_PATHS = (
+    # (module file, accessor, argument) - the real path each store resolves, not a name.
+    ("experiment_tree.py", "tree_path", "zz-clean-install"),
+    ("presence.py", "config_path", None),
+    ("logmonitor.py", "config_path", None),
+    ("searchengine.py", "config_path", None),
+    ("sources.py", "store_dir", None),
+    ("handoff.py", "handoff_root", None),
+    ("kdense_index.py", "cache_root", None),
+    ("plots.py", "plots_dir", None),
+    ("credentials.py", "store_path", None),
+)
+
+
+def _package_file_set() -> set[str]:
+    return {p.relative_to(ROOT).as_posix()
+            for p in ROOT.rglob("*")
+            if p.is_file() and ".git" not in p.relative_to(ROOT).parts}
+
+
+def check_the_package_ships_no_runtime_state():
+    """A clean install starts with an empty tree, and the package never holds the state.
+
+    (a) Ask the question behaviourally: point the home override at an empty directory, drive the
+        real tree module through the whole clean-install path, and compare the package's own file
+        set before and after. If the package were the state root, the tree would appear in it.
+    (b) Ask every store the same question, using each one's real path accessor, so a store that
+        quietly grew its own private location is caught rather than trusted.
+    (c) Look at the working tree, and print how much was scanned next to what was found. A scanner
+        that stops one level down and one that reads the whole tree both print "none" here, and
+        only the scanned count tells them apart.
+    (d) Keep .gitignore covering every name a store can write, so state that lands in the package
+        is unpublishable on the day it lands rather than after someone ships it.
+    """
+    print("the package is not the state directory")
+
+    before = _package_file_set()
+    home = _mkdtemp(prefix="ka-check-clean-install-")
+    state_paths: list[tuple[str, str]] = []
+    saved_home = os.environ.get("KAGGLE_AGENT_HOME")
+    os.environ["KAGGLE_AGENT_HOME"] = home
+    try:
+        # (a) the clean-install path, end to end, on a home that has never held a tree
+        spec = importlib.util.spec_from_file_location(
+            "_ks_clean", ROOT / "mcp" / "experiment_tree.py")
+        et = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(et)
+
+        comp = "zz-clean-install"
+        try:
+            fresh = et.load(comp)
+        except Exception as exc:  # noqa: BLE001
+            bad(f"the package ships no runtime state: reading a tree that does not exist raised "
+                f"{type(exc).__name__}: {exc} - a clean install has nothing to read")
+            fresh = None
+        check(fresh is not None,
+              "reading a competition with no tree yet returns an empty tree rather than raising")
+
+        if fresh is not None:
+            doc = fresh.get("tree") or {}
+            base = doc.get("base") or {}
+            # A clean install has no base NODE. The document still carries a base object, because
+            # that is the shape load() normalises to; what makes it empty is the id, so the
+            # assertion is on the id. Asserting `not base` instead would call a correctly empty
+            # tree a failure, and the fix would have been to weaken the tree rather than the check.
+            check(doc.get("nodes") == {} and not (base.get("id") or ""),
+                  f"a clean install starts from an empty tree, not a seeded one "
+                  f"(base id={base.get('id')!r}, nodes={len(doc.get('nodes') or {})})")
+            fresh["tree"] = {"base": None, "nodes": {}}
+            fresh["revision"] = 0
+            et.save(comp, fresh)
+            node = {"id": "b1", "kind": "experiment", "parent": None, "change": "seed run",
+                    "hypothesis": "h",
+                    "metric": {"name": "s", "parent": 0.0, "result": 0.3, "delta": 0.3,
+                               "rank": 1, "rankSource": "local", "direction": "higher"},
+                    "verdict": "keep", "reason": "r", "operator": "draft", "family": "base",
+                    "evidence": "local-only"}
+            et.record(comp, node, read_revision=0)
+            grown = et.load(comp)
+            check(len((grown.get("tree") or {}).get("nodes") or {}) == 1,
+                  "the first record on a clean home creates the tree, so the store is writable "
+                  "from empty")
+
+        # (b) every store, asked where it actually writes. The relative path is kept, because (d)
+        # needs it: asking .gitignore about a bare filename asks about the wrong path - a tree is
+        # written to handoff/<slug>/tree.json, so a rule of `tree.json` at the root would test a
+        # file this plugin never writes and miss the one it does.
+        for fname, accessor, arg in _STATE_STORE_PATHS:
+            path = os.path.realpath(_load_store(fname, accessor, arg))
+            check(not _is_inside(path, os.path.realpath(ROOT)),
+                  f"{fname}'s {accessor}() resolves outside the package ({_short(path)})")
+            state_paths.append((f"{fname}:{accessor}", _rel_to_home(path, home)))
+        state_paths.append(("kaggle_server:local-runs", f"local-runs/{comp}/{comp}.log"))
+
+        # kaggle_server is not in the table above because its log directory is built inline in the
+        # launch handler, not behind a path accessor; its home is the same rule as the others'.
+        saved_path = os.environ["KAGGLE_AGENT_HOME"]
+        spec_s = importlib.util.spec_from_file_location(
+            "_ks_clean_server", ROOT / "mcp" / "kaggle_server.py")
+        try:
+            sys.path.insert(0, str(ROOT / "mcp"))
+            srv = importlib.util.module_from_spec(spec_s)
+            spec_s.loader.exec_module(srv)
+            check(os.path.realpath(srv._home()) == os.path.realpath(saved_path),
+                  f"kaggle_server's _home() honours KAGGLE_AGENT_HOME ({_short(srv._home())}) - "
+                  f"it is the one store that used to compose its path from the real home, which "
+                  f"put a local run's log in the developer's store during a test")
+        except Exception as exc:  # noqa: BLE001
+            bad(f"the package ships no runtime state: kaggle_server does not load: {exc}")
+        finally:
+            if str(ROOT / "mcp") in sys.path:
+                sys.path.remove(str(ROOT / "mcp"))
+    finally:
+        if saved_home is None:
+            os.environ.pop("KAGGLE_AGENT_HOME", None)
+        else:
+            os.environ["KAGGLE_AGENT_HOME"] = saved_home
+
+    # (c) the working tree, with the scanned count printed so a shallow scanner is visible
+    scanned = sorted(_package_file_set())
+    state_names = {"tree.json", "presence.json", "log-monitor.json", "search-engine.json",
+                   "config.json", "credentials.json", "accounts.json"}
+    found = [rel for rel in scanned if Path(rel).name in state_names
+             or rel.endswith(".log") or "/local-runs/" in f"/{rel}"]
+    check(not found,
+          f"no runtime state file is in the package ({len(scanned)} files scanned, "
+          f"{len(found)} state file(s): {found or 'none'})")
+
+    # (a') the same question asked of the working tree after the exercise above
+    after = _package_file_set()
+    landed = sorted(after - before)
+    check(not landed,
+          f"using the tree writes nothing into the package ({len(landed)} new file(s) appeared "
+          f"while a tree was created and recorded: {landed or 'none'})")
+
+    # (d) the day state lands here, it is unpublishable - asked about the path each store really
+    # writes, not about a filename guessed at the package root
+    gitignore = ROOT / ".gitignore"
+    rules = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.is_file() else []
+    uncovered = sorted(f"{label} -> {rel}" for label, rel in state_paths
+                       if _rule_ignores(rules, rel) is None)
+    check(not uncovered,
+          f"every path a store can write is covered by a .gitignore rule "
+          f"({len(state_paths)} path(s) asked about, uncovered: {uncovered or 'none'})")
+
+
+def _load_store(fname: str, accessor: str, arg):
+    """Import one store module and return the path its own accessor produces."""
+    spec = importlib.util.spec_from_file_location(f"_ks_store_{fname[:-3]}", ROOT / "mcp" / fname)
+    mod = importlib.util.module_from_spec(spec)
+    saved = sys.path[:]
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path[:] = saved
+    return getattr(mod, accessor)(arg) if arg else getattr(mod, accessor)()
+
+
+def _is_inside(path: str, parent: str) -> bool:
+    try:
+        return os.path.commonpath([os.path.realpath(path), parent]) == parent
+    except ValueError:
+        return False
+
+
+def _short(path: str) -> str:
+    home = os.environ.get("KAGGLE_AGENT_HOME")
+    return path.replace(home, "<home>") if home and home in path else path
+
+
+def _rel_to_home(path: str, home: str) -> str:
+    """Where this store's file sits, as a path relative to the state directory."""
+    try:
+        return os.path.relpath(os.path.realpath(path), os.path.realpath(home)).replace("\\", "/")
+    except ValueError:
+        return path.replace("\\", "/")
 
 
 def check_publishable():
@@ -3450,9 +3661,19 @@ def check_launch_attaches_monitoring():
         # that only accepted the positional command raised TypeError on every call - which reads
         # as a broken check rather than as a stale test double, and is exactly the case where a
         # suite can fail for a reason that has nothing to do with what it is testing.
-        ks.run_kaggle = lambda cmd, account="": (
-            0, "Kernel version 1 successfully pushed to "
-               "https://www.kaggle.com/code/tester/nb-auto-monitor", "")
+        #
+        # `kernels status` is answered separately, and it has to be. The launch path asks
+        # whether a version is already running before it pushes anything, and an answer it
+        # cannot read is treated as "possibly running" - which is the safe direction, and which
+        # means a stub that returned the push's success line to every command would refuse every
+        # launch. The fixture therefore says what it means: this notebook is idle.
+        def _stub_kaggle(cmd, account=""):
+            if "status" in cmd:
+                return 0, "ref: tester/nb-auto-monitor\nstate: complete\nversion: 1", ""
+            return (0, "Kernel version 1 successfully pushed to "
+                       "https://www.kaggle.com/code/tester/nb-auto-monitor", "")
+
+        ks.run_kaggle = _stub_kaggle
 
         lm.reset()
         check(_mk_decl("e1").get("ok"), "seed: a declaration")
@@ -3480,13 +3701,65 @@ def check_launch_attaches_monitoring():
         check(_targets() == [], f"and it attached no target: {_targets()}")
 
         lm.reset()
-        ks.run_kaggle = lambda cmd, account="": (1, "", "kaggle: notebook metadata is invalid")
+
+        # Same reason as above: a failing PUSH, not a failing status read. The status answers
+        # idle so the gate lets the push through to the thing under test.
+        def _stub_failing_push(cmd, account=""):
+            if "status" in cmd:
+                return 0, "ref: tester/nb-auto-monitor\nstate: complete\nversion: 1", ""
+            return 1, "", "kaggle: notebook metadata is invalid"
+
+        ks.run_kaggle = _stub_failing_push
         _mk_decl("e3")
         r = ks.tool_call("kaggle_kernel_launch",
                          {"folder": _nb(), "competition": comp, "declares": "e3"})
         check("notebook metadata is invalid" in json.dumps(r),
               "a failing push still reports the error")
         check(_targets() == [], f"and attaches no target: {_targets()}")
+
+        # The other direction, and the one the gate exists for. Every stub above answers
+        # `complete`, so without this the gate is only ever observed LETTING a push through - which
+        # is a check that passes identically whether or not the gate exists. The refusal is the
+        # guarantee, so the refusal is what has to be asserted, along with the fact that no push
+        # was issued while it was refusing and no target was attached.
+        issued: list[str] = []
+
+        def _stub_running(cmd, account=""):
+            issued.append(" ".join(cmd))
+            if "status" in cmd:
+                return 0, "ref: tester/nb-auto-monitor\nstate: running\nversion: 2", ""
+            return (0, "Kernel version 3 successfully pushed to "
+                       "https://www.kaggle.com/code/tester/nb-auto-monitor", "")
+
+        ks.run_kaggle = _stub_running
+        _mk_decl("e4")
+        issued.clear()
+        r = ks.tool_call("kaggle_kernel_launch",
+                         {"folder": _nb(), "competition": comp, "declares": "e4"})
+        said = json.dumps(r)
+        check("already running" in said,
+              f"a launch is refused while a version of that notebook is running ({said[:160]})")
+        check("version 2" in said,
+              f"and the refusal names the version that is running ({said[:160]})")
+        check("ask the user" in said.lower(),
+              "and it hands the decision to the user rather than taking it")
+        check(not any("kernels push" in c for c in issued),
+              f"and nothing was pushed while the gate was refusing ({issued})")
+        check(_targets() == [], f"a refused launch attaches no monitor target: {_targets()}")
+
+        # force is the user's answer arriving afterwards, so it has to actually let the push go
+        issued.clear()
+        _mk_decl("e5")
+        r = ks.tool_call("kaggle_kernel_launch",
+                         {"folder": _nb(), "competition": comp, "declares": "e5", "force": True})
+        check(any("kernels push" in c for c in issued),
+              f"force=true pushes anyway - it is the only path that does ({issued})")
+
+        push_schema = ({t.get("name"): t for t in getattr(ks, "TOOLS", [])}
+                       .get("kaggle_kernels_push") or {}).get("inputSchema") or {}
+        check("force" in (push_schema.get("properties") or {}),
+              "kaggle_kernels_push documents force, so the way past the gate is a documented "
+              "argument rather than a private one")
 
         tools = {t.get("name"): t for t in getattr(ks, "TOOLS", [])}
         launch = tools.get("kaggle_kernel_launch") or {}
@@ -3636,7 +3909,12 @@ def check_monitor_uses_the_builtin_cron():
     check("cron reference" in low or "cron.md" in low,
           "it tells the agent to read the official cron reference")
     check("定时任务" in body, "and it names the user-facing feature the UI shows")
-    check("delete this cron" in low, "the tick body deletes the cron on a terminal state")
+    check("quiet is not the same as over" in low,
+          "the tick body says that a quiet run is not a finished one, so silence alone never "
+          "retires the cron")
+    check("canstop" in low and "exhausted" in low,
+          "and both real endings are named by what they need - a terminal state, or a dead log "
+          "on a dead run")
     check("quiet_on_skip" in low or "exit quietly" in low,
           "the tick body is silent when there is nothing to say")
     check("sleep" in low, "it warns that a sleeping machine can miss a tick")
@@ -3653,7 +3931,7 @@ def check_monitor_uses_the_builtin_cron():
 
 # ---------------------------------------------------------------- competition isolation
 # A tree is addressed by a slug derived from whatever string the caller passed, so
-# "arc-prize-2026-arc-agi-3" and "arc-agi-3" sanitise to two different directories and
+# "kaggle-inc-2026-example-challenge" and "example-challenge" sanitise to two different directories and
 # would be two silent histories of one competition - the exact waste the tree exists to
 # prevent. So a tree records the name it was created under plus every name later pointed
 # at it, a second name resolves to the same file, and aliasing onto a key that already has
@@ -3695,11 +3973,11 @@ def check_competition_isolation():
 
 
         try:
-            check(rec("arc-prize-2026-arc-agi-3", "e1").get("ok"), "seed: a node under one name")
-            t = et.read("arc-prize-2026-arc-agi-3")
-            check(t.get("competition") == "arc-prize-2026-arc-agi-3",
+            check(rec("kaggle-inc-2026-example-challenge", "e1").get("ok"), "seed: a node under one name")
+            t = et.read("kaggle-inc-2026-example-challenge")
+            check(t.get("competition") == "kaggle-inc-2026-example-challenge",
                   f"the tree records the name it was created under: {t.get('competition')}")
-            check("arc-prize-2026-arc-agi-3" in (t.get("competitionKeys") or []),
+            check("kaggle-inc-2026-example-challenge" in (t.get("competitionKeys") or []),
                   f"and claims that key: {t.get('competitionKeys')}")
 
             fresh = et.read("titanic")
@@ -3707,38 +3985,38 @@ def check_competition_isolation():
                   f"a brand new tree already says what it is for: {fresh.get('competition')!r}")
             check(not ((fresh.get("tree") or {}).get("nodes") or {}), "and starts empty")
             check(rec("titanic", "e1").get("ok"), "a same node id in another competition is fine")
-            check(et.read("arc-prize-2026-arc-agi-3")["tree"]["nodes"].get("e1") is not None,
+            check(et.read("kaggle-inc-2026-example-challenge")["tree"]["nodes"].get("e1") is not None,
                   "and it did not touch the first tree")
 
-            a = et.register_alias("arc-prize-2026-arc-agi-3", "ARC-AGI-3")
+            a = et.register_alias("kaggle-inc-2026-example-challenge", "EXAMPLE-CHALLENGE")
             check(a.get("ok"), f"registering an alias: {a.get('message')}")
-            check("arc-agi-3" in (a.get("keys") or []), f"the alias is in the key set: {a.get('keys')}")
-            t3 = et.read("ARC-AGI-3")
-            check(t3.get("competition") == "arc-prize-2026-arc-agi-3",
+            check("example-challenge" in (a.get("keys") or []), f"the alias is in the key set: {a.get('keys')}")
+            t3 = et.read("EXAMPLE-CHALLENGE")
+            check(t3.get("competition") == "kaggle-inc-2026-example-challenge",
                   f"the alias resolves to the SAME tree: {t3.get('competition')}")
             check("e1" in ((t3.get("tree") or {}).get("nodes") or {}),
                   "and sees the node recorded under the other name")
-            check(os.path.realpath(et.tree_path_resolved("ARC-AGI-3"))
-                  == os.path.realpath(et.tree_path_resolved("arc-prize-2026-arc-agi-3")),
+            check(os.path.realpath(et.tree_path_resolved("EXAMPLE-CHALLENGE"))
+                  == os.path.realpath(et.tree_path_resolved("kaggle-inc-2026-example-challenge")),
                   "both names resolve to one file on disk")
 
-            ident = et.identity("ARC-AGI-3")
-            check(ident.get("competition") == "arc-prize-2026-arc-agi-3",
+            ident = et.identity("EXAMPLE-CHALLENGE")
+            check(ident.get("competition") == "kaggle-inc-2026-example-challenge",
                   f"identity() says which competition the tree is for: {ident.get('competition')}")
             check(ident.get("nodes") == 1, f"and how many nodes it holds: {ident.get('nodes')}")
             check(ident.get("forks") == [], "and that nothing else claims the key")
 
             check(rec("titanic2", "e9", "a different run").get("ok"), "seed: a second real tree")
-            a2 = et.register_alias("arc-prize-2026-arc-agi-3", "titanic2")
+            a2 = et.register_alias("kaggle-inc-2026-example-challenge", "titanic2")
             check(not a2.get("ok"), "aliasing onto a key that has its own tree is refused")
             check(a2.get("code") == "alias_has_own_tree", f"with a specific code: {a2.get('code')}")
             check("two histories" in (a2.get("message") or "").lower(),
                   "and it explains why in the user's terms")
             check(bool(et.read("titanic2")["tree"]["nodes"]), "and the other tree is untouched")
-            check(et.register_alias("arc-prize-2026-arc-agi-3", "   ").get("code") == "bad_alias",
+            check(et.register_alias("kaggle-inc-2026-example-challenge", "   ").get("code") == "bad_alias",
                   "a blank alias is refused")
 
-            on_disk = json.loads(pathlib.Path(et.tree_path("arc-prize-2026-arc-agi-3")).read_text())
+            on_disk = json.loads(pathlib.Path(et.tree_path("kaggle-inc-2026-example-challenge")).read_text())
             for transient in ("identity", "forks", "path", "problems", "migrated"):
                 check(transient not in on_disk, f"'{transient}' is not written to tree.json")
             check("competition" in on_disk and "competitionKeys" in on_disk,
@@ -3752,13 +4030,13 @@ def check_competition_isolation():
 
             # the read the agent actually sees must show the identity
             r = ks.tool_call("kaggle_experiment_tree",
-                             {"action": "read", "competition": "ARC-AGI-3"})
+                             {"action": "read", "competition": "EXAMPLE-CHALLENGE"})
             text = json.dumps(r)
             check("competition:" in text, "read reports which competition the tree is for")
-            check("arc-prize-2026-arc-agi-3" in text, "and names it")
+            check("kaggle-inc-2026-example-challenge" in text, "and names it")
 
             r2 = ks.tool_call("kaggle_experiment_tree",
-                              {"action": "alias", "competition": "arc-prize-2026-arc-agi-3",
+                              {"action": "alias", "competition": "kaggle-inc-2026-example-challenge",
                                "alias": "titanic2"})
             check("alias_has_own_tree" in json.dumps(r2), "the tool surfaces the fork refusal too")
 
@@ -4412,6 +4690,508 @@ def check_the_cli_is_offered_not_just_reported():
           "the 127 path points at doctor rather than only naming pip")
 
 
+def check_published_method_is_local_and_the_veto_respects_a_boundary():
+    """Three guarantees that only exist because of each other, so they are checked together.
+
+    1. ``consider`` does not carry a refutation across a line of work or a different dataset -
+       and still does within one. The two halves are one test: read only the first and it passes
+       just as well with the ``already_refuted`` branch deleted, which would leave the tree with
+       no veto at all.
+    2. The recommendation that rides along on every ``consider`` opens no socket. Counted, not
+       inferred: "it still worked offline" is true of any path with a cache fallback, and stays
+       true whether or not the fallback is ever taken.
+    3. The index is scraped, not shipped, and a network failure is reported as what was seen
+       rather than as a conclusion the tool reached on the user's behalf.
+    """
+    print("published method: boundaries, silence, and honest failure")
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    ki_path = ROOT / "mcp" / "kdense_index.py"
+    sf_path = ROOT / "mcp" / "skill_fetch.py"
+    if not (check(ki_path.is_file(), "kdense_index.py is present")
+            and check(sf_path.is_file(), "skill_fetch.py is present")):
+        return
+
+    # ---- 1. the veto, both ways
+    # A fresh module from the spec, never sys.modules: an earlier check in this same run may
+    # have left a half-initialised "experiment_tree" there, and binding a foreign spec to it
+    # raises from inside the loader with a message about neither module.
+    spec = importlib.util.spec_from_file_location("_ks_pm", ROOT / "mcp" / "experiment_tree.py")
+    et = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(et)
+    except Exception as exc:                                   # noqa: BLE001
+        bad(f"experiment_tree loads for the comparability test: {exc}")
+        return
+
+    home = _tempfile.mkdtemp(prefix="ks-cmp-")
+    old_home = os.environ.get("KAGGLE_AGENT_HOME")
+    os.environ["KAGGLE_AGENT_HOME"] = home
+    comp = "zz-check-comparability"
+    tree_file = Path(et.tree_path(comp))
+    if tree_file.exists():
+        tree_file.unlink()
+    try:
+        def _rev():
+            return et.read(comp)["revision"]
+
+        def _node(nid, branch, data, verdict, change, hypothesis):
+            n = {"id": nid, "kind": "experiment", "change": change, "hypothesis": hypothesis,
+                 "parent": None, "operator": "debug", "family": "initialisation",
+                 "reason": "because", "evidence": "local-only", "verdict": verdict,
+                 "branch": branch,
+                 "controls": {"seed": 1, "budget": "s", "eval": "v", "retrain": "from-scratch",
+                              "data": data},
+                 "metric": {"name": "score", "parent": 0.5, "result": 0.4, "delta": -0.1,
+                            "rank": 1, "rankSource": "lb"}}
+            if verdict == "revert":
+                n["failureLayer"] = "metric"
+            return et.record(comp, n, read_revision=_rev())
+
+        # Two refutations of the same change, on two lines, over two datasets - plus a second
+        # line's node that must NOT match, on its change AND its hypothesis, or it would supply
+        # its own same-branch refutation and the cross-branch case would pass for the wrong
+        # reason.
+        seeded = (_node("p1", "line-a", "fold-a", "revert",
+                        "warm-start the encoder from a checkpoint", "faster convergence")
+                  .get("ok")
+                  and _node("p2", "line-b", "fold-b", "revert",
+                            "swap the encoder for a smaller one", "less memory").get("ok"))
+        check(bool(seeded), "seed: one refuted step on each of two lines, over two datasets")
+
+        kw = dict(hypothesis="faster convergence", operator="debug", family="initialisation")
+        elsewhere = et.consider(comp, "warm-start the encoder from a checkpoint",
+                               branch="line-b", **kw)
+        check(elsewhere.get("verdict") != "already_refuted",
+              "a refutation earned on another line is not a veto here")
+        check("line-a" in (elsewhere.get("why") or ""),
+              "and the answer says which line that refutation came from")
+        check(any(m.get("id") == "p1" and not m.get("comparable")
+                  for m in (elsewhere.get("matches") or [])),
+              "the cross-line node stays in matches, marked not comparable")
+        check(any(m.get("id") == "p1" and m.get("notComparableBecause")
+                  for m in (elsewhere.get("matches") or [])),
+              "and it carries the reason, so 'not comparable' is checkable rather than asserted")
+
+        own = et.consider(comp, "warm-start the encoder from a checkpoint", branch="line-a", **kw)
+        check(own.get("verdict") == "already_refuted",
+              "the same refutation on its own line still vetoes - the half that stops the first "
+              "one being satisfied by deleting the veto")
+        check(any(m.get("id") == "p1" and m.get("comparable")
+                  for m in (own.get("matches") or [])),
+              "and on its own line the same node is marked comparable")
+
+        other_data = et.consider(comp, "warm-start the encoder from a checkpoint",
+                                 data="fold-b", **kw)
+        check(other_data.get("verdict") != "already_refuted",
+              "a refutation over a different named dataset is not a veto here")
+        same_data = et.consider(comp, "warm-start the encoder from a checkpoint",
+                                data="fold-a", **kw)
+        check(same_data.get("verdict") == "already_refuted",
+              "and over the same dataset it still vetoes")
+        bare = et.consider(comp, "warm-start the encoder from a checkpoint", **kw)
+        check(bare.get("verdict") == "already_refuted",
+              "a caller that names no line and no dataset keeps the veto it always had")
+        empty = et.consider(comp, "warm-start the encoder from a checkpoint",
+                            branch="", data="", **kw)
+        check(empty.get("verdict") == bare.get("verdict") and empty.get("why") == bare.get("why"),
+              "omitting the two parameters is indistinguishable from passing empty ones, so a "
+              "caller that never adopted them sees no change at all")
+        # The other line's node is about a different change. It must not turn up here at all -
+        # a matcher that returned the whole tree would make every "is p1 in matches" assertion
+        # above true for the wrong reason.
+        check(all(m.get("id") != "p2" for m in (bare.get("matches") or [])),
+              "and a node about a different change does not join the match list at all")
+
+        # The recommendation rides on consider's own output, which is where an agent will read
+        # it. Tested through the tool, not through recommend(), because a block that is computed
+        # and then dropped before the response is built is still "available" in isolation.
+        sk = bare.get("skills") or {}
+        check(isinstance(sk, dict) and sk.get("network") == "not used",
+              "consider carries a skills block that reports it used no network, even with no "
+              "index on disk")
+        check(sk.get("matches") is not None and sk.get("closest") is not None,
+              "and the block is shaped for a reader: what matched, and what came closest")
+    finally:
+        if old_home is None:
+            os.environ.pop("KAGGLE_AGENT_HOME", None)
+        else:
+            os.environ["KAGGLE_AGENT_HOME"] = old_home
+        _shutil.rmtree(home, ignore_errors=True)
+
+    # ---- 2. the recommendation is local, counted rather than inferred
+    ki_text = ki_path.read_text(encoding="utf-8")
+    sf_text = sf_path.read_text(encoding="utf-8")
+    start = ki_text.index("def recommend(")
+    end = ki_text.index("\ndef ", start + 10)
+    body = ki_text[start:end]
+    check("github_sync" not in body and "_load_github_sync" not in body and "urlopen" not in body,
+          "recommend() cannot reach the network - its whole body is local reads and ranking")
+    check("network" in body and '"not used"' in body,
+          "and it says so in its own output, so a caller can tell a local read from a live one")
+
+    spec2 = importlib.util.spec_from_file_location("_ks_ki", ki_path)
+    ki = importlib.util.module_from_spec(spec2)
+    try:
+        spec2.loader.exec_module(ki)
+    except Exception as exc:                                   # noqa: BLE001
+        bad(f"kdense_index loads for the local-only test: {exc}")
+        return
+
+    calls: list[str] = []
+    real = ki._load_github_sync
+
+    class _Tripwire:
+        def api(self, *a, **k):
+            calls.append("api")
+            return None, "tripwire", 0
+
+        def capabilities(self):
+            calls.append("capabilities")
+            return {}
+
+    ki._load_github_sync = lambda: _Tripwire()               # type: ignore[assignment]
+    try:
+        r = ki.recommend("a query about design", "and a hypothesis about power")
+    finally:
+        ki._load_github_sync = real                             # type: ignore[assignment]
+    check(calls == [],
+          f"recommend() opened no transport call at all (saw {calls or 'none'})")
+    check(r.get("network") == "not used",
+          "and reports network='not used' even with no index on disk")
+
+    # ---- 3. the index is scraped, and failure is reported not concluded
+    check("INDEX_PAGE" in ki_text and "docs/skills.md" in ki_text,
+          "the index names the page it is read from, so the source is not a mystery")
+    check(not (ROOT / "data" / "kdense-index.json").exists(),
+          "no index is shipped: a bundled snapshot of somebody else's repository goes stale, "
+          "and a stale answer reads as a search that found nothing")
+    check("parse_index_page" in ki_text and "parse_failed" in ki_text,
+          "a page that parses to nothing is reported as a changed layout, not as an empty "
+          "repository - an empty parse must not overwrite a good index")
+    for pid, label in (("httpStatus", "the HTTP status"),
+                       ("transportError", "the transport's own error text"),
+                       ("capabilities", "an offline capability probe")):
+        check(pid in ki_text, f"a network failure carries {label}")
+    check("outcome" in ki_text and "fetch_failed" in ki_text and "probe_failed" in ki_text,
+          "failures are named by what was attempted, not by a remedy")
+    # The taxonomy this must NOT contain: a mapping from a status code to a user-facing remedy.
+    # "403 means rate limited" is a fact about HTTP; "403 means ask the user to check their
+    # token" is a conclusion, and it is the caller's to reach.
+    check(not re.search(r"if\s+status\s*==\s*403[^\n]*\b(ask|retry|token|rate.?limit)\b",
+                        ki_text, re.I),
+          "no status code is mapped to a remedy - that judgement belongs to the caller")
+    check("ALLOWED" in sf_text,
+          "the fetch path is allowlisted")
+    # The order is the claim, so read it as an order: the four stage names have to appear in
+    # source order, and the cache gate has to sit before the one that opens a socket.
+    stages = [sf_text.find(f'"{s}"') for s in ("allowlist", "pin", "cache", "scan")]
+    check(all(i > 0 for i in stages) and stages == sorted(stages),
+          f"the four gates run allowlist -> pin -> cache -> scan, in that order ({stages})")
+    check("cached_skill(commit" in sf_text and "store_skill(commit" in sf_text
+          and "def cache_dir(commit" in ki_text,
+          "and the cache is keyed by the commit, so two commits cannot share a body")
+
+    # ---- 4. the four moments, and the two that may not touch the network
+    mskill = (ROOT / "skills" / "kdense-methods" / "SKILL.md")
+    if check(mskill.is_file(), "kdense-methods/SKILL.md exists"):
+        text = _skill_body(mskill.read_text(encoding="utf-8"))
+        for moment in ("Research", "Every declaration", "Stall", "New branch"):
+            check(moment in text, f"the skill names the {moment} moment")
+        # Read the table as a table. A substring hunt for one phrasing passes just as well
+        # against a row that grants the network, which is the opposite of the claim.
+        rows = dict(re.findall(r"^\|\s*\*\*(.+?)\*\*\s*\|[^|]*\|\s*([^|]+?)\s*\|$", text, re.M))
+        offline = {k for k, v in rows.items() if v.startswith("no")}
+        online = {k for k, v in rows.items() if v.startswith("yes")}
+        check(len(rows) == 4 and offline == {"Every declaration", "Stall"}
+              and online == {"Research", "New branch"},
+              f"only the two moments outside the experiment loop may reach the network ({rows})")
+    ruler = _skill_body((ROOT / "skills" / "ruler-audit" / "SKILL.md").read_text(encoding="utf-8"))
+    check("Then, and only then, look for published method" in ruler,
+          "ruler-audit says the ruler is consulted first, in that order, at stage 2")
+    check("A flat line is also a reason to look outside the tree" in ruler,
+          "and again at stall triage, where re-deriving published work is most likely")
+
+    # ---- 5. the research skill runs it in the seam, in one thread, and the upstream sources
+    # stay untouched
+    rtext = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+    i_pub = rtext.find("## Between the waves")
+    i_w2 = rtext.find("## Wave 2, step 1")
+    check(i_pub > 0, "the research skill has a section for it")
+    if i_pub > 0 and i_w2 > 0:
+        check(i_pub < i_w2, "and that section sits before wave 2, which is the whole point")
+    check("task(agent_name=" not in rtext[i_pub:i_w2] if i_pub > 0 and i_w2 > 0 else False,
+          "dispatching it as a subagent - the seam is main-thread work, like wave 2 itself")
+    up = ROOT / "skills" / "ruler-audit" / "references" / "upstream"
+    check(len(list(up.glob("*.md"))) == 6, "the six upstream sources are still all there")
+    # The bytes are the claim; verify_upstream_quotes checks the 56 quoted blocks separately.
+    total = sum(p.stat().st_size for p in up.glob("*.md"))
+    check(total > 180000, f"and they are still whole ({total} bytes, not a shortened copy)")
+
+
+def check_the_vendored_bodies_are_whole_bound_and_cannot_pass_as_capabilities():
+    """Eight third-party bodies, copied whole, bound to a host, and unable to impersonate one.
+
+    Four things are being claimed at once, and each of them fails in a way the others do not
+    catch:
+
+    1. **They are unedited.** Asserted by per-file sha256 against a manifest the fetcher writes,
+       in both directions: a file that changed and a file that went missing are different
+       failures and a one-directional check sees only the first. Byte totals cannot do this -
+       a reworded heading has the same size as the original, which is how the Anthropic copies
+       got a size assertion instead of a digest one.
+    2. **They are bound.** A vendored tree nobody reads is 1.4 MB of dead weight, and it looks
+       exactly like a working one. Each host has to name the body it reads.
+    3. **They are not capabilities.** ``check_plugin`` collects skills with ``rglob("SKILL.md")``
+       rather than a one-level glob, because a nested SKILL.md declares a capability however
+       deep it sits. So the entry file is renamed to ``<name>.md`` on the way in, and this
+       asserts the rename held - the exact defect that once failed a submission with
+       UNREFERENCED_CAPABILITY.
+    4. **Two upstream conventions did not travel with them.** Every body ends by telling the
+       agent to fetch an arXiv page and add a K-Dense citation to the user's output, and three
+       of them install packages unconditionally. A host that inherits either is worse than a
+       host that never vendored the file, so the absence is asserted rather than assumed.
+    """
+    print("vendored bodies: whole, bound, and not capabilities")
+    hosts = {
+        "ruler-audit": ("hypothesis-generation", "scientific-critical-thinking"),
+        "scientific-plotting": ("seaborn", "scientific-visualization"),
+        "technical-report": ("scientific-writing", "scientific-slides"),
+        "kaggle-competition-research": ("scientific-brainstorming",),
+    }
+    bodies = [b for v in hosts.values() for b in v]
+    check(len(bodies) == 7, f"seven bodies are vendored, not {len(bodies)}")
+    # experimental-design was taken and removed. Asserting the absence is the point: a vendored
+    # body is inert once it is on disk, and "we decided not to use this" is invisible to every
+    # other check in this file.
+    gone = ROOT / "skills" / "kaggle-competition-research" / "references" / "kdense" / \
+        "experimental-design"
+    check(not gone.exists(), "experimental-design is not vendored: it is a laboratory protocol")
+    research = _skill_body(
+        (ROOT / "skills" / "kaggle-competition-research" / "SKILL.md").read_text(encoding="utf-8"))
+    check("experimental-design" not in research,
+          "and the research skill no longer routes through it")
+
+    total = 0
+    pins: dict[str, set[str]] = {}
+    for host, names in sorted(hosts.items()):
+        base = ROOT / "skills" / host / "references" / "kdense"
+        if not check(base.is_dir(), f"{host}/references/kdense exists"):
+            continue
+        check((base / "LICENSE.md").is_file(),
+              f"{host}: the upstream licence travels with what it covers")
+        man = base / "MANIFEST.sha256"
+        if not check(man.is_file(), f"{host}: a sha256 manifest records what was copied"):
+            continue
+        # The pin is read out of the manifests rather than hardcoded here. Four copies of a
+        # commit constant inside a test is four places for it to rot, and the one that rots is
+        # the one nobody re-reads. Agreement BETWEEN the manifests is the invariant worth holding.
+        seen = re.findall(r"^# vendored from (\S+) at (\S+)$",
+                          man.read_text(encoding="utf-8"), re.M)
+        check(len(seen) == 1, f"{host}: the manifest names exactly one source and commit ({seen})")
+        if seen:
+            pins.setdefault(seen[0][0], set()).add(seen[0][1])
+
+        listed: dict[str, str] = {}
+        for line in man.read_text(encoding="utf-8").splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            digest, _, rel = line.partition("  ")
+            listed[rel] = digest
+        on_disk = {p.relative_to(base).as_posix()
+                   for p in base.rglob("*")
+                   if p.is_file() and p.name not in ("MANIFEST.sha256", "LICENSE.md")}
+        missing = sorted(set(listed) - on_disk)
+        extra = sorted(on_disk - set(listed))
+        check(not missing, f"{host}: every file the manifest lists is on disk ({missing[:3]})")
+        check(not extra, f"{host}: every file on disk is in the manifest ({extra[:3]})")
+        bad = [rel for rel in sorted(set(listed) & on_disk)
+               if hashlib.sha256((base / rel).read_bytes()).hexdigest() != listed[rel]]
+        check(not bad, f"{host}: every vendored byte is the byte that was copied ({bad[:3]})")
+        total += len(on_disk)
+
+        for name in names:
+            entry = base / name / ("%s.md" % name)
+            if not check(entry.is_file(), f"{host}: {name} is vendored as {name}.md"):
+                continue
+            head = entry.read_text(encoding="utf-8")[:400]
+            declared = re.search(r"^name:\s*[\"']?([A-Za-z0-9_-]+)", head, re.M)
+            check(declared is not None and declared.group(1) == name,
+                  f"{host}: {name} carries its own name in its frontmatter, so the copy is "
+                  f"identifiable as what it claims to be")
+
+        # 3. the rename held, at every depth
+        stray = [p.relative_to(ROOT).as_posix() for p in (base).rglob("SKILL.md")]
+        check(not stray, f"{host}: no vendored file is named SKILL.md, which would be collected "
+                         f"as an undeclared capability ({stray})")
+
+        # 2. the binding is real
+        text = _skill_body((ROOT / "skills" / host / "SKILL.md").read_text(encoding="utf-8"))
+        for name in names:
+            check(name in text,
+                  f"{host} names {name}, so the vendored copy is something the skill reads")
+
+        # 4. the two conventions that must not have travelled
+        check(not re.search(r"(?i)(fetch|go to|open|read)\s+(the\s+)?https?://arxiv\.org", text),
+              f"{host} does not inherit upstream's 'go fetch the K-Dense paper' footer")
+        shells = re.findall(r"(?m)^\s*(?:\$\s*)?(?:uv\s+)?pip[23]?\s+install\b.*", text)
+        check(not shells,
+              f"{host} installs nothing on its own; the backend is asked for, not taken ({shells})")
+
+        # The slides body defaults to rendering each slide as one picture via a paid image model.
+        # Refusing that is a judgement the host has to make in words; leaving it implicit is how
+        # it comes back - the vendored file is still there, still says it, and still reads first.
+        if "scientific-slides" in names:
+            check(re.search(r"(?i)do not render a slide as an image|separate text|as pixels", text),
+                  f"{host}: the whole-slide-as-a-picture default is refused in words, not left "
+                  f"implicit in the vendored file")
+            check("beamer" in text.lower() or "pptx" in text.lower(),
+                  f"{host}: a real document format is named, so the refusal comes with a route")
+            check(re.search(r"(?i)prompt.{0,120}handed to the user|prompt, handed to the user", text),
+                  f"{host}: the image step delivers a prompt to the user rather than spending "
+                  f"their credits through a tool this package called on its own")
+    check(total > 100, f"the vendored set is a real corpus, not a token one ({total} files)")
+    check(len(pins) == 1, f"every host took its bodies from the same repository ({sorted(pins)})")
+    for repo, commits in pins.items():
+        check(len(commits) == 1,
+              f"every host is pinned to the same commit of {repo} - four copies of a corpus at "
+              f"four commits is four histories that disagree silently ({sorted(commits)})")
+        pinned = next(iter(commits))
+        methods = _skill_body(
+            (ROOT / "skills" / "kdense-methods" / "SKILL.md").read_text(encoding="utf-8"))
+        check(repo in methods and pinned in methods,
+              f"kdense-methods records the same repository and the same commit ({repo}@{pinned})")
+
+    notice = (ROOT / "skills" / "ruler-audit" / "NOTICE.md").read_text(encoding="utf-8")
+    for host in hosts:
+        check("references/kdense" in notice,
+              f"NOTICE records the vendored trees, and lists {host}'s among them")
+
+
+def check_the_matcher_finds_the_right_body_and_says_when_it_finds_nothing():
+    """Relevance has three jobs and the third is the one that is usually missing.
+
+    Find the body the question is about. Stay quiet on a question that is about nothing in the
+    catalogue. And when the answer is the second one, say why - because a caller cannot tell
+    "nothing here is relevant" from "nothing was looked at", and the first reading is the
+    expensive one.
+
+    Run against a fixture index written into a throwaway home rather than against whatever this
+    machine happens to have cached. A test that reads the real cache passes on the machine that
+    wrote it, cannot be run on a fresh one, and goes quietly blind the day the catalogue is
+    re-scraped - which is precisely when the matching is worth checking. The eight descriptions
+    are copied verbatim out of a real scrape at the pinned commit; the *index* is the fixture,
+    not the words.
+    """
+    print("relevance: right body, silence, and an explanation")
+    spec = importlib.util.spec_from_file_location("_ks_match", ROOT / "mcp" / "kdense_index.py")
+    ki = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ki)
+
+    home = _mkdtemp(prefix="ka-match-")
+    old_home = os.environ.get("KAGGLE_AGENT_HOME")
+    os.environ["KAGGLE_AGENT_HOME"] = home
+    try:
+        commit = "0" * 40
+        d = ki.cache_dir(commit)
+        os.makedirs(d, exist_ok=True)
+        entries = [
+            {"name": "statistical-power", "description":
+                "Sample-size and statistical power calculations for planning studies. Use whenever "
+                "a study needs a sample size, a power analysis, or a justification for the number "
+                "of replicates chosen."},
+            {"name": "experimental-design", "description":
+                "Design experiments and studies BEFORE data is collected - choosing a design, "
+                "randomising allocation, blocking nuisance factors and generating the design "
+                "matrix."},
+            {"name": "hypothesis-generation", "description":
+                "Formulate evidence-bounded scientific questions, candidate hypotheses, rival "
+                "explanations and discriminating predictions before a test is chosen."},
+            {"name": "peer-review", "description":
+                "Prepare evidence-bounded, constructive peer-review drafts and structured "
+                "manuscript feedback for a submitted paper."},
+            {"name": "scientific-brainstorming", "description":
+                "Facilitates evidence-aware scientific ideation with independent generation, "
+                "structured clustering and transparent scoring criteria."},
+            {"name": "literature-review", "description":
+                "Conduct comprehensive, systematic literature reviews using multiple academic "
+                "databases, with search strategies and inclusion criteria."},
+            {"name": "scientific-writing", "description":
+                "Draft, revise, and audit scientific manuscripts or reports with explicit evidence "
+                "binding and claim-level verification."},
+            {"name": "uncertainty-and-units", "description":
+                "Track physical units and propagate measurement uncertainty in scientific "
+                "calculation and reporting."},
+        ]
+        with open(ki.index_path(commit), "w", encoding="utf-8") as fh:
+            json.dump({"skills": entries, "count": len(entries),
+                       "upstreamCommit": commit}, fh)
+        check(ki.local_index().get("count") == len(entries),
+              f"the fixture index is what the matcher actually reads ({len(entries)} bodies)")
+
+        # The queries are built from each body's own distinctive vocabulary. Taken from the real
+        # 166-body catalogue they rank differently, because inverse document frequency is a
+        # function of how many documents exist: a word every body uses is worth less when there
+        # are a hundred and sixty of them than when there are eight. Pinning the expected
+        # ranking from the full index would therefore be asserting something about a corpus this
+        # fixture is not, and it would go stale the day upstream reorders its catalogue.
+        # Discrimination is the property that survives the shrink: a query carrying words from
+        # two bodies still has to pick the one it borrowed more from.
+        for query, want in (
+            ("how many replicates justify that sample size and power",
+             "statistical-power"),
+            ("ideation with independent generation and structured clustering",
+             "scientific-brainstorming"),
+            ("randomise allocation and block nuisance factors before collecting data",
+             "experimental-design"),
+            ("draft revise and audit a manuscript with claim-level verification",
+             "scientific-writing"),
+        ):
+            got = [m["name"] for m in ki.recommend(query).get("matches") or []]
+            check(bool(got) and got[0] == want,
+                  f"'{query[:44]}...' ranks {want} first (got {got[:2]})")
+
+        # Four terms come from uncertainty-and-units (propagate, measurement, uncertainty, units)
+        # and two from scientific-writing (audit, manuscript), so the winner is the one the
+        # query borrowed more from. Document order would give scientific-writing here, because
+        # it is listed second and a stable sort keeps ties in index order.
+        mixed = [m["name"] for m in ki.recommend(
+            "audit a manuscript and propagate measurement uncertainty through the units").get("matches") or []]
+        check(bool(mixed) and mixed[0] == "uncertainty-and-units",
+              f"a query borrowing from two bodies is decided by the stronger overlap, not by "
+              f"document order (got {mixed[:2]})")
+
+        for query in ("cache the embedding index to avoid recomputing it",
+                      "the submission file needs a column called prediction",
+                      "use a bigger batch size on the gpu"):
+            got = [m["name"] for m in ki.recommend(query).get("matches") or []]
+            check(not got, f"a question the catalogue cannot answer returns nothing, not a "
+                            f"guess ('{query[:40]}...' -> {got[:2]})")
+
+        quiet = ki.recommend("draft the methods section without adding facts I did not measure")
+        why = quiet.get("whyNoMatch") or ""
+        check(not (quiet.get("matches") or []),
+              "a near miss below the bar is not promoted into a match")
+        check(bool(why) and bool(quiet.get("closest")),
+              f"and the answer says why, naming what came closest ({why[:70]!r})")
+
+        # The floor has to be doing work. A bag-of-words matcher with no threshold returns the
+        # whole catalogue for everything, and every assertion above would still pass on a
+        # query it happens to rank correctly.
+        shared = ki.tokens("cache the index")
+        near = [s["name"] for s in entries
+                if len(shared & ki.tokens(s["description"], s["name"])) >= ki.SKILL_SHARED_MIN]
+        check(not near, f"no body passes on shared words alone ({len(shared)}-word query, "
+                        f"{near})")
+    finally:
+        if old_home is None:
+            os.environ.pop("KAGGLE_AGENT_HOME", None)
+        else:
+            os.environ["KAGGLE_AGENT_HOME"] = old_home
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def main() -> int:
     check_manifest()
     check_servers()
@@ -4483,6 +5263,10 @@ def main() -> int:
     check_text_encoding()
     check_publishable()
     check_the_package_ships_no_built_artifact()
+    check_the_package_ships_no_runtime_state()
+    check_published_method_is_local_and_the_veto_respects_a_boundary()
+    check_the_vendored_bodies_are_whole_bound_and_cannot_pass_as_capabilities()
+    check_the_matcher_finds_the_right_body_and_says_when_it_finds_nothing()
     print()
     if failures:
         print(f"{len(failures)} failure(s) out of {checks} checks:")
@@ -5062,6 +5846,11 @@ def check_transport_resilience():
 # log. And a log that cannot be read was treated as a reason to stop watching, which throws away
 # runs that were fine. So: the content decides the cadence, and an unreadable log is a route to
 # be repaired rather than an ending. Both are asserted here from the failure they prevent.
+#
+# `_TERMINAL_RUN_STATES` is named here rather than imported from logmonitor so the assertion
+# states what it means: the run must not have been read as finished. A check that compared
+# runState against the module's own constant would pass even if both drifted to the wrong list.
+_TERMINAL_RUN_STATES = ("complete", "error", "dead", "cancelled", "canceled", "failed")
 def check_the_monitor_watches_content():
     print("the monitor watches content")
     import json as _json
@@ -5106,10 +5895,53 @@ def check_the_monitor_watches_content():
         check(not same["changed"] and same["action"] == "hold",
               f"one quiet read holds the cadence (got {same['action']})")
         quiet = lm.observe("epoch 2/100 val_loss 0.8")
-        check(quiet["steady"] and quiet["action"] == "relax",
-              f"two quiet reads relax it (got {quiet['action']})")
+        # The corrected guarantee, not the old one. A run that is STILL GOING and has printed
+        # nothing is WAITING: the cadence holds and the watch continues. Relaxing - and with it
+        # the right to end the watch - requires the run to have actually finished. Without
+        # run_state the run counts as alive, so the bare call below is the conservative case.
+        check(quiet["waiting"] and quiet["action"] == "waiting" and not quiet["steady"]
+              and not quiet["canStop"],
+              f"two quiet reads on a live run are waiting, not steady and not an ending "
+              f"(got {quiet['action']}, steady={quiet['steady']}, canStop={quiet['canStop']})")
+        rung_waiting = lm.note_tick(action="waiting")["rung"]
+        check(rung_waiting == 0, "waiting holds the rung rather than stretching it")
+
+        # A terminal state from an EARLIER tick, read again with no fresh one. The bare calls
+        # above already treat a missing state as alive, but they run on a monitor that has never
+        # seen a terminal state, so they cannot tell "no reading" from "a reading I am choosing to
+        # reuse". The failure this removes is exactly that reuse: a run that completed an hour ago
+        # has since been re-pushed, and a watch that trusted its own memory retires the cron over
+        # a run spending quota right now. So the state is written first, and only then is the
+        # reading withheld.
+        #
+        # A target is set first because that is what gives a tick somewhere to persist to. With
+        # no target the per-run document is never written, so a break that reuses the last state
+        # has nothing to reuse and the scenario below is unreachable - which is the same reason
+        # the sequence has to run in this order and not merely be described in this order.
+        lm.reset()
+        lm.set_target("kaggle", ref="tester/nb-stale")
+        lm.observe("epoch 5/100 val_loss 0.5", run_state="complete")
+        lm.observe("epoch 5/100 val_loss 0.5")
+        stale2 = lm.observe("epoch 5/100 val_loss 0.5")
+        check(not stale2["steady"] and not stale2["canStop"]
+              and stale2["runState"] not in _TERMINAL_RUN_STATES,
+              f"a state read an hour ago is not reused as this tick's state "
+              f"(got runState={stale2['runState']!r}, steady={stale2['steady']}, "
+              f"canStop={stale2['canStop']})")
+        lm.reset()
+
+        # "A run that wakes up is watched closely again" is still true, but it is a property of
+        # a FINISHED run: only a terminal run is allowed to stretch the ladder, so only a
+        # terminal run has a slack rung to snap back from. Asserting it on a live run would be
+        # asserting the old behaviour, where a running run could walk itself out to 20 minutes.
+        lm.observe("epoch 2/100 val_loss 0.8", run_state="complete")
+        lm.observe("epoch 2/100 val_loss 0.8", run_state="complete")
+        fin = lm.observe("epoch 2/100 val_loss 0.8", run_state="complete")
+        check(fin["action"] == "relax" and fin["steady"] and fin["canStop"],
+              f"a finished run that has gone quiet is steady, and that is an ending "
+              f"(got {fin['action']}, steady={fin['steady']}, canStop={fin['canStop']})")
         rung_after_quiet = lm.note_tick(action="relax")["rung"]
-        woken = lm.observe("epoch 3/100 val_loss 0.7")
+        woken = lm.observe("epoch 3/100 val_loss 0.7", run_state="running")
         back = lm.note_tick(action=woken["action"])["rung"]
         check(back == 0 and rung_after_quiet > 0,
               f"a run that wakes up is watched closely again (rung {rung_after_quiet} -> {back})")

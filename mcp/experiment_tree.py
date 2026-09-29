@@ -227,7 +227,7 @@ VERDICTS = ("keep", "revert", "inconclusive", "superseded")
 # gaps can only be resolved by reading it. It is a research target precisely because the question
 # it answers changes nothing and runs nothing.
 RESEARCH_TARGETS = ("forum", "code", "web", "paper", "model", "dataset", "rules", "leaderboard",
-                    "ruler")
+                    "ruler", "skill")
 
 # Fields every node carries regardless of kind. `parent` is deliberately absent from this list:
 # a null parent is not a missing field, it is the way a node says "this is a brand-new direction,
@@ -377,7 +377,7 @@ def resolve_competition(competition: str) -> tuple[str, list[dict[str, Any]]]:
     """Resolve a requested competition key to the ONE tree that owns it.
 
     Returns (directory, forks). A tree is addressed by a slug derived from whatever string the
-    caller passed, so ``arc-prize-2026-arc-agi-3`` and ``arc-agi-3`` sanitise to two different
+    caller passed, so ``kaggle-inc-2026-example-challenge`` and ``example-challenge`` sanitise to two different
     directories and would otherwise be two silent histories of one competition — the exact waste
     the tree exists to prevent. A key already registered on another tree therefore resolves HERE,
     and a key that has a tree of its own AND is claimed elsewhere is reported as a fork rather
@@ -2215,7 +2215,8 @@ def _overlap(a: set[str], b: set[str]) -> float:
 
 
 def consider(competition: str, change: str, hypothesis: str = "",
-             operator: str = "", family: str = "") -> dict[str, Any]:
+             operator: str = "", family: str = "", branch: str = "",
+             data: str = "") -> dict[str, Any]:
     """Ask the tree whether a proposed step is worth a node — at every step, not only before a run.
 
     The point is that consulting the tree must be cheap enough to do every time. A node costs a
@@ -2224,6 +2225,15 @@ def consider(competition: str, change: str, hypothesis: str = "",
     part — matching what you are about to do against what the tree already knows — and returns a
     verdict. The judgement of whether it matters is left to the agent, because that is judgement
     and not lookup.
+
+    ``branch`` names the line of work the caller is on. A refutation is a statement about a
+    result obtained under one set of conditions, and a branch is where a set of conditions ends:
+    a different feature set, a different data snapshot, a different reading of the same
+    objective. Carrying "this was already refuted" across one of those boundaries tells the
+    agent not to try something on the strength of a finding that was never about its problem.
+    So a match from another branch - or one whose ``controls`` say it read different data - is
+    still returned, still visible, and still the highest-scoring thing in the list; it just
+    stops being a veto. See :func:`_comparable`.
     """
     tree = read(competition)
     if tree.get("problems"):
@@ -2233,6 +2243,7 @@ def consider(competition: str, change: str, hypothesis: str = "",
     proposed = _tokens(change, hypothesis)
     base_id = (inner.get("base") or {}).get("id")
     inflight_ids = {p["id"] for p in pending_declarations(tree)}
+    line = str(branch or "").strip()
 
     matches: list[dict[str, Any]] = []
     for nid, n in sorted(nodes.items()):
@@ -2241,21 +2252,35 @@ def consider(competition: str, change: str, hypothesis: str = "",
         score = _overlap(proposed, _tokens(n.get("change"), n.get("hypothesis")))
         if score < 0.34:
             continue
+        why_not = _comparable(n, line, data)
         matches.append({
             "id": nid, "kind": n.get("kind"), "score": round(score, 3),
             "verdict": n.get("verdict"), "change": n.get("change"),
             "failureLayer": n.get("failureLayer"), "reason": n.get("reason"),
             "family": n.get("family"), "operator": n.get("operator"),
             "inFlight": nid in inflight_ids,
+            "branch": n.get("branch"),
+            # Present on every match so a caller can see at a glance which of its own history
+            # is being held at arm's length, instead of having to re-derive it from `branch`.
+            "comparable": not why_not,
+            "notComparableBecause": why_not,
         })
     matches.sort(key=lambda m: -m["score"])
 
-    def _pick(pred):
+    def _pick(pred, comparable_only=True):
+        return next((m for m in matches
+                     if pred(m) and (m["comparable"] or not comparable_only)), None)
+
+    def _any(pred):
         return next((m for m in matches if pred(m)), None)
 
     refuted_hit = _pick(lambda m: m["verdict"] == "revert")
     inflight_hit = _pick(lambda m: m["inFlight"])
     kept_hit = _pick(lambda m: m["verdict"] == "keep" and m["id"] != base_id)
+    # The closest refutation that this branch may not inherit. It is carried into the answer
+    # whether or not it changes the verdict, because "that was refuted elsewhere" is the single
+    # most useful thing to learn from a tree that spans several lines of work.
+    elsewhere_refuted = _any(lambda m: m["verdict"] == "revert" and not m["comparable"])
 
     if inflight_hit:
         verdict, why, node = "in_flight", (
@@ -2283,14 +2308,87 @@ def consider(competition: str, change: str, hypothesis: str = "",
             "the tree cannot score or attribute it. A node is worth it only when the result "
             "would change what you do next."), None
 
-    return {
+    if elsewhere_refuted is not None:
+        note = (f"{elsewhere_refuted['id']} was reverted on "
+                f"{elsewhere_refuted['notComparableBecause']}, and that finding is not a veto "
+                f"here. Its reason: {elsewhere_refuted['reason']!r}. Read it before you spend "
+                f"the quota, and if you run it anyway, say why that finding does not apply.")
+        why = f"{why} {note}" if verdict not in ("not_worth_a_node",) else why
+
+    out = {
         "ok": True, "verdict": verdict, "why": why, "match": node,
         "matches": matches[:5],
         "worthANode": verdict == "worth_declaring",
         "base": base_id,
+        "branch": line or None,
         "inFlight": sorted(inflight_ids),
         "revision": tree["revision"],
+        "skills": _published_method(change, hypothesis),
     }
+    return out
+
+
+def _published_method(change: str, hypothesis: str) -> dict[str, Any]:
+    """Published experimental method that might be relevant to this step. Local only.
+
+    Reads the index that a research sweep scraped and nothing else - no socket is opened here,
+    because this runs on every single ``consider`` call and a network round trip in the
+    experiment loop is a dependency the loop should not have. The freshness of that index is
+    somebody else's decision, made once at the start of a sweep, and the result says which
+    index it read so the reader can weigh it.
+    """
+    try:
+        import kdense_index  # imported here, not at module load: see the note on the cycle
+    except Exception:                                          # noqa: BLE001
+        return {"available": False, "why": "the skill index module could not be loaded",
+                "matches": []}
+    try:
+        r = kdense_index.recommend(change, hypothesis, limit=3)
+    except Exception as exc:                                   # noqa: BLE001
+        return {"available": False, "why": f"{type(exc).__name__}: {exc}", "matches": []}
+    return {
+        "available": bool(r.get("matches")) or bool(r.get("closest")),
+        "network": "not used",
+        "source": r.get("source"),
+        "upstreamCommit": r.get("upstreamCommit"),
+        "indexMayBeStale": r.get("indexMayBeStale"),
+        "whyNoMatch": r.get("whyNoMatch"),
+        "note": r.get("note"),
+        "matches": r.get("matches") or [],
+        "closest": r.get("closest") or [],
+    }
+
+
+def _comparable(node: dict[str, Any], branch: str, data: str = "") -> str:
+    """Why this node's verdict may not carry over, or "" when it may.
+
+    A refutation is evidence about a measurement, and a measurement belongs to the conditions it
+    was taken under. Two conditions make a verdict non-transferable, and the tree already names
+    both: the line of work, and the ``data`` control.
+
+    The two are not symmetric, and getting that wrong is worse than not having the check. A
+    branch is known without being told - the caller says which line it is on, or it is not
+    naming one. ``data`` is not: a node that recorded "fold-a" and a caller that never said what
+    it is reading have not been found to disagree, and treating silence as disagreement would
+    strip the veto from every node that was careful enough to name its data. So ``data`` only
+    speaks when the caller names one too, and a caller that names nothing gets exactly the
+    behaviour it had before this parameter existed.
+
+    Returning the reason rather than a bare bool is the point. "Not comparable" invites the
+    reader to go and check whether it really is not, whereas a boolean would be taken as
+    settled. The wording names the boundary so the reader can judge it.
+    """
+    here = str(branch or "").strip()
+    there = str(node.get("branch") or "").strip()
+    if here and there and here != there:
+        return f"branch {there!r}, not {here!r}"
+    mine = str(data or "").strip()
+    controls = node.get("controls")
+    theirs = str(controls.get("data") or "").strip() if isinstance(controls, dict) else ""
+    if mine and theirs and mine != theirs:
+        return f"a different dataset (data={theirs!r}, not {mine!r})"
+    return ""
+
 
 
 def prune(competition: str, node_id: str, reason: str,

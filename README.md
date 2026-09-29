@@ -4,7 +4,7 @@
 
 English · [中文](README.zh-CN.md)
 
-**29 tools · 18 skills · 2 optional dependencies (plotting only).**
+**30 tools · 19 skills · 2 optional dependencies (plotting only).**
 
 ---
 
@@ -33,7 +33,7 @@ locally and in the Marketplace cache.
 | | |
 |---|---|
 | `mcp/agent_server.py` | the self-locating entry. A local install is `<root>/kaggle-agent`; a Marketplace install is cached under a content hash, further down. Neither is matched on a directory name, because a hash directory is not a name. |
-| `mcp/kaggle_server.py` | protocol and dispatch for 29 tools. Every Kaggle tool resolves credentials, then asks for the CLI command — a value cached per process, so it is probed once rather than once per call. |
+| `mcp/kaggle_server.py` | protocol and dispatch for 30 tools. Every Kaggle tool resolves credentials, then asks for the CLI command — a value cached per process, so it is probed once rather than once per call. |
 | `mcp/credentials.py` | multi-account store. `token_for()` reads without writing, which is what makes a per-call `account=` safe. |
 | `mcp/experiment_tree.py` | the RSI tree. |
 | `mcp/deps.py` | what this machine can do, and the one route that may install something. |
@@ -138,6 +138,45 @@ becomes a loop if the memory survives the session.
 
 ---
 
+## Published method, before the experiment
+
+Before committing to a direction, the agent looks for whether published experimental method
+already answers it. `kaggle_methods` scrapes an index of scientific-agent skills from the page
+upstream keeps for that list, ranks it against what you are about to do, and fetches what is
+relevant. The index is not bundled here: a snapshot of someone else's repository is stale the
+day after it is taken, and a stale answer to "is there published method for this?" reads as a
+search that found nothing.
+
+Four moments trigger it, and which one you are in decides whether it reaches the network:
+
+| | When | Network |
+|---|---|---|
+| **Research** | between wave 1 and wave 2 | yes — scrape, search, fetch |
+| **Every declaration** | before each `declare` | no — local index only |
+| **Stall** | after two or three flat rounds | no — local index only |
+| **New branch** | when a branch opens on different data | yes — scrape, search, fetch |
+
+The two that stay offline are the two that sit inside the experiment loop. `consider` returns the
+same shortlist on every call, ranked by how rare the matching words are across the index, with the
+words that matched attached so you can judge the hit rather than take it.
+
+**The ruler goes first.** `ruler-audit` stage 2 asks whether the metric can resolve the change at
+all; stage 4 asks what to do when it has stopped moving. Both run before any skill is consulted, in
+both directions — a method cannot rescue a measurement that cannot see the result, and hunting for
+a method before checking the ruler wastes the search.
+
+**A new branch is where the previous answer stops applying.** Different data invalidates the old
+refutations, so `consider` no longer carries a `revert` across a branch boundary or a changed
+`controls.data`: the node stays in the match list, `consider` names the branch the refutation came
+from, and the call is yours.
+
+A download passes four gates in order — allowlist, pinned commit, cache first, scanner — and lands
+outside the package. When one fails, the tool reports the HTTP status, the transport's own error
+and an offline capability probe, and stops. Which of those is yours to fix, which is a stale pin,
+and which is a rate limit are three different questions, and it declines to guess which one it hit.
+
+---
+
 ## The tools
 
 **Account and quota** — `kaggle_accounts` (add / switch / rename / list) · `kaggle_auth_status` ·
@@ -150,7 +189,8 @@ becomes a loop if the memory survives the session.
 **Competitions** — `kaggle_competitions_list` · `kaggle_competitions_forums` ·
 `kaggle_competitions_leaderboard`
 
-**Science loop** — `kaggle_experiment_tree` · `kaggle_sources` · `kaggle_log_monitor`
+**Science loop** — `kaggle_experiment_tree` · `kaggle_methods` · `kaggle_sources` ·
+`kaggle_log_monitor`
 
 **Collaboration and judgement** — `handoff_read` · `handoff_write` · `handoff_status` ·
 `handoff_sync` · `github_auth` · `kaggle_presence` · `kaggle_search_engine`
@@ -190,10 +230,10 @@ manifest and linked from the graph, while the repository was short of it.
 ## Repository layout
 
 ```
-.minimax-plugin/plugin.json   manifest: 18 skills, one MCP server, no apps
+.minimax-plugin/plugin.json   manifest: 19 skills, one MCP server, no apps
 servers.mcp.json              stdio server, inlined bootstrap, cwd-independent
-mcp/                          the server and its fifteen modules
-skills/                       18 skills, flat as the manifest requires
+mcp/                          the server and its seventeen modules
+skills/                       19 skills, flat as the manifest requires
   categories/                 the layering, as readable pages
   _shared/                    GenUI foundation, forked once
   relationships.json          the single source of truth for how skills connect
@@ -207,10 +247,32 @@ Redraw them with `python tools/draw_architecture.py`.
 
 ## Attribution
 
-`ablation-design` adapts the experimental-design and uncertainty-and-units material from the
-MIT-licensed [K-Dense-AI/claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)
-project. The method was taken; the dependency-heavy scripts were not. Original MIT licence and
+Eight bodies from the MIT-licensed
+[K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills)
+project (formerly `K-Dense-AI/claude-scientific-skills`) were taken at commit
+`065b734670d7d990627dbc06a05b5a99be33f1f1`; seven are vendored whole, each under the host skill
+that reads it and beside a copy of the upstream licence:
+
+| Vendored body | Read by |
+|---|---|
+| `hypothesis-generation`, `scientific-critical-thinking` | `ruler-audit` — declaration and verdict review |
+| `seaborn`, `scientific-visualization` | `scientific-plotting` — the figure stage |
+| `scientific-writing`, `scientific-slides` | `technical-report` — the report and the talk |
+| `scientific-brainstorming` | `kaggle-competition-research` — after the sweep |
+
+`experimental-design` was taken and then dropped: it is a laboratory protocol, and the two ideas
+in it that transfer — blocking, and what counts as a true independent replicate — are already
+carried by `ablation-design` and `ruler-audit`. Shipping its scripts would have meant a `pyDOE3`
+dependency for a matrix this package already enumerates.
+
+`ablation-design` is separately adapted from the experimental-design and uncertainty-and-units
+material. The method was taken; the dependency-heavy scripts were not. Original MIT licence and
 upstream commit are recorded in the skill.
+
+The bodies are shipped unedited, and that is deliberate: each host skill says in its own text what
+it takes from them, what it declines, and why — including three places where this package's own
+rules are stricter than upstream's. The vendoring is reproducible with
+`python tools/fetch_kdense_bodies.py <commit>`.
 
 The replay and non-greedy-selection design follows *Dream-RSI* (arXiv 2609.14858), adapted from a
 linear child chain to a multi-child DAG; the per-criterion cost accounting follows *Effective
