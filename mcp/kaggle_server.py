@@ -1642,7 +1642,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.33.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.33.1"}
 
 
 def run_kaggle(args: list[str], account: str = "") -> tuple[int, str, str]:
@@ -4538,14 +4538,39 @@ def safe_tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> int:
+    # JSON-RPC over stdio is UTF-8. That is a property of the protocol, not of the machine it
+    # happens to run on, and Python does not agree: on Windows a text-mode stdin decodes with the
+    # ANSI code page - cp936 here, cp1252 or cp932 elsewhere - so a request carrying non-ASCII
+    # arrives as mojibake and json.loads raises.
+    #
+    # The failure it produces is the worst shape available. The line cannot be parsed, so the
+    # reply goes out with id=null, which the client cannot match to a request it is still waiting
+    # on: the call does not error, it hangs, and it aborts on a timeout that says nothing about
+    # encoding. An ASCII request through the same server returns in a millisecond, so the natural
+    # conclusion is that the argument was too long or too nested. It is neither. The fix is three
+    # lines and the evidence is that the identical payload succeeds once they are here.
+    for _stream in (sys.stdin, sys.stdout):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # a stream replaced by something without reconfigure is not ours to fix
+
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw:
             continue
         try:
             req = json.loads(raw)
-        except json.JSONDecodeError:
-            error(None, -32700, "parse error: not JSON")
+        except json.JSONDecodeError as exc:
+            # Correlate it anyway when the id is still legible. An error the client cannot match
+            # is the same as no error at all, and a preview is what turns "it hung" into "it
+            # received a line it could not read".
+            m = re.search(r'"id"\s*:\s*(-?\d+|"[^"]*")', raw)
+            rid = json.loads(m.group(1)) if m else None
+            error(rid, -32700,
+                  f"parse error: not JSON ({exc}). Received {len(raw)} characters beginning "
+                  f"{raw[:160]!r}. This line was read from stdin, so if it contains non-ASCII "
+                  f"the server is not decoding stdin as UTF-8.")
             continue
 
         method = req.get("method")

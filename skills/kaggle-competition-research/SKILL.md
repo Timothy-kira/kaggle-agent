@@ -1,6 +1,6 @@
 ---
 name: "kaggle-competition-research"
-description: "Use when researching a Kaggle competition before committing to an approach - what the rules and data actually are, what competitors are doing in Kaggle Code, what the discussion forum says, and what the wider field knows in GitHub, Hugging Face and the papers. Use it whenever a competition is named and any work is about to start on it, INCLUDING when the user arrives with a finished opinion about how to solve it - a plan, an architecture, a harness, a set of tools. An opinion is a hypothesis; this sweep is what decides whether it survives contact with the leaderboard, the rules and the open code, and the answer changes what gets built. Starts with a preflight - handoff_status and the experiment tree - and when work already exists it combines the new research with what is already recorded instead of re-deriving it, or skipping the sweep. Only then: wave 1 launches four Kaggle-native subagents in a single response. Wave 2 then runs entirely in the main thread - the general browser search through the deep-research skill over multiple rounds, then the source forensics on the URLs that search surfaced, with a hard requirement that GitHub, Hugging Face and arXiv are genuinely read rather than quoted from a search snippet, and nothing dispatched to a subagent. The in-app browser is for discovery; reading a known URL is done with web_fetch. Competition data is profiled in a Kaggle CPU notebook and is never downloaded to this machine. Asks what the sweep is for before it starts and again after wave 1, reviews the plan with the user before offering any handoff, reads sources in full rather than skimming titles, and reports coverage limits honestly."
+description: "Use when researching a Kaggle competition before committing to an approach - what the rules and data actually are, what competitors are doing in Kaggle Code, what the discussion forum says, and what the wider field knows in GitHub, Hugging Face and the papers. Use it whenever a competition is named and any work is about to start on it, INCLUDING when the user arrives with a finished opinion about how to solve it - a plan, an architecture, a set of tools, a way they expect to frame it. An opinion is a hypothesis; this sweep is what decides whether it survives contact with the leaderboard, the rules and the open code, and the answer changes what gets built. Starts with a preflight - handoff_status and the experiment tree - and when work already exists it combines the new research with what is already recorded instead of re-deriving it, or skipping the sweep. Only then: wave 1 launches four Kaggle-native subagents in a single response. Wave 2 then runs entirely in the main thread - the general browser search through the deep-research skill over multiple rounds, then the source forensics on the URLs that search surfaced, with a hard requirement that GitHub, Hugging Face and arXiv are genuinely read rather than quoted from a search snippet, and nothing dispatched to a subagent. The in-app browser is for discovery; reading a known URL is done with web_fetch. Competition data is profiled in a Kaggle CPU notebook and is never downloaded to this machine. Asks what the sweep is for before it starts and again after wave 1, reviews the plan with the user before offering any handoff, reads sources in full rather than skimming titles, and reports coverage limits honestly."
 ---
 
 # Researching a Kaggle competition
@@ -38,8 +38,8 @@ it knows what has already been tried and what the base node cost.
 ### When the user arrives with the answer already
 
 The most common way this skill gets skipped is a message that reads like an answer: a competition
-URL and a considered plan — a harness, a set of tools, a way of framing the problem. It looks like
-work handed down, and the tempting move is to start building.
+URL and a considered plan — an architecture, a set of tools, a way of framing the problem. It
+looks like work handed down, and the tempting move is to start building.
 
 **An opinion is a hypothesis, and this sweep is what decides whether it is one worth building on.**
 The plan is the thing the sweep is *about*: what the top of the field already built, whether it is
@@ -49,22 +49,26 @@ competition, because there is something concrete to attack.
 
 Concretely, for a user who has already decided the approach:
 
-- Their points are **the questions wave 1 and wave 2 go after**, not the plan the sweep returns.
-  Break them out: a harness-and-tools proposal is a fork-vs-write question with a frame-diff
-  requirement attached; a "the model has no memory between levels" constraint is a
-  representation question, and it is a research target rather than an implementation detail.
-- Where a point is already a **feature of this plugin**, say so and point at it. A per-step
-  handoff document and a prediction carried into the next round is what `handoff` and a node's
-  `expect` already do; saying so is worth more than rebuilding it.
+- **Their points are the questions the sweep goes after.** Not the plan it returns, and not a
+  template it should be fitted to — break their proposal into the separate claims it is resting
+  on, and ask about each. A proposed build is usually a fork-vs-write question wearing a
+  constraint attached; a claim about what the task or the model requires is a question about the
+  data or the field, not an implementation detail; a claim about how results will be compared is
+  a question about the metric. The shape of the answer follows from the claim, so do not
+  generalise from one example of what a user has said before.
+- **Say when a point is already a feature of this package.** A per-step handoff and a prediction
+  carried into the next round, for instance, are what `handoff` and a node's `expect` already do.
+  Telling the user that is worth more than rebuilding it, and it is the kind of thing they cannot
+  be expected to know.
 - **Ask before assuming they want the work blocked.** A user who has thought about a competition
   may have a good reason to skip the survey, and that is their call. The tree enforces the order
-  — the first node on an empty competition cannot be an experiment — but the way past it is a
-  `research` node recording the decision, not an argument.
+  — the first declaration on a competition is refused until a research node exists — but the way
+  past it is a `research` node recording the decision, not an argument.
 
 So: ask what the sweep is for, and make the question about **their plan specifically**. "Should I
-research this competition first?" invites a no. "Your harness-and-frame-diff plan is one of the
-things the top of the field may already have solved, and the leaderboard says whether their
-version is open — worth the sweep before you build?" is a question with an actual answer.
+research this competition first?" invites a no. Naming the one part of their plan the field may
+already have solved, and what the leaderboard says about whether that version is open, is a
+question with an actual answer.
 
 ### Combining with what already exists
 

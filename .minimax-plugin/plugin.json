@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "kaggle-agent",
   "displayName": "Kaggle Agent",
-  "version": "1.33.0",
+  "version": "1.33.1",
   "description": "Kaggle is a browser tab and a command line, and neither one remembers what you tried last week. This plugin turns the parts of Kaggle that repeat into things you can simply ask for: signing in and switching between the accounts you own, working out what a competition is actually asking and what has already been ruled out, running a notebook while knowing how much time and accelerator you have left, and writing the whole thing down so the next person or the next session starts where you stopped. It records what was measured, what was refuted, and what the next experiment is, so a long investigation survives being put down and picked up again.",
   "author": "Akira",
   "icon": "icon.png",

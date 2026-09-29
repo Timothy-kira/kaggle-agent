@@ -2265,5 +2265,34 @@ def _(ks, js):
                     "a tree that already holds a research node is not re-gated")
 
 
+# ---------------------------------------------------------- the channel, not the payload
+def _inherit_the_windows_code_page(root):
+    """Take the three lines out and let stdin decode the way Python does by default.
+
+    This is the state the package shipped in, not a constructed one. The identical payload in
+    English is accepted by the same server in the same millisecond, so every diagnosis that
+    points at the content is wrong: the argument was never too long, and the node was never too
+    nested. It is the bytes on the wire.
+    """
+    path = root / "mcp" / "kaggle_server.py"
+    text = path.read_text(encoding="utf-8")
+    old = ("    for _stream in (sys.stdin, sys.stdout):\n"
+           "        try:\n"
+           "            _stream.reconfigure(encoding=\"utf-8\", errors=\"replace\")\n"
+           "        except (AttributeError, ValueError):\n"
+           "            pass  # a stream replaced by something without reconfigure is not ours to fix\n")
+    if old not in text:
+        raise AssertionError("fixture is stale: the stdio reconfigure is no longer shaped this way")
+    path.write_text(text.replace(old, "", 1), encoding="utf-8", newline="")
+
+
+@case("checker: a Chinese node over real stdio is caught",
+      "a non-ASCII request must not leave the caller waiting on a reply that cannot arrive")
+def _(ks, js):
+    return _catches("check_stdio_is_utf8", _inherit_the_windows_code_page,
+                    "the server reconfigures its own stdio",
+                    "and the tree file was written")
+
+
 if __name__ == "__main__":
     sys.exit(main())

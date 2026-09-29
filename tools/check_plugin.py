@@ -1360,6 +1360,111 @@ def check_the_first_node_cannot_be_an_experiment():
             _os.environ["KAGGLE_AGENT_HOME"] = saved
 
 
+def check_stdio_is_utf8():
+    """A request carrying non-ASCII must not leave the caller waiting on a reply that cannot arrive.
+
+    JSON-RPC over stdio is UTF-8. Python disagrees on Windows: a text-mode stdin decodes with the
+    ANSI code page, so a Chinese or Japanese argument arrives as mojibake, json.loads raises, and
+    the reply goes out with id=null. The client cannot match that to a request it is still waiting
+    on, so the call does not fail - it hangs, and aborts on a timeout that names nothing.
+
+    The shape of that failure is what makes it expensive. An ASCII request through the same server
+    returns in a millisecond, so the natural reading is "the argument was too long" or "the node
+    was too nested", and the obvious next move is to shorten the payload. The identical payload in
+    English works every time, which is exactly why it looks like the content rather than the
+    channel. Measured here, in this environment, on this machine: cp936, a CJK node rejected, the
+    same node in English accepted.
+    """
+    print("stdio is utf-8")
+    import locale as _locale
+    import subprocess as _sub
+    import time as _time
+
+    def check(cond, label):
+        if cond:
+            ok(label)
+        else:
+            bad(f"stdio is utf-8: {label}")
+
+    py = sys.executable
+    # No PYTHONUTF8 and no PYTHONIOENCODING, because servers.mcp.json launches with env {} and a
+    # probe that sets them is a probe that has removed the thing it is looking for.
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUTF8"}
+    env.pop("PYTHONIOENCODING", None)
+    env["KAGGLE_AGENT_HOME"] = _mkdtemp(prefix="ka-check-stdio-")
+    home = env["KAGGLE_AGENT_HOME"]
+
+    src = (ROOT / "mcp" / "kaggle_server.py").read_text(encoding="utf-8")
+    check("reconfigure(encoding=\"utf-8\"" in src,
+          "the server reconfigures its own stdio rather than inheriting the machine's code page")
+
+    proc = _sub.Popen([py, "-B", str(ROOT / "mcp" / "kaggle_server.py")],
+                      stdin=_sub.PIPE, stdout=_sub.PIPE, stderr=_sub.PIPE,
+                      env=env, cwd=str(ROOT / "mcp"), text=True,
+                      encoding="utf-8", bufsize=1)
+
+    def call(req_id, name, args, label):
+        try:
+            proc.stdin.write(json.dumps(
+                {"jsonrpc": "2.0", "id": req_id, "method": "tools/call",
+                 "params": {"name": name, "arguments": args}}, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+        except Exception as exc:  # noqa: BLE001
+            check(False, f"{label} (the request could not be written: {exc})")
+            return None
+        t0 = _time.time()
+        line = proc.stdout.readline()
+        dt = _time.time() - t0
+        check(bool(line), f"{label}: the server answered in {dt:.2f}s")
+        return json.loads(line) if line else None
+
+    try:
+        node = {"id": "r1", "kind": "research", "parent": None,
+                "question": "用户提出的三点方案是否成立", "targets": ["forum", "code"],
+                "verdict": "inconclusive",
+                "reason": "用户本轮选择不拉云端 handoff，四个来源全跑",
+                "opens": "wave 1 的检索词，以及 wave 2 的定向问题"}
+        # Deliberately a real competition-shaped key, written into a throwaway home.
+        comp = "zz-stdio-cjk"
+        call(1, "kaggle_experiment_tree",
+             {"action": "record", "competition": comp,
+              "node": json.dumps(node, ensure_ascii=False), "read_revision": 0},
+             "a research node written in Chinese")
+
+        path = Path(home) / "handoff" / comp / "tree.json"
+        check(path.is_file(), "and the tree file was written")
+        if path.is_file():
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            got = (stored.get("tree", {}).get("nodes", {}).get("r1") or {})
+            check(got.get("question") == node["question"],
+                  f"and the Chinese came back character for character (got "
+                  f"{got.get('question')!r})")
+            check(got.get("reason") == node["reason"],
+                  "including the reason, which is the field the user actually writes in Chinese")
+
+        # A line that still cannot be read has to answer with an id the client can match.
+        try:
+            proc.stdin.write("this is not json at all\n")
+            proc.stdin.flush()
+            bad_reply = json.loads(proc.stdout.readline())
+        except Exception as exc:  # noqa: BLE001
+            bad_reply = {"error": {"message": f"no reply: {exc}"}}
+        err = bad_reply.get("error") or {}
+        check(err.get("code") == -32700,
+              f"an unparseable line is still answered with a parse error ({err.get('code')})")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+
+    check(_locale.getpreferredencoding(False) != "utf-8"
+          or os.environ.get("PYTHONUTF8") == "1",
+          f"this machine's preferred encoding is {_locale.getpreferredencoding(False)}, which is "
+          f"why the inherited default was the wrong one to rely on")
+
+
 # ---------------------------------------------------------------- the tree is enforced
 def check_tree_enforcement():
     """The RSI tree must be a validated tool, not a convention in a skill.
@@ -5404,7 +5509,8 @@ def main() -> int:
         check_presence_reach,                                                        # presence reach
         check_graph_state,                                                           # graph state
         check_tree_enforcement,                                                      # tree enforcement
-        check_the_first_node_cannot_be_an_experiment,                                # the first node cannot be an experiment
+        check_the_first_node_cannot_be_an_experiment,
+        check_stdio_is_utf8,                                # the first node cannot be an experiment
         check_search_widening,                                                       # search widening
         check_replay_semantics,                                                      # replay semantics
         check_monotone_policy,                                                       # monotone policy
