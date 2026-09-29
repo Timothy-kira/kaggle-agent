@@ -1049,6 +1049,56 @@ def _validate_criteria(where: str, node: dict[str]) -> list[str]:
     return out
 
 
+# What a claim is allowed to be judged as. Not pass/fail: a plan is routinely half right, and a
+# vocabulary that cannot say "half" forces the author to pick the wrong one of two.
+CLAIM_VERDICTS = ("holds", "partial", "fails", "untested")
+
+
+def _validate_claims(where: str, node: dict[str, Any]) -> list[str]:
+    """A proposal held claim by claim, against named evidence, with what is still open.
+
+    `criteria` is the wrong instrument here and using it would be worse than having nothing: it
+    aggregates by a short slug name, carries a numeric value and a direction, and feeds the
+    expected-cost machinery. A claim is a sentence, several of them can be about the same
+    dimension, and none of them has a number. So claims get their own list.
+
+    Two rules earn their keep. Every claim names the evidence it was judged against, because a
+    claim judged against nothing is the opinion it was supposed to replace. And anything other
+    than a clean `holds` must say what is still uncertain, which is lifted from the vendored
+    adversarial-review method this exists to carry: it asks for the response, the mitigation and
+    the residual uncertainty, and is explicit that pass/fail alone is not the record.
+    """
+    claims = node.get("claims")
+    if claims is None:
+        return []
+    if not isinstance(claims, list):
+        return [f"{where}: 'claims' must be a list"]
+    out: list[str] = []
+    for i, c in enumerate(claims):
+        tag = f"{where}: claims[{i}]"
+        if not isinstance(c, dict):
+            out.append(f"{tag} must be an object")
+            continue
+        text = str(c.get("claim") or "").strip()
+        if not text:
+            out.append(f"{tag} is missing 'claim' - what exactly is being asserted")
+        if not str(c.get("from") or "").strip():
+            out.append(
+                f"{tag} is missing 'from' - which piece of evidence this was judged against. A "
+                f"claim nobody weighed it against is the opinion it replaced."
+            )
+        verdict = str(c.get("verdict") or "").strip()
+        if verdict not in CLAIM_VERDICTS:
+            out.append(f"{tag}: verdict must be one of {', '.join(CLAIM_VERDICTS)}, got {verdict!r}")
+        elif verdict != "holds" and not str(c.get("residual") or "").strip():
+            out.append(
+                f"{tag}: verdict {verdict!r} must come with 'residual' saying what is still "
+                f"unresolved. Pass/fail on its own is not the record - a reader cannot tell a "
+                f"claim that was weighed and came out mixed from one that was never weighed."
+            )
+    return out
+
+
 def _validate_provenance(where: str, node: dict[str, Any]) -> list[str]:
     """A concluded node must say what it rests on: a stored source, or an explicit local note.
 
@@ -1107,7 +1157,7 @@ def source_exists(source_id: str) -> bool:
         return False
 
 
-LIST_NODE_FIELDS = ("targets", "sources", "criteria")
+LIST_NODE_FIELDS = ("targets", "sources", "criteria", "claims")
 # Values that mean "no parent". The MCP transport has been observed to drop a null entirely,
 # and a caller who sends a bare false, or the string "none", means the same thing.
 NO_PARENT = ("", "none", "null", "unset", "false")
@@ -1898,6 +1948,10 @@ def validate(tree: dict[str, Any]) -> list[str]:
             problems.extend(_validate_provenance(where, node))
             problems.extend(_validate_expectation(where, node))
             problems.extend(_validate_goal(where, node, goal))
+
+        # Claims are held on research nodes, not experiment nodes, so this is deliberately
+        # outside the experiment branch rather than beside _validate_criteria inside it.
+        problems.extend(_validate_claims(where, node))
 
         if kind == "research":
             for field in RESEARCH_REQUIRED:

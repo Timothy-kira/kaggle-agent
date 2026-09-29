@@ -768,7 +768,11 @@ def _(ks, js):
 # RESEARCH_SKILL is here because the agenda, method-note and code-sweep checks assert on prose
 # rather than on code. Without repointing it, a broken COPY of the skill would be checked while
 # the check read the real file, and the case would pass by reading a file nobody broke.
-_CHECK_TARGETS = ("MANIFEST", "SERVERS", "REL", "SERVER_PY", "RESEARCH_SKILL")
+_CHECK_TARGETS = ("MANIFEST", "SERVERS", "REL", "SERVER_PY", "RESEARCH_SKILL", "DRIVER")
+# DRIVER belongs here for the same reason the other four do. A path constant that is not
+# repointed keeps naming the PRISTINE file when a counter-example breaks the copy, so the
+# instrument measures the unbroken program and reports no failure at all - which is the one
+# outcome a counter-example cannot distinguish from a working fixture.
 _IGNORE = shutil.ignore_patterns(".git", "__pycache__", "*.pyc", ".venv",
                                  "branches", "quarantine")
 
@@ -2450,6 +2454,106 @@ def _(ks, js):
     # fork breaks is the attribution, which is the guarantee actually under test here.
     return _catches("check_the_ladder_leaves_nothing_orphaned", _let_another_rung_fan_out,
                     "every fork hangs off survey, with nothing else allowed to fan out")
+
+
+# ------------------------------------ what a wave subagent can actually reach
+def _silence_the_subagent_briefs(root):
+    """Take the statement of the child's situation out of one brief, leaving the route.
+
+    The result is the shape this file shipped in: a brief that says `kaggle kernels list` and
+    names no route the child was actually given, which produces zero results and reports
+    nothing about why.
+    """
+    path = root / "skills" / "kaggle-competition-research" / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    # .rstrip() and not .rstrip("\r"): the lines still carry the CR of a CRLF file, and stripping
+    # only that leaves the "\n" this literal carries, which no line in the list can ever equal.
+    heading = "### survey.code — Kaggle Code".rstrip()
+    try:
+        i = lines.index(heading)
+    except ValueError:
+        raise AssertionError("fixture is stale: the survey.code heading moved")
+    cut = []
+    for k in range(i + 1, min(i + 14, len(lines))):
+        cut.append(k)
+        if "**You are a background subagent" in lines[k]:
+            break
+    else:
+        raise AssertionError("fixture cannot find the situation statement to remove")
+    del lines[i + 1:cut[-1] + 1]
+    path.write_text("\n".join(lines), encoding="utf-8", newline="")
+
+
+@case("checker: a brief that hides the child's situation is caught",
+      "a child has to be told it has no MCP tools before it is sent to look for them")
+def _(ks, js):
+    # One expectation. Removing the situation statement does not remove the section, so "the
+    # brief exists" still holds and naming it here would be a case that cannot pass.
+    return _catches("check_a_wave_subagent_can_reach_kaggle", _silence_the_subagent_briefs,
+                    "the survey.code brief states the child's situation")
+
+
+def _downgrade_the_dispatch_to_a_read_only_child(root):
+    """Put survey.code back on explore, which is how it shipped and how it failed."""
+    path = root / "skills" / "kaggle-competition-research" / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    old = 'task(agent_name="worker", run_in_background=true, description="wave1-kaggle-code"'
+    if old not in text:
+        raise AssertionError("fixture is stale: the dispatch table changed shape")
+    path.write_text(text.replace(old, old.replace('agent_name="worker"', 'agent_name="explore"'), 1),
+                    encoding="utf-8", newline="")
+
+
+@case("checker: a writing brief handed to a read-only child is caught",
+      "a child that cannot write refuses the whole task, or returns a report with a hole in it")
+def _(ks, js):
+    # One expectation, not two. The dispatch table still names wave1-kaggle-code after the break
+    # - only its role changed - so naming that message here would be a case that cannot pass.
+    return _catches("check_a_wave_subagent_can_reach_kaggle",
+                    _downgrade_the_dispatch_to_a_read_only_child,
+                    "survey.code writes, so it is dispatched to a role that can write")
+
+
+def _let_a_claim_skip_its_evidence(root):
+    """Make `from` optional, so a claim weighed against nothing reads as a claim weighed."""
+    path = root / "mcp" / "experiment_tree.py"
+    text = path.read_text(encoding="utf-8")
+    old = '        if not str(c.get("from") or "").strip():\n'
+    if old not in text:
+        raise AssertionError("fixture is stale: the claim-evidence rule moved")
+    path.write_text(text.replace(old, "        if False:\n", 1), encoding="utf-8", newline="")
+
+
+@case("checker: a claim that names no evidence is caught",
+      "a claim nobody weighed it against is the opinion it replaced")
+def _(ks, js):
+    # Dropping the `from` requirement leaves a well-formed claim list still recordable, so the
+    # record check does not fire and must not be named here.
+    return _catches("check_a_claim_is_judged_against_something",
+                    _let_a_claim_skip_its_evidence,
+                    "a claim with no evidence named is refused")
+
+
+def _break_the_driver(root):
+    """Make the driver exit non-zero, which is what a broken route looks like to a child."""
+    path = root / "mcp" / "call_tool.py"
+    text = path.read_text(encoding="utf-8")
+    old = "    if want_list:\n"
+    if old not in text:
+        raise AssertionError("fixture is stale: the driver's --list branch moved")
+    path.write_text(text.replace(old, "    if False:\n", 1), encoding="utf-8", newline="")
+
+
+@case("checker: a driver that cannot list its tools is caught",
+      "the route offered to a child is worth nothing if it does not run")
+def _(ks, js):
+    # Not "the stdio driver ships with the package": it does ship, unchanged on disk, and the
+    # whole point of this break is that shipping is not the property under test. What has to
+    # move is what the driver DOES.
+    return _catches("check_a_wave_subagent_can_reach_kaggle", _break_the_driver,
+                    "the driver exits 0 on --list",
+                    "and it reaches the whole tool surface, not a subset")
 
 
 if __name__ == "__main__":

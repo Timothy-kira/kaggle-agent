@@ -1229,6 +1229,7 @@ def check_the_first_node_cannot_be_an_experiment():
             ok(label)
         else:
             bad(f"the first node cannot be an experiment: {label}")
+        return bool(cond)
 
     home = _mkdtemp(prefix="ka-check-first-node-")
     saved = _os.environ.get("KAGGLE_AGENT_HOME")
@@ -1385,6 +1386,7 @@ def check_stdio_is_utf8():
             ok(label)
         else:
             bad(f"stdio is utf-8: {label}")
+        return bool(cond)
 
     py = sys.executable
     # No PYTHONUTF8 and no PYTHONIOENCODING, because servers.mcp.json launches with env {} and a
@@ -1933,7 +1935,7 @@ def check_the_readme_counts_what_the_package_contains():
                 out.add(Path(node.module).stem)
         return out
 
-    ENTRY_POINTS = {"kaggle_server", "kaggle_cli", "agent_server"}
+    ENTRY_POINTS = {"kaggle_server", "kaggle_cli", "agent_server", "call_tool"}
     on_disk_modules = {p.stem for p in (ROOT / "mcp").glob("*.py") if p.is_file()}
     reached: set[str] = {"kaggle_server"}
     frontier = ["kaggle_server.py", "kaggle_cli.py"]
@@ -5502,15 +5504,16 @@ def check_the_matcher_finds_the_right_body_and_says_when_it_finds_nothing():
 # ladder cannot support. It also asserts the gate this one refines is still reachable - a new
 # check placed AFTER the old one would leave the old one's zero-node case permanently shadowed,
 # which is how a branch of a gate becomes code that can no longer run.
-LADDER_RUNGS = ("survey", "method", "field", "forensics",
+LADDER_RUNGS = ("survey", "challenge", "method", "field", "forensics",
                 "converge", "anchor", "decide", "smoke", "scale")
-LADDER_EVIDENCE = {"survey", "method", "field", "forensics", "anchor"}
+LADDER_EVIDENCE = {"survey", "challenge", "method", "field", "forensics", "anchor", "decide"}
 
 
 def _ladder_with_kinds():
     out = []
     for name in LADDER_RUNGS:
-        kind = "research" if name in ("survey", "method", "field", "forensics") else (
+        kind = "research" if name in ("survey", "challenge", "method", "field",
+                                      "forensics", "decide") else (
             "anchor" if name == "anchor" else "build")
         out.append({"name": name, "kind": kind, "passesWhen": f"{name} happened"})
     return out
@@ -5602,29 +5605,36 @@ def check_the_research_ladder_is_a_graph():
               f"declaring an experiment on an unswept competition is refused "
               f"({got.get('code')})")
         check([m["name"] for m in got.get("missing") or []] ==
-              ["survey", "method", "field", "forensics", "anchor"],
+              ["survey", "challenge", "method", "field", "forensics", "anchor",
+               "decide"],
               f"and the refusal names every rung still missing "
               f"({[m['name'] for m in got.get('missing') or []]})")
         check(got.get("code") != "no_research_yet",
               "a declared ladder does not fall through to the older first-node rule")
 
         # 3. landing the rungs clears them, and the anchor rung is cleared by the anchor itself
-        for stage in ("survey", "method", "field", "forensics"):
+        for stage in ("survey", "challenge", "method", "field", "forensics"):
             check(land(comp, stage).get("ok"), f"the {stage} rung is satisfied by its node")
         mid = experiment(comp)
-        check([m["name"] for m in mid.get("missing") or []] == ["anchor"],
-              f"only the anchor rung is left ({[m['name'] for m in mid.get('missing') or []]})")
+        check([m["name"] for m in mid.get("missing") or []] == ["anchor", "decide"],
+              f"only the anchor and decide rungs are left "
+              f"({[m['name'] for m in mid.get('missing') or []]})")
         et.declare_anchor(comp, "the public test split only", "")
+        after_anchor = experiment(comp, stage="smoke")
+        check([m["name"] for m in after_anchor.get("missing") or []] == ["decide"],
+              f"declaring the held-out set satisfies the anchor rung, and only decide is left "
+              f"({[m['name'] for m in after_anchor.get('missing') or []]})")
+        check(land(comp, "decide").get("ok"), "and decide is satisfied by its own node")
         cleared = experiment(comp, stage="smoke")
         check(cleared.get("code") != "research_incomplete",
-              "declaring the held-out set satisfies the anchor rung, and the gate is clear")
+              "and with every evidence rung landed the gate is clear")
 
         # 4. an inconclusive node still satisfies a rung: the gate asks whether a step was
         #    considered, not whether it paid off
         comp = "zz-ladder-inconclusive"
         homes.append(fresh(comp))
         et.set_stage(comp, curriculum=_ladder_with_kinds(), read_revision=rev(comp))
-        for stage in ("survey", "method", "field", "forensics"):
+        for stage in ("survey", "challenge", "method", "field", "forensics", "decide"):
             land(comp, stage)
         et.declare_anchor(comp, "the public test split only", "")
         r = land(comp, "method", nid="r-method-2", verdict="inconclusive")
@@ -5806,13 +5816,235 @@ def check_the_ladder_leaves_nothing_orphaned():
             check([r.get("name") for r in shown] == list(LADDER_RUNGS),
                   f"in the same order as the code enforces "
                   f"({[r.get('name') for r in shown]})")
-            want = [("research" if r in ("survey", "method", "field", "forensics")
+            want = [("research" if r in ("survey", "challenge", "method", "field",
+                                         "forensics", "decide")
                      else "anchor" if r == "anchor" else "build") for r in LADDER_RUNGS]
             check([r.get("kind") for r in shown] == want,
                   f"with the kinds the code accepts "
                   f"({[r.get('kind') for r in shown]})")
             check(all(str(r.get("passesWhen") or "").strip() for r in shown),
                   "and every rung says what passing it looks like")
+
+
+# ------------------------------------------------ what a wave subagent can actually reach
+# A subagent is not given this plugin's MCP tools, and that was measured rather than inferred: a
+# dispatched child's tool list held no kaggle_* entry, tool_search was absent from its turn, and
+# mcp_invoke answered Unknown tool_name for want of a tool_ref. A brief that routes a child at an
+# MCP tool therefore returns zero results and does not say why - which is exactly what happened,
+# and it looked like an empty competition rather than an unreachable tool.
+#
+# So the briefs are held to the two routes a child verifiably has, and the driver that gives it
+# the three tools the CLI has no subcommand for is held to actually running.
+WAVE_BRIEFS = ("survey.code", "survey.forum", "survey.rules", "survey.data")
+MCP_ONLY_TOOLS = ("kaggle_competitions_forums", "kaggle_competitions_leaderboard",
+                  "kaggle_kernels_list", "kaggle_kernel_pull", "kaggle_kernel_launch",
+                  "kaggle_kernel_verify", "kaggle_kernels_output", "kaggle_sources",
+                  "kaggle_experiment_tree", "kaggle_competitions_list")
+DRIVER = ROOT / "mcp" / "call_tool.py"
+
+
+def check_a_wave_subagent_can_reach_kaggle():
+    print("a wave subagent can reach Kaggle, and file its own rung")
+    import subprocess as _sp
+    import os as _os
+    import sys as _sys
+
+    def check(cond, label):
+        if cond:
+            ok(label)
+        else:
+            bad(f"a wave subagent can reach Kaggle: {label}")
+        return bool(cond)
+
+    research = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+
+    def brief(name):
+        start = research.find(f"### {name} ")
+        if start < 0:
+            return ""
+        nxt = research.find("\n### ", start + 1)
+        return research[start:nxt if nxt > 0 else len(research)]
+
+    # 1. every brief opens by telling the child what it does and does not have, names a route
+    #    it verifiably has, and tells it to file its own rung
+    for name in WAVE_BRIEFS:
+        body = brief(name)
+        check(bool(body), f"the {name} brief exists")
+        if not body:
+            continue
+        head = body[:600].lower()
+        check("background subagent" in head and "no `kaggle_*` mcp tools" in head,
+              f"the {name} brief states the child's situation before it asks for anything")
+        has_cli = ("kaggle " in body.lower() or "reachable from the cli" in head
+                   or "competitions " in body or "kernels " in body)
+        check(has_cli, f"the {name} brief reaches Kaggle through the CLI")
+        check("file your own rung" in body.lower(),
+              f"the {name} brief tells the child to record its own rung")
+        # 2. if it names a tool the child does not have, it must also name a route it does
+        #    have. Per-brief rather than per-line: survey.data's launch block is a chain of
+        #    MCP tool names introduced once by a line saying they are MCP-only, and matching
+        #    each name against its own line reports the whole sequence as unroutable.
+        named = [t for t in MCP_ONLY_TOOLS if t in body]
+        if named:
+            low = body.lower()
+            has_route = any(w in low for w in ("kaggle ", "reachable from the cli", "driver",
+                                               "call_tool.py"))
+            check(has_route,
+                  f"the {name} brief names {len(named)} tool(s) the child lacks "
+                  f"({', '.join(named[:3])}) and also names a route it has, so none of them is "
+                  f"the only way through")
+
+    # 3. the dispatch table has to match what each brief asks the child to do. Three of the
+    #    four write - a pull to disk, a node to the tree - and a read-only child handed a
+    #    writing brief either refuses the whole task or silently drops the half that matters.
+    #    That is not a hypothetical: survey.code dispatched to explore came back with the
+    #    toolchain confirmed and none of the research run.
+    for name, desc in (("survey.code", "wave1-kaggle-code"),
+                       ("survey.forum", "wave1-forum"),
+                       ("survey.rules", "wave1-overview-rules"),
+                       ("survey.data", "wave1-data-profile")):
+        body = brief(name)
+        writes = any(w in body for w in ("kernels pull", "file your own rung",
+                                         "kernels push", "kernel_launch"))
+        call = re.search(rf'task\(agent_name="(\w+)",\s*run_in_background=true,\s*'
+                         rf'description="{re.escape(desc)}"', research)
+        check(call is not None, f"the dispatch table names {desc}")
+        if call is None:
+            continue
+        role = call.group(1)
+        if writes:
+            check(role == "worker",
+                  f"{name} writes, so it is dispatched to a role that can write (got {role})")
+        else:
+            check(role in ("explore", "worker"),
+                  f"{name} is dispatched to a real role (got {role})")
+
+    # 4. the two rungs that were added or changed are the ones the skill claims
+    for name, why in (("challenge", "the adversarial review of the four reports"),
+                      ("decide", "the claim-by-claim weighing")):
+        check(f"## {name} " in research, f"the {name} rung has a section of its own ({why})")
+    check("scientific-brainstorming" in research,
+          "and challenge names the vendored method it runs")
+
+    # 5. the driver runs, here, and lists the tools. The path is derived from ROOT *inside* this
+    #    function rather than read from the module constant, so a check run against a throwaway
+    #    copy measures that copy's driver and not this machine's.
+    driver = ROOT / "mcp" / "call_tool.py"
+    if not check(driver.is_file(), "the stdio driver ships with the package"):
+        return
+    try:
+        proc = _sp.run([_sys.executable, "-B", str(driver), "--list"],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=180)
+    except Exception as exc:  # noqa: BLE001
+        check(False, f"the driver runs and lists its tools ({exc})")
+        return
+    check(proc.returncode == 0, f"the driver exits 0 on --list ({proc.returncode})")
+    names = [l.split("\t")[0] for l in (proc.stdout or "").splitlines() if l.strip()]
+    check(len(names) >= 25, f"and it reaches the whole tool surface, not a subset ({len(names)})")
+    for needed in ("kaggle_experiment_tree", "kaggle_sources", "kaggle_competitions_list"):
+        check(needed in names, f"including {needed}, which the kaggle CLI cannot reach"
+              if needed != "kaggle_competitions_list" else "including the list tool")
+
+    # 6. and it speaks to a real server, in a home of its own so nothing is touched
+    import tempfile as _tempfile
+    import json as _json
+    home = _tempfile.mkdtemp(prefix="ka-driver-")
+    payload = {"name": "kaggle_experiment_tree",
+               "arguments": {"action": "read", "competition": "driver-probe"}}
+    pf = _os.path.join(home, "payload.json")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    with open(pf, "w", encoding="utf-8") as handle:
+        _json.dump(payload, handle)
+    try:
+        proc = _sp.run([_sys.executable, "-B", str(driver), "--json", "@" + pf],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=180)
+        check(proc.returncode == 0 and "tree:" in (proc.stdout or ""),
+              f"and a --json @file call reaches a real server ({proc.returncode})")
+    except Exception as exc:  # noqa: BLE001
+        check(False, f"and a --json @file call reaches a real server ({exc})")
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        import shutil as _shutil
+        _shutil.rmtree(home, ignore_errors=True)
+
+
+# ------------------------------------------------ claims are held one at a time
+def check_a_claim_is_judged_against_something():
+    print("a claim is judged against something, and says what is still open")
+    import os as _os
+    import shutil as _shutil
+
+    def check(cond, label):
+        if cond:
+            ok(label)
+        else:
+            bad(f"a claim is judged against something: {label}")
+        return bool(cond)
+
+    spec = importlib.util.spec_from_file_location("_ks_claims", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"a claim is judged against something: the server module loads: {exc}")
+        return
+    et = sys.modules["experiment_tree"]
+
+    home = _mkdtemp(prefix="ka-claims-")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    comp = "zz-claims"
+    try:
+        t = et.load(comp)
+        t["tree"] = {"base": None, "nodes": {}}
+        t["revision"] = 0
+        et.save(comp, t)
+        base = {"id": "d1", "kind": "research", "parent": None,
+                "question": "which claims survive", "targets": ["code"], "verdict": "keep",
+                "reason": "three of five held against named evidence",
+                "opens": "the plan is the survivors plus the corrections", "stage": "decide"}
+
+        good = dict(base, claims=[
+            {"claim": "the advantage is the harness", "from": "survey.code cluster 3",
+             "verdict": "holds"},
+            {"claim": "the public split decides it", "from": "survey.forum topic 412",
+             "verdict": "partial", "residual": "two teams dispute it, neither reproduced"}])
+        res = et.record(comp, good, et.load(comp)["revision"], False)
+        check(res.get("ok"), f"a well-formed claim list is recorded ({res.get('problems') or ''})")
+
+        def problems_for(claims):
+            doc = et.load(comp)
+            et._current(doc)["nodes"]["bad"] = dict(base, id="bad", claims=claims)
+            return [p for p in et.validate(doc) if "claims[" in p]
+
+        for label, claims in (
+            ("a claim with no evidence named", [{"claim": "x", "verdict": "holds"}]),
+            ("a claim with no text", [{"claim": " ", "from": "s", "verdict": "holds"}]),
+            ("a claim judged by an invented verdict",
+             [{"claim": "x", "from": "s", "verdict": "probably"}]),
+            ("a partial claim with nothing left open",
+             [{"claim": "x", "from": "s", "verdict": "partial"}]),
+            ("an untested claim with nothing left open",
+             [{"claim": "x", "from": "s", "verdict": "untested"}]),
+            ("a refuted claim with nothing left open",
+             [{"claim": "x", "from": "s", "verdict": "fails"}]),
+            ("a claim entry that is not an object",
+             [{"claim": "x", "from": "s", "verdict": "holds"}, "prose"]),
+        ):
+            check(bool(problems_for(claims)), f"{label} is refused")
+        doc = et.load(comp)
+        et._current(doc)["nodes"]["bad2"] = dict(base, id="bad2", claims="a bare string")
+        check(any("'claims' must be a list" in p for p in et.validate(doc)),
+              "claims that is not a list is refused")
+
+        # a clean holds needs no residual, which is the whole reason the rule is conditional
+        check(not problems_for([{"claim": "x", "from": "s", "verdict": "holds"}]),
+              "a claim that plainly holds needs nothing further")
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        _shutil.rmtree(home, ignore_errors=True)
 
 
 def main() -> int:
@@ -5832,6 +6064,8 @@ def main() -> int:
         check_the_first_node_cannot_be_an_experiment,
         check_the_research_ladder_is_a_graph,
         check_the_ladder_leaves_nothing_orphaned,
+        check_a_wave_subagent_can_reach_kaggle,
+        check_a_claim_is_judged_against_something,
         check_stdio_is_utf8,                                # the first node cannot be an experiment
         check_search_widening,                                                       # search widening
         check_replay_semantics,                                                      # replay semantics
@@ -6395,6 +6629,7 @@ def check_transport_resilience():
             ok(label)
         else:
             bad(f"transport resilience: {label}")
+        return bool(cond)
 
     spec = importlib.util.spec_from_file_location("_ks_tr", SERVER_PY)
     ks = importlib.util.module_from_spec(spec)
@@ -6504,6 +6739,7 @@ def check_the_monitor_watches_content():
             ok(label)
         else:
             bad(f"the monitor watches content: {label}")
+        return bool(cond)
 
     spec = importlib.util.spec_from_file_location("_ks_mon", SERVER_PY)
     ks = importlib.util.module_from_spec(spec)
@@ -6640,6 +6876,7 @@ def check_a_node_keeps_its_recipe():
             ok(label)
         else:
             bad(f"a node keeps its recipe: {label}")
+        return bool(cond)
 
     spec = importlib.util.spec_from_file_location("_ks_rcp", SERVER_PY)
     ks = importlib.util.module_from_spec(spec)
@@ -6783,6 +7020,7 @@ def check_predictions_are_judged():
             ok(label)
         else:
             bad(f"predictions are judged: {label}")
+        return bool(cond)
 
     spec = importlib.util.spec_from_file_location("_ks_pred", SERVER_PY)
     ks = importlib.util.module_from_spec(spec)
@@ -6908,6 +7146,7 @@ def check_the_curriculum_gates_declare():
             ok(label)
         else:
             bad(f"the curriculum gates declare: {label}")
+        return bool(cond)
 
     spec = importlib.util.spec_from_file_location("_ks_curr", SERVER_PY)
     ks = importlib.util.module_from_spec(spec)
@@ -6975,6 +7214,7 @@ def check_a_line_can_be_abandoned():
             ok(label)
         else:
             bad(f"a line can be abandoned: {label}")
+        return bool(cond)
 
     spec = importlib.util.spec_from_file_location("_ks_aband", SERVER_PY)
     ks = importlib.util.module_from_spec(spec)

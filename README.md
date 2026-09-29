@@ -38,8 +38,9 @@ locally and in the Marketplace cache.
 | `mcp/experiment_tree.py` | the RSI tree. |
 | `mcp/deps.py` | what this machine can do, and the one route that may install something. |
 
-The other ten modules cover evidence, handoff, GitHub sync, log monitoring, plots, presence, search
-selection and structured input.
+`mcp/call_tool.py` | drives that same server as an ordinary subprocess, for a subagent that is not
+given its tools. Then the other ten modules cover evidence, handoff, GitHub sync, log monitoring,
+plots, presence, search selection and structured input.
 
 ### The four categories
 
@@ -232,7 +233,7 @@ manifest and linked from the graph, while the repository was short of it.
 ```
 .minimax-plugin/plugin.json   manifest: 19 skills, one MCP server, no apps
 servers.mcp.json              stdio server, inlined bootstrap, cwd-independent
-mcp/                          the server and its seventeen modules
+mcp/                          the server and its eighteen modules
 skills/                       19 skills, flat as the manifest requires
   categories/                 the layering, as readable pages
   _shared/                    GenUI foundation, forked once
