@@ -222,8 +222,12 @@ def is_planned(node: Any) -> bool:
 VERDICTS = ("keep", "revert", "inconclusive", "superseded")
 
 # What a research node went back to. These are the sources the plugin can actually reach, so a
-# research node cannot quietly name a source nothing can open.
-RESEARCH_TARGETS = ("forum", "code", "web", "paper", "model", "dataset", "rules", "leaderboard")
+# research node cannot quietly name a source nothing can open. `ruler` is not an external source:
+# it is the measuring surface itself, and a plateau whose remaining failures are not capability
+# gaps can only be resolved by reading it. It is a research target precisely because the question
+# it answers changes nothing and runs nothing.
+RESEARCH_TARGETS = ("forum", "code", "web", "paper", "model", "dataset", "rules", "leaderboard",
+                    "ruler")
 
 # Fields every node carries regardless of kind. `parent` is deliberately absent from this list:
 # a null parent is not a missing field, it is the way a node says "this is a brand-new direction,
@@ -281,7 +285,13 @@ EXPECTATION_VERDICTS = ("confirmed", "partial", "refuted", "unreadable")
 # a clean win. `eval` is not a substitute - it names the evaluation surface, not the training
 # bytes, and a competition that re-uploads its data changes one without touching the other.
 FACTOR_RE = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
-CONTROL_KEYS = ("seed", "budget", "eval", "retrain", "data")
+# `rebuild` is the sixth because it is the one the other five cannot express. `seed` asks whether
+# the comparison was fair; `data` asks what it was a comparison OF. Neither asks whether the thing
+# being measured was rebuilt from scratch, and in a competition that is where the variance hides -
+# feature caches, preprocessing folds and a previous round's prediction file all carry state
+# forward. A repeat arm that rebuilt any of them is not measuring seed spread, and mixing the two
+# contaminates every delta measured against it afterwards.
+CONTROL_KEYS = ("seed", "budget", "eval", "retrain", "data", "rebuild")
 VALID_RETRAIN = ("from-scratch", "re-eval")
 # What a run says it is doing when the factor arithmetic alone cannot tell. A factorial arm
 # changes two factors and means it; a repeat changes none and is measuring noise. Both are
@@ -458,12 +468,18 @@ def _now() -> str:
 
 
 def empty_tree() -> dict[str, Any]:
-    """A v3 document: current tree, archived rounds, policy registry, anchor and journal.
+    """A v3 document: current tree, archived rounds, policy registry, anchor, ruler and journal.
 
     Everything lives in one file on purpose. Separate documents for the tree and the policy
     history would mean two writers and no way to make "archive the round and deploy the new
     policy" a single atomic step. One document plus the existing tmp+replace write means a
     reader never sees half of either.
+
+    `anchor` and `ruler` answer different questions about the same metric, and that difference is
+    why both are here. The anchor says which set the search must not score on, once, and is
+    immutable afterwards. The ruler says how finely the metric can resolve a difference at all, and
+    is re-derived whenever the measuring surface changes — a stale noise floor would start
+    refusing correct experiments, so unlike the anchor it is meant to be overwritten.
     """
     return {
         "schemaVersion": 3,
@@ -472,6 +488,7 @@ def empty_tree() -> dict[str, Any]:
         "competition": "",
         "competitionKeys": [],
         "anchor": {"declared": False, "heldOut": None, "rule": "", "declaredAt": None},
+        "ruler": {},
         "tree": {"base": {"id": "", "label": "", "parent": None}, "nodes": {}},
         "rounds": [],
         "policies": {},
@@ -735,7 +752,7 @@ def _metric_sign(metric: Any) -> float:
     return -1.0 if str(metric.get("direction", "higher")).strip().lower().startswith("lower") else 1.0
 
 
-def judge_expectation(expect: Any, metric: Any) -> dict[str, Any]:
+def judge_expectation(expect: Any, metric: Any, ruler: Any = None) -> dict[str, Any]:
     """Did the run do what was predicted, or only what was hoped?
 
     This is the question "the result and the expectation agreed" has never been able to answer,
@@ -769,14 +786,34 @@ def judge_expectation(expect: Any, metric: Any) -> dict[str, Any]:
     # Normalise both sides to "up is positive", so one comparison covers higher-is-better and
     # lower-is-better without a second code path that can disagree with the first.
     moved_up = (delta * sign) > 0
+    # The floor is the largest of three terms, and the label names the terms that TIED for it
+    # rather than the terms that were merely present. A ruler below the arm's own spread did not
+    # cause this downgrade, and putting it in the explanation would send the reader off to fix
+    # the metric when the arm was the noisy thing.
     floor = at_least
+    contributors = ["declared"]
     samples = metric.get("samples") if isinstance(metric.get("samples"), dict) else {}
     std = samples.get("std")
     if std is not None:
         try:
-            floor = max(at_least, abs(float(std)))
+            arm_std = abs(float(std))
+            if arm_std > floor:
+                floor, contributors = arm_std, ["arm"]
+            elif abs(arm_std - floor) < 1e-12:
+                contributors.append("arm")
         except (TypeError, ValueError):
             pass
+    # The arm's own repeats cannot see the metric's resolution: running the same configuration ten
+    # more times on the same splits does not make the splits finer. So the ruler's floor is a third
+    # term, and it wins whenever it is the larger of the two. This is the difference between "this
+    # delta is large compared to how much this one arm moved" and "this delta is resolvable at all".
+    ruler_noise = _num((ruler or {}).get("noise")) if isinstance(ruler, dict) else None
+    if ruler_noise is not None and ruler_noise > 0:
+        if ruler_noise > floor:
+            floor, contributors = ruler_noise, ["ruler"]
+        elif abs(ruler_noise - floor) < 1e-12:
+            contributors.append("ruler")
+    floor_from = "+".join(contributors)
 
     if not moved_up:
         verdict = "refuted"
@@ -786,10 +823,20 @@ def judge_expectation(expect: Any, metric: Any) -> dict[str, Any]:
                   if delta == 0 else ""))
     elif abs(delta) < floor:
         verdict = "partial"
+        # The sentence has to name the terms that TIED for the floor, because that sentence is
+        # what the reader acts on. A floor set by the arm's own spread is fixed by repeating the
+        # arm; one set by the metric's resolution is fixed by measuring more finely. Those are
+        # different repairs, so the label is assembled from the terms rather than looked up.
+        phrases = {
+            "declared": "the declared atLeast",
+            "arm": f"this arm's own spread, from {samples.get('n')} samples",
+            "ruler": "the metric's calibrated resolution",
+        }
+        parts = [phrases[c] for c in contributors]
+        which = (parts[0] if len(parts) == 1
+                 else " and ".join(parts[:-1]) + " and " + parts[-1])
         why = (f"the direction was right ({delta:+.4g}) but the floor was not cleared: "
-               f"{abs(delta):.4g} < {floor:.4g}"
-               + (f" (the noise floor, from {samples.get('n')} samples)" if std is not None
-                  else " (the declared atLeast)"))
+               f"{abs(delta):.4g} < {floor:.4g} ({which})")
     else:
         verdict = "confirmed"
         why = (f"predicted {'up' if wanted_up else 'down'} by at least {at_least:.4g}, and it "
@@ -801,7 +848,7 @@ def judge_expectation(expect: Any, metric: Any) -> dict[str, Any]:
         "predicted": {"direction": direction, "atLeast": at_least},
         "delta": delta,
         "floor": floor,
-        "floorFrom": "noise" if std is not None else "declared",
+        "floorFrom": floor_from,
     }
 
 
@@ -2067,6 +2114,30 @@ def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]
         bad_expect = _validate_expectation("this declaration", node)
         if bad_expect:
             return {"ok": False, "code": "expect_invalid", "message": "\n".join(bad_expect)}
+        # ---- the resolution gate. A prediction the metric cannot resolve is not a weak
+        # prediction, it is an unmeasurable one: the run spends quota and comes back with a
+        # number that a re-roll would have produced too. The floor that catches this is the
+        # CALIBRATED one, not this arm's own repeats - repeating one configuration on the same
+        # splits does not make the splits finer. An uncalibrated tree is not gated, because
+        # refusing everything is not a stricter tree, it is a tree nobody uses.
+        _ruler = tree.get("ruler") or {}
+        try:
+            _noise = float(_ruler.get("noise")) if _ruler.get("noise") is not None else None
+            _asked = abs(float(node["expect"].get("atLeast")))
+        except (TypeError, ValueError):
+            _noise, _asked = None, None
+        if _noise is not None and _noise > 0 and _asked is not None and _asked < _noise:
+            return {
+                "ok": False, "code": "delta_below_resolution",
+                "message": (
+                    f"atLeast={_asked:.4g} sits inside this metric's resolution, so this run "
+                    f"cannot be told apart from a re-roll. The calibrated noise floor is "
+                    f"{_noise:.4g} (from {_ruler.get('noiseFrom') or 'a calibration'}); headroom "
+                    f"is {_ruler.get('headroom')}; the smallest delta worth acting on is "
+                    f"{_ruler.get('smallestActionable')}. More repetitions, more splits, or a "
+                    f"finer-grained metric - or declare a run whose atLeast clears {_noise:.4g}."
+                ),
+            }
 
     prepared = dict(node)
     # A declaration is always an experiment. A research node changes nothing and runs nothing,
@@ -2115,7 +2186,8 @@ def settle(competition: str, declared: str, node: dict[str, Any],
     declaration = nodes.get(declared) or {}
     if isinstance(declaration.get("expect"), dict) and not isinstance(prepared.get("expect"), dict):
         prepared["expect"] = dict(declaration["expect"])
-    judgment = judge_expectation(prepared.get("expect"), prepared.get("metric"))
+    judgment = judge_expectation(prepared.get("expect"), prepared.get("metric"),
+                                 tree.get("ruler") or {})
     prepared["expectation"] = judgment
     if prepared.get("expectOmitted") or str(declaration.get("expectOmitted") or "").strip():
         prepared.setdefault("expectOmitted", declaration.get("expectOmitted"))
@@ -3723,6 +3795,277 @@ def deploy_policy(competition: str, policy_id: str) -> dict[str, Any]:
             "note": "undoable with action=\"undo\" if this was the wrong call"}
 
 
+def _samples_consistent(samples: Any) -> bool:
+    """Do the recorded repeats add up to the mean they claim?
+
+    Same rule `validate` applies to `result == samples.mean`, applied here for the other reason:
+    a noise floor computed from two readings is not a measurement, and a mean that disagrees with
+    its own values is a transcription error rather than a spread.
+    """
+    if not isinstance(samples, dict):
+        return False
+    try:
+        n = int(samples.get("n"))
+        values = samples.get("values")
+        mean = float(samples.get("mean"))
+    except (TypeError, ValueError):
+        return False
+    if n < 3 or not isinstance(values, list) or len(values) != n:
+        return False
+    try:
+        actual = sum(float(v) for v in values) / n
+    except (TypeError, ValueError):
+        return False
+    return abs(actual - mean) <= 1e-9
+
+
+def calibrate(competition: str, ruler: Any, read_revision: Optional[int] = None) -> dict[str, Any]:
+    """Record how finely this metric can resolve a difference, and how much room is left.
+
+    The anchor answers "which set may I not score on". This answers the other question, and it is
+    the expensive one to get wrong: a run declared at a delta the metric cannot resolve spends a
+    real quota slot and returns a number a re-roll would have produced too.
+
+    Three requirements, and each one exists to stop this action degenerating into a field the
+    caller fills with a number it made up:
+
+    - at least three repeats, whose values agree with the mean they claim. Two readings do not
+      describe a spread.
+    - a noise figure, taken from those repeats when the caller does not state one.
+    - at least one of `seedSpread` / `rebuildSpread`. One without the other does not say which
+      layer the variance came from, and the two call for opposite remedies: a wide seed spread
+      wants more repetitions, a wide rebuild spread wants the rebuild taken out of the measured
+      path, because adding repetitions to the wrong layer measures nothing new.
+
+    Unlike the anchor, this is meant to be overwritten. A stale noise floor starts refusing
+    correct experiments, which is worse than having none.
+    """
+    tree = load(competition)
+    if read_revision is not None and int(read_revision) != int(tree["revision"]):
+        return {"ok": False, "code": "stale_read",
+                "message": f"the tree has changed since you read it (you read revision "
+                           f"{read_revision}, it is now {tree['revision']}). Read it again."}
+    if not isinstance(ruler, dict):
+        return {"ok": False, "code": "bad_ruler", "message": "calibrate takes a ruler object"}
+    bad: list[str] = []
+    samples = ruler.get("samples")
+    if samples is not None and not _samples_consistent(samples):
+        bad.append("ruler.samples must carry n >= 3 with a values list of that length whose mean "
+                   "equals the stated mean - a spread computed from two readings is not a "
+                   "measurement, and a mean that disagrees with its own values is a typo")
+    try:
+        seed = ruler.get("seedSpread")
+        rebuild = ruler.get("rebuildSpread")
+        seed = float(seed) if seed is not None else None
+        rebuild = float(rebuild) if rebuild is not None else None
+    except (TypeError, ValueError):
+        seed, rebuild = None, None
+    if seed is None and rebuild is None:
+        bad.append("give seedSpread (repeats that varied only the seed) or rebuildSpread (repeats "
+                   "that rebuilt the measured artifact - feature cache, preprocessing fold, a "
+                   "previous round's prediction file), or both. Without one of these the variance "
+                   "has no known layer and there is no way to tell which remedy applies.")
+    try:
+        noise = float(ruler["noise"]) if ruler.get("noise") is not None else None
+    except (TypeError, ValueError):
+        noise = None
+    if noise is None and isinstance(samples, dict) and samples.get("std") is not None:
+        try:
+            noise = abs(float(samples["std"]))
+        except (TypeError, ValueError):
+            noise = None
+    if noise is None or noise <= 0:
+        bad.append("ruler.noise is required, and must be above zero. State it, or supply samples "
+                   "with a std for it to be taken from. A noise floor of zero would gate nothing "
+                   "while looking like a calibration.")
+    if bad:
+        return {"ok": False, "code": "bad_ruler", "message": "\n".join(bad)}
+
+    before = tree.get("ruler") or {}
+    stored = {
+        "noise": noise,
+        "noiseFrom": ruler.get("noiseFrom") or "calibration samples",
+        "samples": samples,
+        "headroom": ruler.get("headroom"),
+        "smallestActionable": ruler.get("smallestActionable"),
+        "seedSpread": seed,
+        "rebuildSpread": rebuild,
+        "calibratedAt": _now(),
+    }
+    tree["ruler"] = stored
+    tree["revision"] = int(tree["revision"]) + 1
+    _journal(tree, "calibrate", {"ruler": before}, {"ruler": stored})
+    save(competition, tree)
+    missing = [k for k in ("headroom", "smallestActionable") if stored.get(k) is None]
+    return {"ok": True, "ruler": stored, "revision": tree["revision"],
+            "sideCheck": ruler_side_check(tree, stored),
+            "gates": ("declare now refuses an atLeast below this noise floor"
+                      if noise > 0 else "this calibration gates nothing"),
+            "incomplete": missing,
+            "note": (f"declare quotes {', '.join(missing)} when it refuses. Until you fill them in, "
+                     f"the refusal states the floor but cannot say how much room is left or how "
+                     f"small a win would be worth acting on."
+                     if missing else None)}
+
+
+def ruler_side_check(tree: dict[str, Any], ruler: dict[str, Any]) -> dict[str, Any]:
+    """Do the search side and the held-out side read alike, or is the split buying a re-roll?
+
+    Not the same question the anchor asks. The anchor stops a node from scoring on the held-out
+    set; this asks whether the two sides are even comparable, because a split chosen to look good
+    buys regression to the mean - the cases were selected for being extreme, so they drift back
+    toward the population on a re-run and the gain was never there.
+    """
+    noise = ruler.get("noise")
+    if noise is None:
+        return {"checked": False, "why": "no calibrated noise floor, so there is no band to "
+                                         "compare the two sides against"}
+    anchor = tree.get("anchor") or {}
+    if not anchor.get("declared") or not anchor.get("heldOut"):
+        return {"checked": False, "why": "no anchor is declared, so there is no second side to "
+                                         "compare against"}
+    inner = _current(tree)
+    nodes = inner.get("nodes") or {}
+    by_split: dict[str, list[float]] = {}
+    for node in nodes.values():
+        if not isinstance(node, dict) or is_planned(node) or is_abandoned(node):
+            continue
+        metric = node.get("metric")
+        if not isinstance(metric, dict):
+            continue
+        split = str(metric.get("split") or "").strip()
+        if not split:
+            continue
+        try:
+            by_split.setdefault(split, []).append(float(metric.get("result")))
+        except (TypeError, ValueError):
+            continue
+    held = str(anchor.get("heldOut"))
+    named = {k: v for k, v in by_split.items() if held.lower() in k.lower()}
+    others = {k: v for k, v in by_split.items() if held.lower() not in k.lower()}
+    if not named or not others:
+        return {"checked": False, "why": "both sides need settled nodes carrying metric.split "
+                                         "before the two can be compared"}
+    def mean(xs: list[float]) -> float:
+        return sum(xs) / len(xs)
+    h = mean(named[next(iter(named))])
+    o = mean([v for xs in others.values() for v in xs])
+    gap = abs(h - o)
+    return {"checked": True, "holdoutMean": h, "searchMean": o, "gap": gap,
+            "withinNoise": gap < float(noise),
+            "holdoutNodes": sum(len(v) for v in named.values()),
+            "searchNodes": sum(len(v) for v in others.values()),
+            "note": ("the two sides read alike, so the split is not selecting for extremes"
+                     if gap < float(noise) else
+                     f"the sides differ by {gap:.4g}, which is outside the noise floor "
+                     f"{float(noise):.4g}. A split chosen by score buys regression to the mean, "
+                     f"so expect the held-out side to drift back on its own. Re-draw before the "
+                     f"next run rather than after several have been read as wins.")}
+
+
+def regrade(competition: str, read_revision: Optional[int] = None) -> dict[str, Any]:
+    """Re-judge every recorded node under the CURRENT calibration, and report what moved.
+
+    This does not rewrite anything. The tree is append-only and ids are never reused - that is the
+    whole reason it can be cited as evidence - so re-judging is not editing history, it is running
+    the same stored results past a different ruler and keeping both answers.
+
+    Read it when the measuring surface changed underneath the tree: a new CV scheme, a different
+    judging rule, or the discovery that the public leaderboard was already being fitted to.
+
+    Two outcomes, and they are not the same. If the prior best is still best but its lead has
+    collapsed into the noise, the earlier rounds were real and the resolution was not there to see
+    them - keep going. If the ranking flipped, the search was optimising something the previous
+    calibration could not distinguish, and the honest move is back to the baseline.
+    """
+    tree = load(competition)
+    if read_revision is not None and int(read_revision) != int(tree["revision"]):
+        return {"ok": False, "code": "stale_read",
+                "message": f"the tree has changed since you read it (you read revision "
+                           f"{read_revision}, it is now {tree['revision']}). Read it again."}
+    ruler = tree.get("ruler") or {}
+    inner = _current(tree)
+    nodes = inner.get("nodes") or {}
+    prior: dict[str, str] = {}
+    now: dict[str, str] = {}
+    detail: dict[str, Any] = {}
+    for nid, node in sorted(nodes.items()):
+        if not isinstance(node, dict) or is_planned(node) or is_abandoned(node):
+            continue
+        stored = node.get("expectation")
+        expect, metric = node.get("expect"), node.get("metric")
+        if not isinstance(expect, dict) and not isinstance(metric, dict):
+            continue  # a declaration, not a failed prediction
+        if isinstance(stored, dict) and stored.get("verdict"):
+            prior[nid] = str(stored["verdict"])
+        judgment = judge_expectation(expect, metric, ruler)
+        now[nid] = str(judgment.get("verdict"))
+        detail[nid] = {"prior": prior.get(nid), "now": now[nid],
+                       "delta": judgment.get("delta"), "floor": judgment.get("floor"),
+                       "floorFrom": judgment.get("floorFrom")}
+    flipped = sorted(nid for nid in now if nid in prior and prior[nid] != now[nid])
+    if not prior:
+        return {"ok": False, "code": "nothing_to_regrade",
+                "message": "no settled node carries a judged prediction yet, so there is nothing "
+                           "to re-judge. Settle at least one run first."}
+    if not ruler:
+        return {"ok": False, "code": "no_ruler",
+                "message": "this tree has no calibration, so re-judging would reproduce the "
+                           "verdicts already stored. Run action=\"calibrate\" first - the point of "
+                           "this action is to see the same results under a different floor."}
+
+    def best_of(verdicts: dict[str, str]) -> tuple[str, float] | None:
+        best: tuple[str, float] | None = None
+        for nid, v in verdicts.items():
+            node = nodes.get(nid) or {}
+            if node.get("verdict") != "keep" or v != "confirmed":
+                continue
+            d = _num((node.get("metric") or {}).get("delta"))
+            if best is None or d > best[1]:
+                best = (nid, d)
+        return best
+
+    base_id = (inner.get("base") or {}).get("id") or ""
+    base_result = _num(((nodes.get(base_id) or {}).get("metric") or {}).get("result"))
+    prior_best, now_best = best_of(prior), best_of(now)
+    noise = float(ruler.get("noise") or 0.0)
+    prior_lead = (prior_best[1] - base_result) if prior_best else None
+    now_lead = (now_best[1] - base_result) if now_best else None
+    collapsed = bool(prior_lead is not None and now_lead is not None
+                     and prior_lead >= 0 and now_lead < noise)
+    still_best = bool(prior_best and now_best and prior_best[0] == now_best[0])
+    if not prior_best:
+        recommendation = ("nothing was a kept, confirmed node under the old calibration, so there "
+                          "is no ranking to have flipped. Treat the stored verdicts as unreadable "
+                          "and read the new ones as the first real judgement.")
+    elif still_best and not collapsed:
+        recommendation = (f"{prior_best[0]} is still the best node and its lead over the baseline "
+                          f"({now_lead:+.4g}) is still outside the noise floor ({noise:.4g}). The "
+                          f"earlier rounds hold.")
+    elif still_best:
+        recommendation = (f"{prior_best[0]} is still best, but its lead over the baseline collapsed "
+                          f"from {prior_lead:+.4g} to {now_lead:+.4g}, which is inside the noise "
+                          f"floor ({noise:.4g}). The gains were probably real and the old "
+                          f"calibration could not resolve them. Keep the node, and size the next "
+                          f"experiment against the resolution rather than the last delta.")
+    else:
+        recommendation = (f"the ranking flipped: {prior_best[0]} was best and "
+                          f"{now_best[0] if now_best else 'nothing'} is best under the current "
+                          f"calibration. Those rounds were optimising something this metric could "
+                          f"not distinguish. Start again from the baseline rather than building "
+                          f"on the old best.")
+    return {"ok": True, "revision": tree["revision"], "rulerNoise": noise,
+            "nodesJudged": len(now), "rankingFlipped": bool(prior_best and now_best
+                                                            and prior_best[0] != now_best[0]),
+            "verdictsFlipped": len(flipped), "flippedNodes": flipped,
+            "priorBest": prior_best[0] if prior_best else None,
+            "currentBest": now_best[0] if now_best else None,
+            "priorBestStillBest": still_best,
+            "leadOverBaseline": {"baseline": base_result, "prior": prior_lead, "now": now_lead},
+            "collapsesIntoNoise": collapsed,
+            "recommendation": recommendation, "detail": detail}
+
+
 def declare_anchor(competition: str, held_out: str, rule: str = "") -> dict[str, Any]:
     tree = load(competition)
     tree["anchor"] = {
@@ -4461,6 +4804,8 @@ def status(competition: str) -> dict[str, Any]:
         "deployedPolicy": tree.get("deployedPolicy"),
         "anchor": anchor,
         "anchorDeclared": bool(anchor.get("declared")),
+        "ruler": tree.get("ruler") or {},
+        "rulerCalibrated": (tree.get("ruler") or {}).get("noise") is not None,
         "efc": board.get("efc"),
         "failureLayers": board.get("failureLayers"),
         "treeTooSmallForNovelty": len(families) < MIN_FAMILIES_FOR_NOVELTY,

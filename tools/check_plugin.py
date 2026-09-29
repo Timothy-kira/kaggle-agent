@@ -5212,10 +5212,34 @@ def check_predictions_are_judged():
           == "refuted", "no movement at all is refuted, not a weak win")
     noisy = et.judge_expectation({"direction": "up", "atLeast": 0.01},
                                  up(0.02, {"n": 4, "mean": 0.32, "std": 0.05}))
-    check(noisy["verdict"] == "partial" and noisy["floorFrom"] == "noise",
-          "a measured noise floor above the prediction downgrades it to partial")
+    check(noisy["verdict"] == "partial" and noisy["floorFrom"] == "arm",
+          "a measured arm spread above the prediction downgrades it to partial")
     check(et.judge_expectation(None, up(0.05))["verdict"] == "unreadable",
           "no prediction is unreadable, not silently fine")
+
+    # the ruler is a third term in the floor, and it wins when it is the larger
+    # A tight arm on a coarse metric is still unresolvable: repeating one configuration on the
+    # same splits does not make the splits finer.
+    ruled = et.judge_expectation({"direction": "up", "atLeast": 0.01},
+                                 up(0.02, {"n": 4, "mean": 0.32, "std": 0.005}),
+                                 {"noise": 0.05})
+    check(ruled["verdict"] == "partial" and ruled["floorFrom"] == "ruler"
+          and abs(ruled["floor"] - 0.05) < 1e-9,
+          "a tight arm on a coarse metric is still partial - the ruler's floor wins")
+    both = et.judge_expectation({"direction": "up", "atLeast": 0.01},
+                                up(0.02, {"n": 4, "mean": 0.32, "std": 0.05}),
+                                {"noise": 0.03})
+    check(both["floorFrom"] == "arm" and abs(both["floor"] - 0.05) < 1e-9,
+          "when both terms are present the larger one sets the floor and says so")
+    check(et.judge_expectation({"direction": "up", "atLeast": 0.01}, up(0.02),
+                               {"noise": 0.05})["verdict"] == "partial",
+          "the ruler alone downgrades a prediction, with no samples recorded on the arm")
+    check(et.judge_expectation({"direction": "up", "atLeast": 0.06}, up(0.07),
+                               {"noise": 0.05})["verdict"] == "confirmed",
+          "a calibrated metric does not refuse a prediction that clears it")
+    check(et.judge_expectation({"direction": "up", "atLeast": 0.01}, up(0.02),
+                               {"noise": 0})["verdict"] == "confirmed",
+          "a zero or absent ruler noise is not a floor - an uncalibrated tree behaves as before")
 
     # declare refuses a node with no prediction, and accepts one with
     home = _mkdtemp(prefix="ka-check-pred-")

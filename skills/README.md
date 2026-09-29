@@ -26,13 +26,14 @@ own procedure. This page tells you which file to open and how the pieces connect
 | 9 | [`rsi-experiment-tree`](rsi-experiment-tree/SKILL.md) | experiment | Repeated iteration: which change gained what, which side effects it caused, what to branch next, when to stop. The tree is a **read-gated, validated DAG** and a **replay simulator**. |
 | 10 | [`scientific-plotting`](scientific-plotting/SKILL.md) | experiment | After a run produced a result. Six chart types from a bundled pure-stdlib engine, because a number alone does not say whether the delta is real. |
 | 11 | [`ablation-design`](ablation-design/SKILL.md) | experiment | Choosing the next batch, or when a fast-growing tree has become hard to read. One variable per node, honest replication, recorded cost. Adapted from MIT-licensed upstream work. |
-| 12 | [`handoff`](handoff/SKILL.md) | collab | Work spans more than one session or more than one agent. Derived from the tree so it cannot claim a base the tree does not have. |
-| 13 | [`github-auth`](github-auth/SKILL.md) | collab | A handoff should reach another machine and this machine cannot authenticate. Device flow, PAT fallback, saying "local only" honestly. |
-| 14 | [`presence-mode`](presence-mode/SKILL.md) | collab | Whether to ask the user or auto-decide. Present (the default) asks early and often; away takes recorded, reversible defaults and stops on a budget. |
-| 15 | [`evidence-sources`](evidence-sources/SKILL.md) | collab | A conclusion rests on something that was read. Store the paper or repo once, capture the sentence that carries the claim, link it to the node with an explicit relation. |
-| 16 | [`genui-scenarios`](genui-scenarios/SKILL.md) | collab | A decision is pending and a widget may carry it — or a state is being reported and a widget would be noise. Decides which. |
+| 12 | [`ruler-audit`](ruler-audit/SKILL.md) | experiment | Before declaring the next experiment, or when the tree has gone flat. Whether the metric can resolve the change at hand, the two variance layers kept apart because they call for opposite remedies, a hard task told from one this leaderboard happens to punish, and whether a stall belongs to the approach or to the ruler. Adapted from Apache-2.0 upstream work. |
+| 13 | [`handoff`](handoff/SKILL.md) | collab | Work spans more than one session or more than one agent. Derived from the tree so it cannot claim a base the tree does not have. |
+| 14 | [`github-auth`](github-auth/SKILL.md) | collab | A handoff should reach another machine and this machine cannot authenticate. Device flow, PAT fallback, saying "local only" honestly. |
+| 15 | [`presence-mode`](presence-mode/SKILL.md) | collab | Whether to ask the user or auto-decide. Present (the default) asks early and often; away takes recorded, reversible defaults and stops on a budget. |
+| 16 | [`evidence-sources`](evidence-sources/SKILL.md) | collab | A conclusion rests on something that was read. Store the paper or repo once, capture the sentence that carries the claim, link it to the node with an explicit relation. |
+| 17 | [`genui-scenarios`](genui-scenarios/SKILL.md) | collab | A decision is pending and a widget may carry it — or a state is being reported and a widget would be noise. Decides which. |
 
-| 17 | [`technical-report`](technical-report/SKILL.md) | collab | A finished run the user is satisfied with, or an explicit request for a writeup. Writes the report from the tree's own ledger: the kept chain and its cost, the refuted list by failure layer, the literature already cited with its supporting sentence, and every figure the data supports. Publishes the release to GitHub or a Kaggle dataset and puts both links in. |
+| 18 | [`technical-report`](technical-report/SKILL.md) | collab | A finished run the user is satisfied with, or an explicit request for a writeup. Writes the report from the tree's own ledger: the kept chain and its cost, the refuted list by failure layer, the literature already cited with its supporting sentence, and every figure the data supports. Publishes the release to GitHub or a Kaggle dataset and puts both links in. |
 
 ### By category
 
@@ -40,7 +41,7 @@ own procedure. This page tells you which file to open and how the pieces connect
 |---|---|---|
 | [identity](categories/identity.md) | Who am I acting as, and which quota pays? | `kaggle-cli`, `kaggle-account-switch`, `account-rename-visualizer` |
 | [research](categories/research.md) | What is this competition, and what do I build? | `kaggle-competition-research`, `approach-decision` |
-| [experiment](categories/experiment.md) | How do I run it, watch it, and learn from it? | `experiment-launch`, `log-monitor`, `log-monitor-visualizer`, `rsi-experiment-tree`, `scientific-plotting`, `ablation-design` |
+| [experiment](categories/experiment.md) | How do I run it, watch it, and learn from it? | `experiment-launch`, `log-monitor`, `log-monitor-visualizer`, `rsi-experiment-tree`, `scientific-plotting`, `ablation-design`, `ruler-audit` |
 | [collab](categories/collab.md) | How does the work outlive this session, and when should I ask? | `handoff`, `github-auth`, `presence-mode`, `evidence-sources`, `genui-scenarios` |
 
 ## No reusable subagent

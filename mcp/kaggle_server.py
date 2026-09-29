@@ -943,8 +943,8 @@ TOOLS: list[dict[str, Any]] = [
                     "enum": ["read", "consider", "diagnose", "declare", "settle", "prune",
                              "abandon", "goal", "stage", "branch", "alias", "record", "plan",
                              "status", "select", "board", "ablate", "replay", "compare", "policy",
-                             "round_close", "anchor", "undo", "analyze", "review", "report",
-                             "audit-report"],
+                             "round_close", "anchor", "calibrate", "regrade", "undo", "analyze",
+                             "review", "report", "audit-report"],
                     "default": "read",
                     "description": (
                         "read = the tree plus the readRevision that authorises one write "
@@ -981,7 +981,14 @@ TOOLS: list[dict[str, Any]] = [
                         "compare = score several policies and pick the best, never worse than the "
                         "deployed one; policy = create/use/deploy/list exploration policies; "
                         "round_close = archive the current round into the replay pool; anchor = "
-                        "declare/query the held-out evaluation set; undo = step back the last "
+                        "declare/query the held-out evaluation set; calibrate = record how finely "
+                        "this metric resolves a difference, from at least three measured repeats "
+                        "and a stated spread layer, after which declare REFUSES an atLeast that "
+                        "sits inside that floor - the resolution of a metric is not improved by "
+                        "repeating one arm on the same splits; regrade = re-judge every settled "
+                        "node under the CURRENT calibration and report whether the ranking flipped "
+                        "or the prior best merely lost its lead to the noise, without rewriting "
+                        "anything (the tree stays append-only); undo = step back the last "
                         "state change, including restoring a pruned node."
                     ),
                 },
@@ -1022,6 +1029,18 @@ TOOLS: list[dict[str, Any]] = [
                 "held_out": {
                     "type": "string",
                     "description": "For action='anchor': the evaluation set held back from evolution.",
+                },
+                "ruler": {
+                    "type": "string",
+                    "description": (
+                        "For action='calibrate': how finely this metric resolves a difference, as a "
+                        "JSON object in one string. Needs at least three repeats whose values agree "
+                        "with their mean, and at least one of seedSpread / rebuildSpread so the "
+                        "variance is known to come from a layer - a repeat that varied only the "
+                        "seed and a repeat that rebuilt the measured artifact call for opposite "
+                        "remedies. Omit noise and it is taken from samples.std. Once stored, "
+                        "declare refuses an atLeast that sits inside it."
+                    ),
                 },
                 "rule": {
                     "type": "string",
@@ -1314,7 +1333,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.30.5"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.31.0"}
 
 
 def run_kaggle(args: list[str], account: str = "") -> tuple[int, str, str]:
@@ -1410,6 +1429,26 @@ def _node_argument(value: Any) -> Optional[dict[str, Any]]:
     if not text or not text.startswith(("{", "[")):
         return None
     return jsonarg.structured(value, "node", dict, NODE_JSON_EXAMPLE)
+
+
+# `ruler` is an object with no second reading, so it does not share `_node_argument`'s ambiguity
+# handling - but it still has to name ITSELF when it fails to parse, for the same reason: a message
+# about the wrong parameter sends the caller looking in the wrong place.
+RULER_JSON_EXAMPLE = (
+    'e.g. {"noise":0.031,"noiseFrom":"cv-splits","seedSpread":0.031,'
+    '"samples":{"n":5,"values":[0.66,0.70,0.68,0.71,0.69],"mean":0.688,"std":0.018},'
+    '"headroom":0.28,"smallestActionable":0.02} - one JSON object in one string. noise is taken '
+    'from samples.std when omitted; seedSpread or rebuildSpread is required either way.'
+)
+
+
+def _ruler_argument(value: Any) -> Optional[dict[str, Any]]:
+    """Read `ruler` as the calibration object, or None when it is absent or not an object."""
+    if isinstance(value, dict):
+        return value
+    if value is None or not str(value).strip():
+        return None
+    return jsonarg.structured(value, "ruler", dict, RULER_JSON_EXAMPLE)
 
 
 def _node_id(value: Any) -> str:
@@ -2852,6 +2891,74 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 f"held-out: {a.get('heldOut')}\nrule: {a.get('rule')}\ndeclared: {a.get('declaredAt')}",
                 "")
 
+        if action == "calibrate":
+            _rev = (int(args["read_revision"])
+                    if args.get("read_revision") is not None else None)
+            _r = _ruler_argument(args.get("ruler"))
+            if _r is None:
+                st = experiment_tree.status(comp)
+                cal = st.get("ruler") or (experiment_tree.load(comp).get("ruler") or {})
+                if not cal or cal.get("noise") is None:
+                    return text_response(
+                        "kaggle_experiment_tree calibrate status", 0,
+                        "no calibration. Without one, a run can be declared at a delta this metric "
+                        "cannot resolve: it spends a quota slot and returns a number a re-roll "
+                        "would have produced too. action=\"calibrate\" takes ruler= as a JSON "
+                        "object in one string - at least three repeats, plus seedSpread or "
+                        "rebuildSpread so the variance is known to come from a layer.", "")
+                return text_response(
+                    "kaggle_experiment_tree calibrate status", 0,
+                    f"noise floor: {cal.get('noise')} (from {cal.get('noiseFrom')})\n"
+                    f"headroom: {cal.get('headroom')}\n"
+                    f"smallest actionable delta: {cal.get('smallestActionable')}\n"
+                    f"seed spread: {cal.get('seedSpread')}   rebuild spread: {cal.get('rebuildSpread')}\n"
+                    f"calibrated: {cal.get('calibratedAt')}\n"
+                    "declare now refuses an atLeast below this floor. Unlike the anchor, this is "
+                    "meant to be overwritten - a stale floor would refuse correct experiments.", "")
+            res = experiment_tree.calibrate(comp, _r, read_revision=_rev)
+            if not res.get("ok"):
+                return text_response("kaggle_experiment_tree calibrate", 2, "",
+                                     str(res.get("message") or res.get("code") or "calibrate failed"))
+            lines = [f"noise floor: {res['ruler']['noise']} (from {res['ruler']['noiseFrom']})",
+                     f"headroom: {res['ruler']['headroom']}",
+                     f"smallest actionable delta: {res['ruler']['smallestActionable']}",
+                     f"seed spread: {res['ruler']['seedSpread']}   "
+                     f"rebuild spread: {res['ruler']['rebuildSpread']}"]
+            sc = res.get("sideCheck") or {}
+            if sc.get("checked"):
+                lines.append(
+                    f"holdout mean {sc['holdoutMean']:.4g} vs search mean {sc['searchMean']:.4g} "
+                    f"(gap {sc['gap']:.4g}, floor {res['ruler']['noise']:.4g}) - "
+                    + ("the two sides read alike." if sc["withinNoise"] else sc["note"]))
+            else:
+                lines.append(f"side check skipped: {sc.get('why')}")
+            if res.get("note"):
+                lines.append(res["note"])
+            return text_response("kaggle_experiment_tree calibrate", 0, "\n".join(lines), "")
+
+        if action == "regrade":
+            res = experiment_tree.regrade(
+                comp, read_revision=(int(args["read_revision"])
+                                    if args.get("read_revision") is not None else None))
+            if not res.get("ok"):
+                return text_response("kaggle_experiment_tree regrade", 2, "",
+                                     str(res.get("message") or res.get("code") or "regrade failed"))
+            lead = res.get("leadOverBaseline") or {}
+            lines = [
+                f"re-judged {res['nodesJudged']} settled node(s) against a noise floor of "
+                f"{res['rulerNoise']:.4g}",
+                f"verdicts that moved: {res['verdictsFlipped']}"
+                + (f" ({', '.join(res['flippedNodes'][:8])})" if res["flippedNodes"] else ""),
+                f"best under the old calibration: {res.get('priorBest')}   "
+                f"best now: {res.get('currentBest')}   "
+                f"ranking flipped: {res.get('rankingFlipped')}",
+                f"lead over the baseline: was {lead.get('prior')} now {lead.get('now')}"
+                + ("   (collapsed into the noise)" if res.get("collapsesIntoNoise") else ""),
+                "",
+                res["recommendation"],
+            ]
+            return text_response("kaggle_experiment_tree regrade", 0, "\n".join(lines), "")
+
         if action == "undo":
             res = experiment_tree.undo(comp)
             if not res.get("ok"):
@@ -2936,6 +3043,16 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 "anchor:   "
                 + (f"held-out = {anchor.get('heldOut')}" if anchor.get("declared")
                    else "NOT DECLARED")
+            )
+            cal = st.get("ruler") or {}
+            lines.append(
+                "ruler:    "
+                + (f"noise floor = {cal.get('noise')} (from {cal.get('noiseFrom')})   "
+                   f"headroom = {cal.get('headroom')}   "
+                   f"smallest actionable = {cal.get('smallestActionable')}"
+                   if st.get("rulerCalibrated") else
+                   "NOT CALIBRATED - declare will accept any atLeast, including one this metric "
+                   "cannot resolve")
             )
             efc = st.get("efc") or {}
             if efc.get("rawQuotaHours"):

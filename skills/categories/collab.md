@@ -88,3 +88,4 @@ by that visualizer, `gate` = decides whether a widget is warranted, `loops` = fe
 | `technical-report` -> needs `handoff` | the handoff and the report are two documents off one tree - continuity versus publication | <!-- edge:technical-report->handoff:needs --> |
 | `technical-report` -> dispatches `github-auth` | the code repository link in the report, when this machine cannot authenticate | <!-- edge:technical-report->github-auth:dispatches --> |
 | `technical-report` => enforces `dataset-publisher` | artifacts too large for a git host go to a Kaggle dataset, and the report carries the URL | <!-- edge:technical-report->dataset-publisher:enforces --> |
+| `ruler-audit` -> needs `evidence-sources` | the two variance layers and the five stall buckets are adapted from published work, and an adaptation whose source cannot be re-read is indistinguishable from a guess | <!-- edge:ruler-audit->evidence-sources:needs --> |

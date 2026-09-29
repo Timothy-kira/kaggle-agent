@@ -951,6 +951,28 @@ is a research decision, made while you still know what the training and evaluati
 not you. This plugin can enforce disjointness; it cannot supply independence. Say so in the plan's
 known limits rather than implying the problem is solved.
 
+**Calibrate in the same place, or not at all.** The anchor decides which set the search may not
+score on; it says nothing about whether the search set can resolve the differences the search is
+going to look for. A split can be perfectly disjoint and still be too quiet — and a tree with no
+noise floor will read every delta below it as a win.
+
+So when you declare the anchor, declare the floor beside it:
+
+```
+kaggle_experiment_tree action="calibrate" ruler={"noise": <measured>, "noiseFrom": "<how it was measured>",
+  "seedSpread": <...>, "rebuildSpread": <...>, "headroom": <...>, "smallestActionable": <...>}
+```
+
+Both numbers come from the same conversation with the user about what the measurement surface is,
+and **both belong here, at the end of research, while you still know what those surfaces are** —
+for the same reason the split does. A noise floor derived after the first three experiments have
+already been read against it is a description of those experiments, not a calibration.
+
+If nothing has been run twice yet, there is no measured floor, and that is worth saying plainly in
+the plan rather than shipping a number that looks like a measurement. `ruler-audit` is the skill
+that derives it from repeats that already exist, and it refuses a floor computed from two
+readings.
+
 ## Then: write the plan, and offer the handoff
 
 The main agent produces a plan, in this order:

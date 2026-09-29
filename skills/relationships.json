@@ -1,5 +1,5 @@
 {
-  "version": "1.30.5",
+  "version": "1.31.0",
   "comment": "Single source of truth for how the skills, agents and required sources in this package relate, AND for the live state those relationships are gated on. The per-category 'Bound edges' tables in each INDEX.md are RENDERED from this file, and tools/check_plugin.py fails the build when they drift. Edit this file, then re-run the checker, or it will tell you exactly which table is stale.",
   "state": {
     "_comment": "Live state, declared here and read through its own tool. The graph does not store the values - it points at the readers - so it cannot drift from reality. Read it all with kaggle_presence action='status', which reports the graph state and the ask-or-auto answer together. Anything unreadable fails toward asking: the cost of a wrong 'ask' is a pause, the cost of a wrong 'auto' is an unattended irreversible action.",
@@ -347,6 +347,13 @@
       "category": "experiment",
       "reference": "kaggle_experiment_tree",
       "note": "action='ablate' on kaggle_experiment_tree. Reads the recorded factor sets back and reports the comparison set rather than a table of remembered deltas: every edge isolating exactly one factor in whichever direction it was run, the interactions four DISTINCT arms make computable, the effects measured only alongside another factor, the arms whose controls disagree and therefore have no attributable delta, and the noise floor implied by any configuration run twice. It refuses to invent a baseline, to report an interaction from a degenerate triple where A+B is reachable as both the pair and a solo arm, and to attribute a delta across disagreeing controls."
+    },
+    {
+      "id": "ruler-audit",
+      "kind": "skill",
+      "category": "experiment",
+      "path": "skills/ruler-audit/SKILL.md",
+      "note": "Metric resolution and stall triage, adapted from Anthropic claude-api shared/evals (Apache-2.0), NOTICE in its own directory. Owns the question the tree cannot ask: whether the metric can resolve the change being declared. calibrate records the noise floor with the two variance layers apart (seedSpread wants more repetitions, rebuildSpread wants the rebuild out of the measured path); declare then refuses an atLeast below that floor; settle judges against the largest of the declared floor, the arm spread and the calibrated one, naming in floorFrom only the terms that tied; regrade re-judges stored results under a new ruler without writing. Its four other stall buckets are not new mechanisms - artifact gap, harness (failureLayer), structural (parent null) and variance (partial + ablate repeats) already exist - and pointing at those existing ones is the point of the table. Only judge-disagreement is new, and it is the one worth stopping for."
     }
   ],
   "edges": [
@@ -763,6 +770,30 @@
       "to": "dataset-publisher",
       "type": "enforces",
       "when": "artifacts too large for a git host go to a Kaggle dataset, and the report carries the URL"
+    },
+    {
+      "from": "ruler-audit",
+      "to": "rsi-experiment-tree",
+      "type": "gate",
+      "when": "a declaration below the noise floor cannot be read, and a verdict below it is partial rather than confirmed; the tree enforces the arithmetic, this skill says what to do when the arithmetic refuses"
+    },
+    {
+      "from": "ruler-audit",
+      "to": "ablation-design",
+      "type": "gate",
+      "when": "design a batch of ablations whose deltas are expected to clear the floor, or say up front that the batch can only measure variance"
+    },
+    {
+      "from": "kaggle-competition-research",
+      "to": "ruler-audit",
+      "type": "needs",
+      "when": "the held-out set is declared at plan time, so the calibration that decides whether the search split is comparable is written then too, not on the day of the first declare"
+    },
+    {
+      "from": "ruler-audit",
+      "to": "evidence-sources",
+      "type": "needs",
+      "when": "the two variance layers and the five stall buckets are adapted from published work, and an adaptation whose source cannot be re-read is indistinguishable from a guess"
     }
   ]
 }

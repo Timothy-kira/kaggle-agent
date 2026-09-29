@@ -84,6 +84,17 @@ def load(name, path):
     return mod
 
 
+# The modules under mcp/, by import name. `_run_repo_check` clears these around every call:
+# a check that exercises the enforcement code imports them by name, and Python satisfies the
+# second import in a process from sys.modules rather than from the copy. Enumerated rather
+# than globbed so that a NEW module under mcp/ cannot silently join the cached set - a
+# wildcard would be correct on the day it was written and wrong the day someone adds a file.
+_MCP_MODULES = {
+    "agent_server", "credentials", "deps", "experiment_tree", "github_sync", "graphstate",
+    "handoff", "kaggle_cli", "kaggle_server", "logmonitor", "plots", "presence",
+    "searchengine", "sources", "structured",
+}
+
 # Each case returns (guarantee_label, holds?) for exactly one guarantee.
 CASES = []
 
@@ -769,8 +780,26 @@ def _run_repo_check(which, break_it=None):
     edge table, an icon-dark.png that is a byte-identical copy, a function nobody calls, a
     doubled carriage return. Only the DATA is faked - the instrument is the same file the
     suite runs, loaded fresh with its path globals repointed at the copy.
+
+    THE MODULE CACHE IS CLEARED, AND WITHOUT THAT EVERY COUNTER-EXAMPLE AGAINST A CODE CHECK
+    IS VACUOUS.  A check that exercises the enforcement code - `check_predictions_are_judged`
+    does, by importing `kaggle_server`, which imports `experiment_tree` - gets that import
+    satisfied from `sys.modules` on the SECOND call in the same process. The first call
+    cached the PRISTINE copy, and it is not a different module: the import name is the same,
+    so the broken run silently measured the unbroken one and reported zero failures. The
+    cached entry also points into the temp directory this function deletes in its `finally`,
+    so by the second call the file behind the module is gone.
+
+    Both outcomes are the same failure: the instrument printed OK and exercised nothing. The
+    clear has to bracket the call, and it has to restore whatever was there before - this
+    suite imports the real `mcp/` modules itself for its non-repo cases, and dropping those
+    would make a later case test a different program than the one the suite ships.
     """
     tmp = _mkdtemp(prefix="ka-ce-repo-")
+    saved = {k: v for k, v in sys.modules.items()
+             if k == "experiment_tree" or k in _MCP_MODULES or k.startswith("_ks_pred")}
+    for name in list(saved):
+        del sys.modules[name]
     try:
         root = Path(tmp) / "repo"
         shutil.copytree(ROOT, root, ignore=_IGNORE)
@@ -784,6 +813,10 @@ def _run_repo_check(which, break_it=None):
             getattr(cp, which)()
         return list(cp.failures)
     finally:
+        for name in [k for k in sys.modules
+                     if k == "experiment_tree" or k in _MCP_MODULES or k.startswith("_ks_pred")]:
+            del sys.modules[name]
+        sys.modules.update(saved)
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -1694,6 +1727,81 @@ def _(ks, js):
 def _(ks, js):
     return _catches("check_relationships", _claim_two_questions_again,
                     "appears exactly once")
+
+
+# ------------------------------------------------- the calibrated floor
+#
+# These target `check_predictions_are_judged`, which is the first check in this suite that
+# exercises the ENFORCEMENT code rather than the prose: it imports kaggle_server, which
+# imports experiment_tree, so the break has to land in mcp/experiment_tree.py and the module
+# cache has to be cleared for the break to be visible at all. That second half is not a
+# detail of the fixture - it is the reason the cases below were printing OK while measuring
+# nothing until `_run_repo_check` started clearing sys.modules. Read the note there before
+# adding a case against any check that imports from mcp/.
+
+_RULER_FLOOR_LINE = ('    ruler_noise = _num((ruler or {}).get("noise")) '
+                     'if isinstance(ruler, dict) else None')
+
+
+def _edit_experiment_tree(root, old, new, what):
+    p = root / "mcp" / "experiment_tree.py"
+    text = p.read_text(encoding="utf-8")
+    if text.count(old) != 1:
+        raise AssertionError(f"fixture anchor for {what} matched {text.count(old)} times, not 1")
+    p.write_text(text.replace(old, new, 1), encoding="utf-8", newline="")
+
+
+def _drop_the_calibrated_floor(root):
+    """The judge stops hearing about the ruler, as it did before calibration existed.
+
+    This is the exact regression the third term exists to prevent: an arm whose own repeats
+    are tight is declared fine, while the metric itself cannot resolve the difference.
+    """
+    _edit_experiment_tree(root, _RULER_FLOOR_LINE, "    ruler_noise = None",
+                          "the ruler's contribution to the floor")
+
+
+def _drop_the_declared_floor(root):
+    """The floor becomes the ruler alone, so a prediction can no longer set its own floor."""
+    _edit_experiment_tree(root, "    floor = at_least\n", "    floor = 0.0\n",
+                          "the declared atLeast as the floor")
+
+
+def _tie_the_floor_label_always(root):
+    """floorFrom names every term that was PRESENT, not the ones that tied for the floor.
+
+    A ruler well below a noisy arm's spread did not cause the downgrade, and naming it sends
+    the reader off to rebuild the metric when the arm was the noisy thing.
+    """
+    _edit_experiment_tree(
+        root,
+        '    floor_from = "+".join(contributors)\n',
+        '    floor_from = "+".join(c for c in ("declared", "arm", "ruler")\n'
+        '                           if c in contributors or c == "ruler" and ruler_noise is not None)\n',
+        "the tied-contributor label")
+
+
+@case("checker: a judge that ignores the calibrated floor is caught",
+      "a tight arm on a coarse metric is still partial - repeating one configuration on the "
+      "same splits does not make the splits finer")
+def _(ks, js):
+    return _catches("check_predictions_are_judged", _drop_the_calibrated_floor,
+                    "the ruler's floor wins",
+                    "the ruler alone downgrades a prediction")
+
+
+@case("checker: a prediction that sets its own floor is caught",
+      "the declared atLeast is one term among three, not the whole floor")
+def _(ks, js):
+    return _catches("check_predictions_are_judged", _drop_the_declared_floor,
+                    "short of the floor, is partial")
+
+
+@case("checker: naming a ruler that lost the floor is caught",
+      "floorFrom names the terms that tied for it, so the remedy named is the one that applies")
+def _(ks, js):
+    return _catches("check_predictions_are_judged", _tie_the_floor_label_always,
+                    "the larger one sets the floor and says so")
 
 
 if __name__ == "__main__":

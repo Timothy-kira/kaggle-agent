@@ -35,6 +35,7 @@ so neither file depends on the other being read.
 | `presence-mode` | whether the user is at the keyboard or has stepped away | *no widget yet — a sentence in text* | — | `kaggle_presence action="get"` |
 | `handoff` | where the next agent runs (same machine vs another) | *no widget yet — offer as a form in text* | — | `handoff_status` |
 | `experiment-launch` | which account pays / engine / accelerator | *no widget yet — offer as a form in text* | — | `kaggle_quota`, `kaggle_accounts` |
+| `ruler-audit` | which measurement surface, and accepting the noise floor as the run's floor | *no widget yet — a sentence in text* | — | `kaggle_experiment_tree action="calibrate"` |
 | `kaggle-competition-research` | anything mid-sweep | **never a widget** — a sweep is not a choice | — | — |
 | `rsi-experiment-tree`, `approach-decision`, `kaggle-cli`, `github-auth` | state reports | **never a widget** — these report, they do not offer | — | — |
 

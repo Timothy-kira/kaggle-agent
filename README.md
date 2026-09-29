@@ -4,7 +4,7 @@
 
 English · [中文](README.zh-CN.md)
 
-**29 tools · 17 skills · 2 optional dependencies (plotting only).**
+**29 tools · 18 skills · 2 optional dependencies (plotting only).**
 
 ---
 
@@ -13,7 +13,7 @@ English · [中文](README.zh-CN.md)
 | | |
 |---|---|
 | **Tools** | 29 — quotas, kernels, competitions, accounts, the RSI experiment tree, the evidence store, plotting, presence |
-| **Skills** | 17 — grouped as identity, research, experiment, collab |
+| **Skills** | 18 — grouped as identity, research, experiment, collab |
 | **Subagents** | none — both halves of a research sweep run in the main thread |
 | **Runtime dependencies** | none. The server is Python standard library only. `numpy` and `matplotlib` are needed for figures and nothing else, and the plotting skill checks before it draws and offers to install on your word. The Kaggle CLI itself is probed once at startup and, if absent, is offered through the same install path — never installed without you saying yes. |
 
@@ -190,10 +190,10 @@ manifest and linked from the graph, while the repository was short of it.
 ## Repository layout
 
 ```
-.minimax-plugin/plugin.json   manifest: 17 skills, one MCP server, no apps
+.minimax-plugin/plugin.json   manifest: 18 skills, one MCP server, no apps
 servers.mcp.json              stdio server, inlined bootstrap, cwd-independent
 mcp/                          the server and its fifteen modules
-skills/                       17 skills, flat as the manifest requires
+skills/                       18 skills, flat as the manifest requires
   categories/                 the layering, as readable pages
   _shared/                    GenUI foundation, forked once
   relationships.json          the single source of truth for how skills connect
