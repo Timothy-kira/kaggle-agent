@@ -3627,7 +3627,7 @@ def check_research_preflight():
           "the preflight reports GitHub transport without a network call")
 
     # Ordering is the whole point: a preflight written after wave 1 is a paragraph, not a gate.
-    wave_idx = lowered.find("## the shape: two waves")
+    wave_idx = lowered.find("## the ladder")
     pre_idx = lowered.find("## preflight")
     if check(pre_idx != -1, "the skill has a preflight section"):
         check(wave_idx != -1 and pre_idx < wave_idx,
@@ -4380,10 +4380,10 @@ def check_the_waves_ask_what_to_search():
           "the skill no longer tells an agent to push on without asking when nobody is watching")
 
     marks = {
-        "shape": text.find("## The shape"),
-        "ask1": text.find("## Before the wave: ask what it is for"),
-        "launch": text.find("## Launch a wave"),
-        "ask2": text.find("## After the first wave: ask what it changed"),
+        "shape": text.find("## The ladder"),
+        "ask1": text.find("### Before the wave: ask what it is for"),
+        "launch": text.find("### Launch a wave"),
+        "ask2": text.find("### After the first wave: ask what it changed"),
         "engine": text.find('kaggle_search_engine action="ask"'),
     }
     check(all(v > 0 for v in marks.values()),
@@ -4404,9 +4404,9 @@ def check_the_waves_ask_what_to_search():
     # from the first one: "like the first" is a pointer, and a reader who skipped that section
     # is exactly the one who needs the sentence. Offsets are taken on the same text that is
     # sliced - positions found in the un-collapsed source mean nothing in the collapsed copy.
-    f_ask1 = flat.find("## Before the wave: ask what it is for")
-    f_launch = flat.find("## Launch a wave")
-    f_ask2 = flat.find("## After the first wave: ask what it changed")
+    f_ask1 = flat.find("### Before the wave: ask what it is for")
+    f_launch = flat.find("### Launch a wave")
+    f_ask2 = flat.find("### After the first wave: ask what it changed")
     f_engine = flat.find('kaggle_search_engine action="ask"')
     for label, lo, hi in (("first", f_ask1, f_launch), ("second", f_ask2, f_engine)):
         check(lo > 0 and hi > lo, f"the {label} question's section is locatable")
@@ -4492,8 +4492,8 @@ def check_the_method_note_has_a_home():
     # Scoped to the data section. The review gate's table also names action="declare" - for a
     # different, allowed thing - so searching the whole skill for the token is satisfied by
     # that row and passes even after the data run's own declaration was deleted.
-    a = text.find("## Wave 1 subagent 4")
-    b = text.find("### When the account that may read the data")
+    a = text.find("### survey.data")
+    b = text.find("#### When the account that may read the data")
     check(a > 0 and b > a, "the data subagent's section is locatable")
     if a > 0 and b > a:
         sec = _flat(text[a:b])
@@ -4602,8 +4602,8 @@ def check_wave_two_is_single_threaded():
     # The wave-2 span, bounded by its own headings, must hold no task() at all. Checking the
     # whole file instead would pass while a dispatch sat inside the forensics section, which is
     # exactly where it used to be.
-    w2 = flat.find("Wave 2, step 1")
-    end = flat.find("Before any experiment: declare the held-out set")
+    w2 = flat.find("## field — the general search")
+    end = flat.find("## anchor — before any experiment")
     check(w2 > 0 and end > w2, "the wave-2 span is locatable between its own two headings")
     if w2 > 0 and end > w2:
         check("task(" not in flat[w2:end],
@@ -5219,8 +5219,8 @@ def check_published_method_is_local_and_the_veto_respects_a_boundary():
     # ---- 5. the research skill runs it in the seam, in one thread, and the upstream sources
     # stay untouched
     rtext = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
-    i_pub = rtext.find("## Between the waves")
-    i_w2 = rtext.find("## Wave 2, step 1")
+    i_pub = rtext.find("## method — published experimental method")
+    i_w2 = rtext.find("## field — the general search")
     check(i_pub > 0, "the research skill has a section for it")
     if i_pub > 0 and i_w2 > 0:
         check(i_pub < i_w2, "and that section sits before wave 2, which is the whole point")
@@ -5495,6 +5495,326 @@ def check_the_matcher_finds_the_right_body_and_says_when_it_finds_nothing():
         shutil.rmtree(home, ignore_errors=True)
 
 
+# ------------------------------------------------ the research ladder: nine rungs, on the tree
+# A skill that describes a sequence in prose, and a tree that cannot see it, are two different
+# claims about the same work and only one of them survives the session. This asserts the tree
+# half: a ladder can be declared, its kinds are checked, and declare refuses an experiment the
+# ladder cannot support. It also asserts the gate this one refines is still reachable - a new
+# check placed AFTER the old one would leave the old one's zero-node case permanently shadowed,
+# which is how a branch of a gate becomes code that can no longer run.
+LADDER_RUNGS = ("survey", "method", "field", "forensics",
+                "converge", "anchor", "decide", "smoke", "scale")
+LADDER_EVIDENCE = {"survey", "method", "field", "forensics", "anchor"}
+
+
+def _ladder_with_kinds():
+    out = []
+    for name in LADDER_RUNGS:
+        kind = "research" if name in ("survey", "method", "field", "forensics") else (
+            "anchor" if name == "anchor" else "build")
+        out.append({"name": name, "kind": kind, "passesWhen": f"{name} happened"})
+    return out
+
+
+def check_the_research_ladder_is_a_graph():
+    print("the research ladder is a graph the tree can read")
+    import os as _os
+    import shutil as _shutil
+
+    def check(cond, label):
+        # Returns the condition, because a guard below reads `if not check(...)` and a check
+        # that always returns None turns that guard into an unconditional return - which is
+        # exactly what happened the first time this was written.
+        if cond:
+            ok(label)
+        else:
+            bad(f"the research ladder is a graph: {label}")
+        return bool(cond)
+
+    spec = importlib.util.spec_from_file_location("_ks_ladder", SERVER_PY)
+    ks = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(ROOT / "mcp"))
+    try:
+        spec.loader.exec_module(ks)
+    except Exception as exc:  # noqa: BLE001
+        bad(f"the research ladder is a graph: the server module loads: {exc}")
+        return
+    et = sys.modules["experiment_tree"]
+
+    def fresh(name):
+        home = _mkdtemp(prefix="ka-ladder-")
+        _os.environ["KAGGLE_AGENT_HOME"] = home
+        t = et.load(name)
+        t["tree"] = {"base": None, "nodes": {}}
+        t["revision"] = 0
+        et.save(name, t)
+        return home
+
+    def rev(comp):
+        return et.load(comp)["revision"]
+
+    def land(comp, stage, nid=None, verdict="keep"):
+        return et.record(comp, {
+            "id": nid or f"r-{stage}", "kind": "research", "parent": None,
+            "question": f"what is established at {stage}", "targets": ["code"],
+            "verdict": verdict, "reason": f"the {stage} step was run and filed here",
+            "opens": f"the {stage} vocabulary now exists for the next rung",
+            "stage": stage,
+        }, rev(comp), False)
+
+    def experiment(comp, stage="smoke", **extra):
+        node = {"id": "e1", "kind": "experiment", "parent": None,
+                "change": "swap the prompt format",
+                "hypothesis": "the shared harness format is what the top notebooks converge on",
+                "reason": "survey said four independent forks share one prompt format",
+                "metric": {"name": "score", "parent": 0.0, "result": 0.0, "delta": 0.0},
+                "verdict": "keep", "stage": stage, "diagnosis": "none",
+                "diagnosisReason": "nothing has run on this competition yet",
+                "expect": {"direction": "up", "atLeast": 0.01},
+                "operator": "prompt-format", "family": "format"}
+        node.update(extra)
+        return et.declare(comp, node, rev(comp))
+
+    homes = []
+    try:
+        # 1. a rung carries a kind, and curriculum_of hands it back
+        comp = "zz-ladder-kind"
+        homes.append(fresh(comp))
+        bad_kind = et.set_stage(comp, curriculum=[{"name": "a"}, {"name": "b", "kind": "survery"}],
+                                read_revision=rev(comp))
+        check(bad_kind.get("code") == "bad_stage_kind",
+              f"a kind outside research/anchor/build is refused on the way in "
+              f"({bad_kind.get('code')})")
+        res = et.set_stage(comp, curriculum=_ladder_with_kinds(), read_revision=rev(comp))
+        check(res.get("ok"), f"the nine-rung ladder is declared ({res.get('message')})")
+        kinds = {s["name"]: s["kind"] for s in et.curriculum_of(et.load(comp))}
+        check(all(kinds.get(r) == ("research" if r in LADDER_EVIDENCE and r != "anchor"
+                                   else "anchor" if r == "anchor" else "build")
+                  for r in LADDER_RUNGS),
+              f"curriculum_of hands back every rung's kind ({sorted(set(kinds.values()))})")
+
+        # 2. an empty tree under that ladder names the rungs instead of saying nothing
+        comp = "zz-ladder-incomplete"
+        homes.append(fresh(comp))
+        et.set_stage(comp, curriculum=_ladder_with_kinds(), read_revision=rev(comp))
+        got = experiment(comp)
+        check(got.get("code") == "research_incomplete",
+              f"declaring an experiment on an unswept competition is refused "
+              f"({got.get('code')})")
+        check([m["name"] for m in got.get("missing") or []] ==
+              ["survey", "method", "field", "forensics", "anchor"],
+              f"and the refusal names every rung still missing "
+              f"({[m['name'] for m in got.get('missing') or []]})")
+        check(got.get("code") != "no_research_yet",
+              "a declared ladder does not fall through to the older first-node rule")
+
+        # 3. landing the rungs clears them, and the anchor rung is cleared by the anchor itself
+        for stage in ("survey", "method", "field", "forensics"):
+            check(land(comp, stage).get("ok"), f"the {stage} rung is satisfied by its node")
+        mid = experiment(comp)
+        check([m["name"] for m in mid.get("missing") or []] == ["anchor"],
+              f"only the anchor rung is left ({[m['name'] for m in mid.get('missing') or []]})")
+        et.declare_anchor(comp, "the public test split only", "")
+        cleared = experiment(comp, stage="smoke")
+        check(cleared.get("code") != "research_incomplete",
+              "declaring the held-out set satisfies the anchor rung, and the gate is clear")
+
+        # 4. an inconclusive node still satisfies a rung: the gate asks whether a step was
+        #    considered, not whether it paid off
+        comp = "zz-ladder-inconclusive"
+        homes.append(fresh(comp))
+        et.set_stage(comp, curriculum=_ladder_with_kinds(), read_revision=rev(comp))
+        for stage in ("survey", "method", "field", "forensics"):
+            land(comp, stage)
+        et.declare_anchor(comp, "the public test split only", "")
+        r = land(comp, "method", nid="r-method-2", verdict="inconclusive")
+        check(r.get("ok"), "a rung met by an inconclusive node records fine")
+        et.set_stage(comp, stage="smoke", read_revision=rev(comp))
+        cleared2 = experiment(comp, stage="smoke")
+        check(cleared2.get("code") != "research_incomplete",
+              "and an inconclusive node is enough - considered is what is required")
+
+        # 5. the escape hatch, which is about the experiment rather than about the sweep
+        comp = "zz-ladder-override"
+        homes.append(fresh(comp))
+        et.set_stage(comp, curriculum=_ladder_with_kinds(), read_revision=rev(comp))
+        over = experiment(comp, stageOverride="the user ran this sweep by hand earlier this week")
+        check(over.get("code") != "research_incomplete",
+              f"a stated override gets past the rung gate ({over.get('code')})")
+
+        # 6. THE OLD GATE IS STILL ALIVE, both ways. This is the check that fails first if the
+        #    new one is ever moved above it wholesale.
+        comp = "zz-ladder-none"
+        homes.append(fresh(comp))
+        old = experiment(comp)
+        check(old.get("code") == "no_research_yet",
+              f"a tree with no ladder still gets the older first-node rule ({old.get('code')})")
+        comp = "zz-ladder-buildonly"
+        homes.append(fresh(comp))
+        et.set_stage(comp, curriculum=[{"name": "smoke"}, {"name": "scale"}],
+                     read_revision=rev(comp))
+        build_only = experiment(comp)
+        check(build_only.get("code") == "no_research_yet",
+              f"and a ladder of nothing but build rungs does not swallow it either "
+              f"({build_only.get('code')})")
+
+        # 7. a research node may not name a rung the ladder does not hold, because an
+        #    unrecognised name satisfies nothing while still reading as evidence
+        comp = "zz-ladder-bogus"
+        homes.append(fresh(comp))
+        et.set_stage(comp, curriculum=_ladder_with_kinds(), read_revision=rev(comp))
+        doc = et.load(comp)
+        et._current(doc)["nodes"]["r-bogus"] = {
+            "id": "r-bogus", "kind": "research", "parent": None, "stage": "not-a-rung",
+            "question": "q", "targets": ["code"], "verdict": "keep",
+            "reason": "a sweep nobody can place on the ladder", "opens": "o"}
+        probs = et.validate(doc)
+        check(any("not a rung of this" in p for p in probs),
+              "a research node whose stage is not a rung is a structural problem")
+        doc2 = et.load("zz-ladder-none")
+        doc2["curriculum"] = _ladder_with_kinds()
+        check(not any("not a rung of this" in p for p in et.validate(doc2)),
+              "and on a tree with no curriculum, stage is free text and is not policed")
+    finally:
+        _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        for h in homes:
+            _shutil.rmtree(h, ignore_errors=True)
+
+
+# ------------------------------------------------ what the ladder must not leave behind
+# Every dependency this skill used to declare only as prose, and every skill it used to name
+# only in the dependency graph, is now a rung. That is only true if the two representations
+# are still in step, and nothing about a rename or a deleted section announces itself: the edge
+# still exists, the paragraph is simply gone, and the next reader is worse off than before.
+# So this asserts the absence of orphans mechanically - an edge that names no rung, a rung with
+# no section, and a top-level section that belongs to neither.
+def check_the_ladder_leaves_nothing_orphaned():
+    print("the ladder leaves nothing orphaned")
+    import re as _re
+    import xml.etree.ElementTree as _ET
+
+    def check(cond, label):
+        # Returns the condition, for the same reason as the other one: a guard that reads this
+        # must not be silenced by a check that answers None either way.
+        if cond:
+            ok(label)
+        else:
+            bad(f"the ladder leaves nothing orphaned: {label}")
+        return bool(cond)
+
+    rel, err = parse_json(REL)
+    if not check(rel is not None, f"relationships.json parses ({err or 'ok'})"):
+        return
+    body = _skill_body(RESEARCH_SKILL.read_text(encoding="utf-8"))
+
+    # 9. every out-edge names a rung, and the rung is a real one
+    out_edges = [e for e in rel["edges"] if e["from"] == "kaggle-competition-research"]
+    check(len(out_edges) >= 11,
+          f"the research skill still declares its dependencies ({len(out_edges)} out-edges)")
+    unowned = [f"{e['to']}" for e in out_edges if not e.get("rung")]
+    check(not unowned, f"every out-edge names the rung that owns it ({unowned or 'all do'})")
+    # .get, not []: a missing rung is the failure this function exists to report, so indexing
+    # it would raise KeyError on the very input that is broken and the suite would say nothing.
+    bogus = sorted({e.get("rung") for e in out_edges
+                    if e.get("rung") is not None and e.get("rung") not in LADDER_RUNGS})
+    check(not bogus, f"and no edge names a rung that is not on the ladder ({bogus or 'none'})")
+    orphans = sorted({e.get("rung") for e in out_edges if e.get("rung")} - set(LADDER_RUNGS))
+    check(not orphans, f"an owned rung is a real rung, not an invented one ({orphans or 'none'})")
+
+    # 10. each rung is a section that names itself
+    heads = _re.findall(r"^##\s+(.+?)\s*$", body, _re.M)
+    for rung in LADDER_RUNGS:
+        check(any(h.startswith(rung) for h in heads),
+              f"the ladder's {rung} rung has a section of its own")
+
+    # 11. no top-level section belongs to nobody. The graph section is the one heading allowed
+    #     to carry no rung, because it IS the graph - and it is allowed exactly once, so a new
+    #     unassigned section is still caught.
+    GRAPH = "The ladder"
+    graph_heads = [h for h in heads if h.startswith(GRAPH)]
+    check(len(graph_heads) == 1,
+          f"the graph itself is drawn once, in one section (found {len(graph_heads)})")
+    known = ("preflight",) + LADDER_RUNGS + (GRAPH,)
+    unassigned = [h for h in heads if not h.startswith(known)]
+    check(not unassigned,
+          f"every top-level section belongs to a rung or draws the graph ({unassigned or 'all do'})")
+
+    # 12. the sections appear in ladder order, so the file reads the same way the tree does
+    order = [h for h in heads if h.startswith(LADDER_RUNGS)]
+    check(order == sorted(order, key=lambda h: LADDER_RUNGS.index(h.split(" ")[0]
+                                                                 .split("—")[0].strip())),
+          f"the rung sections are in ladder order ({[h.split(' ')[0].split('—')[0].strip() for h in order]})")
+    owned = {e.get("rung") for e in out_edges if e.get("rung")}
+    check([r for r in LADDER_RUNGS if r in owned] ==
+          [h.split(" ")[0].split("—")[0].strip() for h in order if
+           h.split(" ")[0].split("—")[0].strip() in owned],
+          "and the rungs that own a dependency are the ones the file presents in that order")
+
+    # 13. the fan-out exists exactly once, and it belongs to survey
+    #     The graph block is located AFTER the heading that introduces it. Taking the first
+    #     fenced block in the file found the preflight's two-line handoff_status call, which
+    #     has no forks in it, and the check passed vacuously on the wrong block.
+    tail = body[body.index("## The ladder"):] if "## The ladder" in body else ""
+    graph = _re.search(r"```\n(.*?)```", tail, _re.S)
+    if check(graph is not None, "the ladder is drawn as a graph block"):
+        g = graph.group(1)
+        forks = [i for i, line in enumerate(g.split("\n")) if "├─" in line or "└─" in line]
+        check(len(forks) >= 4,
+              f"the graph fans out to survey's four subagents ({len(forks)} child rows)")
+        lo = next((i for i, line in enumerate(g.split("\n")) if line.strip().startswith("survey ")), -1)
+        hi = next((i for i, line in enumerate(g.split("\n")) if line.strip().startswith("method ")), -1)
+        check(lo >= 0 and hi > lo and forks and all(lo < i < hi for i in forks),
+              "and every fork hangs off survey, with nothing else allowed to fan out")
+        check(body.count("FANS OUT") == 1,
+              f"the graph says where the one fan-out is, once ({body.count('FANS OUT')})")
+
+    # 14. the picture matches the graph it illustrates
+    svg_path = ROOT / "docs" / "architecture-research-pipeline.svg"
+    if check(svg_path.is_file(), "the pipeline diagram is in docs/"):
+        try:
+            tree = _ET.fromstring(svg_path.read_text(encoding="utf-8"))
+            check(True, "and it is well-formed XML")
+            painted = "".join(tree.itertext())
+        except _ET.ParseError as exc:
+            check(False, f"and it is well-formed XML ({exc})")
+            painted = ""
+        for rung in LADDER_RUNGS:
+            check(rung in painted, f"the diagram draws the {rung} rung")
+        check("preflight" in painted, "the diagram shows where the sweep is entered")
+
+    # 15. the naming the orphan audit found missing is now in the prose, not only in the graph
+    for name, why in (("kdense-methods", "the skill that carries the download gates"),
+                      ("kaggle-cli", "the tools the subagents read Kaggle through"),
+                      ("evidence-sources", "where a read is made to land")):
+        check(name in body, f"{name} is named in the body, not only in the dependency graph "
+                            f"({why})")
+
+    # 16. the ladder the skill hands the model is the ladder the code enforces. Both were
+    #     written by hand on opposite sides of a tool boundary, and nothing about a rename on
+    #     one side would announce itself on the other - the sweep would be taught against a
+    #     ladder whose kind names the code would reject.
+    import json as _json
+    block = _re.search(r"curriculum=\[(.*?)\n\]", body, _re.S)
+    if check(block is not None, "the skill shows the ladder it wants declared"):
+        try:
+            shown = _json.loads("[" + block.group(1) + "\n]")
+            check(True, "and what it shows is valid JSON, so the model can copy it")
+        except ValueError as exc:
+            check(False, f"and what it shows is valid JSON ({exc})")
+            shown = []
+        if shown:
+            check([r.get("name") for r in shown] == list(LADDER_RUNGS),
+                  f"in the same order as the code enforces "
+                  f"({[r.get('name') for r in shown]})")
+            want = [("research" if r in ("survey", "method", "field", "forensics")
+                     else "anchor" if r == "anchor" else "build") for r in LADDER_RUNGS]
+            check([r.get("kind") for r in shown] == want,
+                  f"with the kinds the code accepts "
+                  f"({[r.get('kind') for r in shown]})")
+            check(all(str(r.get("passesWhen") or "").strip() for r in shown),
+                  "and every rung says what passing it looks like")
+
+
 def main() -> int:
     check_manifest()
     # Each check is run inside a try, because one that raises used to abort the whole suite:
@@ -5510,6 +5830,8 @@ def main() -> int:
         check_graph_state,                                                           # graph state
         check_tree_enforcement,                                                      # tree enforcement
         check_the_first_node_cannot_be_an_experiment,
+        check_the_research_ladder_is_a_graph,
+        check_the_ladder_leaves_nothing_orphaned,
         check_stdio_is_utf8,                                # the first node cannot be an experiment
         check_search_widening,                                                       # search widening
         check_replay_semantics,                                                      # replay semantics

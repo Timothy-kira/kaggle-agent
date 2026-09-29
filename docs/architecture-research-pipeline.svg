@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="960" viewBox="0 0 1120 960" role="img" aria-label="The nine-rung research ladder declared on the experiment tree">
+<rect width="1120" height="960" fill="#FFFFFF"/>
+<text x="40.0" y="46.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="27" font-weight="650" fill="#000000" text-anchor="start" opacity="1.0">The research ladder: nine rungs, one graph</text>
+<text x="40.0" y="76.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">Declared on the tree with action="stage". One rung fans out. Four of them ask for evidence; the rest ask only for order.</text>
+
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.0" markerHeight="7.0" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#5A5A5A"/></marker>
+<marker id="ahb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.0" markerHeight="7.0" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0072B2"/></marker>
+</defs>
+
+<rect x="40.0" y="112.0" width="340.0" height="66.0" rx="8" fill="#F2F5F7" stroke="#5A5A5A" stroke-width="1.6"/>
+<rect x="40.0" y="112.0" width="5" height="66.0" fill="#5A5A5A"/>
+<text x="58.0" y="139.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">preflight</text>
+<text x="58.0" y="160.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">handoff_status, the tree, the slug, the account.</text>
+<text x="58.0" y="172.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">The entry, not a rung: enter where you are.</text>
+
+<rect x="40.0" y="192.0" width="340.0" height="66.0" rx="8" fill="#EEF5FA" stroke="#0072B2" stroke-width="1.6"/>
+<rect x="40.0" y="192.0" width="5" height="66.0" fill="#0072B2"/>
+<text x="58.0" y="219.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">survey</text>
+<text x="58.0" y="240.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">Wave 1. The one rung that fans out, to four</text>
+<text x="58.0" y="252.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">subagents in one response. Never elsewhere.</text>
+
+<rect x="40.0" y="272.0" width="340.0" height="66.0" rx="8" fill="#FDF1EC" stroke="#D55E00" stroke-width="1.6"/>
+<rect x="40.0" y="272.0" width="5" height="66.0" fill="#D55E00"/>
+<text x="58.0" y="299.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">method</text>
+<text x="58.0" y="320.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">Published method. Bypassable, not optional: a</text>
+<text x="58.0" y="332.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">failed fetch is recorded, and that meets it.</text>
+
+<rect x="40.0" y="352.0" width="340.0" height="66.0" rx="8" fill="#EEF5FA" stroke="#0072B2" stroke-width="1.6"/>
+<rect x="40.0" y="352.0" width="5" height="66.0" fill="#0072B2"/>
+<text x="58.0" y="379.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">field</text>
+<text x="58.0" y="400.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">The general search, over multiple rounds, in the</text>
+<text x="58.0" y="412.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">main thread. Queries come from survey.</text>
+
+<rect x="40.0" y="432.0" width="340.0" height="66.0" rx="8" fill="#EEF5FA" stroke="#0072B2" stroke-width="1.6"/>
+<rect x="40.0" y="432.0" width="5" height="66.0" fill="#0072B2"/>
+<text x="58.0" y="459.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">forensics</text>
+<text x="58.0" y="480.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">GitHub, Hugging Face and arXiv genuinely read,</text>
+<text x="58.0" y="492.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">each one landed on a node. Same thread.</text>
+
+<rect x="40.0" y="512.0" width="340.0" height="66.0" rx="8" fill="#EDF7F3" stroke="#009E73" stroke-width="1.6"/>
+<rect x="40.0" y="512.0" width="5" height="66.0" fill="#009E73"/>
+<text x="58.0" y="539.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">converge</text>
+<text x="58.0" y="560.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">Produce before you narrow. Order only: no node</text>
+<text x="58.0" y="572.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">is asked for, and none is wanted.</text>
+
+<rect x="40.0" y="592.0" width="340.0" height="66.0" rx="8" fill="#F7FAFB" stroke="#CC79A7" stroke-width="1.6"/>
+<rect x="40.0" y="592.0" width="5" height="66.0" fill="#CC79A7"/>
+<text x="58.0" y="619.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">anchor</text>
+<text x="58.0" y="640.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">The held-out set, declared before anything is</text>
+<text x="58.0" y="652.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">measured on it, with the calibration written.</text>
+
+<rect x="40.0" y="672.0" width="340.0" height="66.0" rx="8" fill="#EDF7F3" stroke="#009E73" stroke-width="1.6"/>
+<rect x="40.0" y="672.0" width="5" height="66.0" fill="#009E73"/>
+<text x="58.0" y="699.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">decide</text>
+<text x="58.0" y="720.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">Fork or write, then Gate A, Gate B, the plan,</text>
+<text x="58.0" y="732.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">and the handoff.</text>
+
+<rect x="40.0" y="752.0" width="340.0" height="66.0" rx="8" fill="#EDF7F3" stroke="#009E73" stroke-width="1.6"/>
+<rect x="40.0" y="752.0" width="5" height="66.0" fill="#009E73"/>
+<text x="58.0" y="779.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">smoke</text>
+<text x="58.0" y="800.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">The smallest run that can fail for a reason</text>
+<text x="58.0" y="812.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">about the idea rather than the plumbing.</text>
+
+<rect x="40.0" y="832.0" width="340.0" height="66.0" rx="8" fill="#EDF7F3" stroke="#009E73" stroke-width="1.6"/>
+<rect x="40.0" y="832.0" width="5" height="66.0" fill="#009E73"/>
+<text x="58.0" y="859.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">scale</text>
+<text x="58.0" y="880.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">The real one, on the calibration the ruler wrote.</text>
+
+<line x1="210.0" y1="178.0" x2="210.0" y2="188.0" stroke="#5A5A5A" stroke-width="1.6" marker-end="url(#ah)"/>
+<line x1="210.0" y1="258.0" x2="210.0" y2="268.0" stroke="#0072B2" stroke-width="1.6" marker-end="url(#ahb)"/>
+<line x1="210.0" y1="338.0" x2="210.0" y2="348.0" stroke="#D55E00" stroke-width="1.6" marker-end="url(#ah)"/>
+<line x1="210.0" y1="418.0" x2="210.0" y2="428.0" stroke="#0072B2" stroke-width="1.6" marker-end="url(#ahb)"/>
+<line x1="210.0" y1="498.0" x2="210.0" y2="508.0" stroke="#0072B2" stroke-width="1.6" marker-end="url(#ahb)"/>
+<line x1="210.0" y1="578.0" x2="210.0" y2="588.0" stroke="#009E73" stroke-width="1.6" marker-end="url(#ah)"/>
+<line x1="210.0" y1="658.0" x2="210.0" y2="668.0" stroke="#CC79A7" stroke-width="1.6" marker-end="url(#ah)"/>
+<line x1="210.0" y1="738.0" x2="210.0" y2="748.0" stroke="#009E73" stroke-width="1.6" marker-end="url(#ah)"/>
+<line x1="210.0" y1="818.0" x2="210.0" y2="828.0" stroke="#009E73" stroke-width="1.6" marker-end="url(#ah)"/>
+
+<text x="440.0" y="200.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">survey — the only legal fan-out</text>
+<line x1="380.0" y1="225.0" x2="405.0" y2="225.0" stroke="#0072B2" stroke-width="1.6"/>
+<line x1="405.0" y1="254.0" x2="405.0" y2="488.0" stroke="#0072B2" stroke-width="1.6"/>
+<line x1="405.0" y1="254.0" x2="436.0" y2="254.0" stroke="#0072B2" stroke-width="1.6" marker-end="url(#ahb)"/>
+<line x1="405.0" y1="332.0" x2="436.0" y2="332.0" stroke="#0072B2" stroke-width="1.6" marker-end="url(#ahb)"/>
+<line x1="405.0" y1="410.0" x2="436.0" y2="410.0" stroke="#0072B2" stroke-width="1.6" marker-end="url(#ahb)"/>
+<line x1="405.0" y1="488.0" x2="436.0" y2="488.0" stroke="#0072B2" stroke-width="1.6" marker-end="url(#ahb)"/>
+
+<rect x="440.0" y="222.0" width="640.0" height="64.0" rx="8" fill="#EEF5FA" stroke="#0072B2" stroke-width="1.6"/>
+<rect x="440.0" y="222.0" width="5" height="64.0" fill="#0072B2"/>
+<text x="458.0" y="248.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">survey.code</text>
+<text x="580.0" y="248.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">what competitors actually run, and where the movement is</text>
+<text x="458.0" y="270.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">Independent of the other three, which is the whole reason four processes are worth it.</text>
+
+<rect x="440.0" y="300.0" width="640.0" height="64.0" rx="8" fill="#EEF5FA" stroke="#0072B2" stroke-width="1.6"/>
+<rect x="440.0" y="300.0" width="5" height="64.0" fill="#0072B2"/>
+<text x="458.0" y="326.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">survey.forum</text>
+<text x="580.0" y="326.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">what participants are told, and what they are asking about</text>
+<text x="458.0" y="348.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">A trimmed wave must name the member it dropped, or it is indistinguishable from a full one.</text>
+
+<rect x="440.0" y="378.0" width="640.0" height="64.0" rx="8" fill="#EEF5FA" stroke="#0072B2" stroke-width="1.6"/>
+<rect x="440.0" y="378.0" width="5" height="64.0" fill="#0072B2"/>
+<text x="458.0" y="404.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">survey.rules</text>
+<text x="580.0" y="404.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">the macro facts and the constraints that bound every later rung</text>
+<text x="458.0" y="426.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">The cheapest rung to skip and the one that makes the other three legible.</text>
+
+<rect x="440.0" y="456.0" width="640.0" height="64.0" rx="8" fill="#EEF5FA" stroke="#0072B2" stroke-width="1.6"/>
+<rect x="440.0" y="456.0" width="5" height="64.0" fill="#0072B2"/>
+<text x="458.0" y="482.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">survey.data</text>
+<text x="580.0" y="482.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">what the data actually is, profiled in a Kaggle CPU notebook</text>
+<text x="458.0" y="504.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">The data never leaves Kaggle, which is why this is a notebook and not a download.</text>
+
+<text x="440.0" y="580.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">What satisfies a rung</text>
+<rect x="440.0" y="596.0" width="12.0" height="12.0" fill="#0072B2"/>
+<text x="464.0" y="606.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">research rung — a node whose stage is this rung's name</text>
+<rect x="440.0" y="620.0" width="12.0" height="12.0" fill="#CC79A7"/>
+<text x="464.0" y="630.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">anchor rung — the held-out set is actually declared</text>
+<rect x="440.0" y="644.0" width="12.0" height="12.0" fill="#009E73"/>
+<text x="464.0" y="654.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">build rung — having advanced to it; no node is asked for</text>
+<rect x="440.0" y="668.0" width="12.0" height="12.0" fill="#D55E00"/>
+<text x="464.0" y="678.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">bypassable, not optional — a failed fetch is recorded, and that meets it</text>
+
+<text x="440.0" y="724.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">declare refuses an experiment while any rung is missing, and names all of them.</text>
+<text x="440.0" y="748.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">What it refuses is a rung that was neither run nor recorded. A rung met by an</text>
+<text x="440.0" y="768.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">inconclusive node IS met: the gate asks whether a step was considered, not</text>
+<text x="440.0" y="788.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">whether it paid off. Without a declared ladder the older first-node rule speaks instead.</text>
+
+<text x="440.0" y="836.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="620" fill="#000000" text-anchor="start" opacity="1.0">Every rung below survey runs in the main thread, one at a time.</text>
+<text x="440.0" y="860.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">Each consumes the vocabulary the rung before it produced — method searches with what</text>
+<text x="440.0" y="880.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">survey just produced, forensics opens the URLs field found. A graph that let them</text>
+<text x="440.0" y="900.0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="400" fill="#5A5A5A" text-anchor="start" opacity="1.0">run in parallel would be a graph in which the second one was briefed on a guess.</text>
+</svg>

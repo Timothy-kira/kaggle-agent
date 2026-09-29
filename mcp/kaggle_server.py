@@ -1158,6 +1158,14 @@ TOOLS: list[dict[str, Any]] = [
             "nothing and goes BACK to a source (forum / code / web / paper / model / dataset / "
             "rules / leaderboard / ruler / skill) because a result made the current picture "
             "insufficient. "
+            "The research sweep can be declared as an ordered LADDER via action='stage' with a "
+            "curriculum, and then the tree holds where the sweep got to: survey -> method -> "
+            "field -> forensics -> converge -> anchor -> decide -> smoke -> scale. A rung of "
+            "kind 'research' is satisfied by a node whose stage is that rung's name, 'anchor' by "
+            "a declared held-out set, and 'build' rungs by having advanced to them. With a "
+            "ladder declared, declaring an experiment is refused with research_incomplete naming "
+            "every rung still missing; a rung met by an inconclusive node counts as met, so the "
+            "gate asks whether a step was considered, not whether it paid off. "
             "action='read' is MANDATORY before recording: it returns readRevision, and 'record' "
             "refuses a stale or missing one. action='select' does NON-GREEDY parent selection "
             "over quality + progress + novelty with visit cooling, so the search is not "
@@ -1642,7 +1650,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.33.1"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.34.0"}
 
 
 def run_kaggle(args: list[str], account: str = "") -> tuple[int, str, str]:

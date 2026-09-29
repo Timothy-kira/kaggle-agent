@@ -52,7 +52,7 @@ by that visualizer, `gate` = decides whether a widget is warranted, `loops` = fe
 | `kaggle-account-switch` -> needs `kaggle-cli` | every list, switch and status call is a kaggle_accounts / kaggle-cli call | <!-- edge:kaggle-account-switch->kaggle-cli:needs --> |
 | `kaggle-account-switch` -> dispatches `account-rename-visualizer` | a stored name has to change, not just be re-labelled | <!-- edge:kaggle-account-switch->account-rename-visualizer:dispatches --> |
 | `account-rename-visualizer` -> needs `kaggle-account-switch` | it renders that skill's decision point and owns no decision of its own | <!-- edge:account-rename-visualizer->kaggle-account-switch:needs --> |
-| `kaggle-competition-research` -> needs `kaggle-cli` | slug, leaderboard, forum and kernels-list all go through the CLI tools | <!-- edge:kaggle-competition-research->kaggle-cli:needs --> |
+| `kaggle-competition-research` -> needs `kaggle-cli` | slug and leaderboard in preflight, then forum and kernels-list inside survey's four subagents - every one of those goes through the CLI tools, which is why the account is checked before the wave and not during it | <!-- edge:kaggle-competition-research->kaggle-cli:needs --> |
 | `experiment-launch` -> needs `kaggle-cli` | quota, accelerator market state and the push itself | <!-- edge:experiment-launch->kaggle-cli:needs --> |
 | `experiment-launch` -> needs `kaggle-account-switch` | whose quota pays for this run is decided before anything is pushed | <!-- edge:experiment-launch->kaggle-account-switch:needs --> |
 | `genui-scenarios` -> gates `kaggle-account-switch` | decides whether picking an account warrants a picker at all | <!-- edge:genui-scenarios->kaggle-account-switch:gate --> |

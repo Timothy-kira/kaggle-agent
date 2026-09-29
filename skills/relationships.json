@@ -1,5 +1,5 @@
 {
-  "version": "1.33.1",
+  "version": "1.34.0",
   "comment": "Single source of truth for how the skills, agents and required sources in this package relate, AND for the live state those relationships are gated on. The per-category 'Bound edges' tables in each INDEX.md are RENDERED from this file, and tools/check_plugin.py fails the build when they drift. Edit this file, then re-run the checker, or it will tell you exactly which table is stale.",
   "state": {
     "_comment": "Live state, declared here and read through its own tool. The graph does not store the values - it points at the readers - so it cannot drift from reality. Read it all with kaggle_presence action='status', which reports the graph state and the ask-or-auto answer together. Anything unreadable fails toward asking: the cost of a wrong 'ask' is a pause, the cost of a wrong 'auto' is an unattended irreversible action.",
@@ -404,36 +404,42 @@
       "from": "kaggle-competition-research",
       "to": "kaggle-cli",
       "type": "needs",
-      "when": "slug, leaderboard, forum and kernels-list all go through the CLI tools"
+      "rung": "survey",
+      "when": "slug and leaderboard in preflight, then forum and kernels-list inside survey's four subagents - every one of those goes through the CLI tools, which is why the account is checked before the wave and not during it"
     },
     {
       "from": "kaggle-competition-research",
       "to": "deep-research",
       "type": "dispatches",
-      "when": "the general search and the source forensics both run in the MAIN thread over multiple rounds, with no subagent dispatched anywhere in wave 2"
+      "rung": "field",
+      "when": "the general search runs in the MAIN thread over multiple rounds with no subagent dispatched anywhere, and the source forensics that follow it are that same thread rather than a second one"
     },
     {
       "from": "kaggle-competition-research",
       "to": "github",
       "type": "browses",
+      "rung": "forensics",
       "when": "the research is not complete until GitHub's own pages were opened and parsed, not merely quoted by a search engine"
     },
     {
       "from": "kaggle-competition-research",
       "to": "huggingface",
       "type": "browses",
+      "rung": "forensics",
       "when": "same floor for Hugging Face model and dataset pages"
     },
     {
       "from": "kaggle-competition-research",
       "to": "arxiv",
       "type": "browses",
+      "rung": "forensics",
       "when": "same floor for the arXiv listing and the paper pages themselves"
     },
     {
       "from": "kaggle-competition-research",
       "to": "approach-decision",
       "type": "produces",
+      "rung": "decide",
       "when": "the plan's constraints and open questions are what the fork/write call is judged against"
     },
     {
@@ -446,6 +452,7 @@
       "from": "kaggle-competition-research",
       "to": "search-engine",
       "type": "needs",
+      "rung": "field",
       "when": "a discovery search needs an engine, and the engine is a question until the presence state says otherwise"
     },
     {
@@ -458,7 +465,8 @@
       "from": "kaggle-competition-research",
       "to": "browser",
       "type": "needs",
-      "when": "search pages and the three required sites are opened with the in-app browser, which only the main session has"
+      "rung": "field",
+      "when": "search pages at field, and the three required sites at forensics, are opened with the in-app browser, which only the main session has - a detached subagent would be left with plain fetches"
     },
     {
       "from": "experiment-launch",
@@ -734,7 +742,8 @@
       "from": "kaggle-competition-research",
       "to": "evidence-sources",
       "type": "produces",
-      "when": "every paper and repo the sweep opened is stored once, so a later review can re-read it instead of re-searching"
+      "rung": "forensics",
+      "when": "every paper and repo the sweep opened is stored once - from method's fetches and from field and forensics - so a later review can re-read it instead of re-searching, and a source nobody stored reads as a source that does not exist"
     },
     {
       "from": "sources-store",
@@ -812,6 +821,7 @@
       "from": "kaggle-competition-research",
       "to": "ruler-audit",
       "type": "needs",
+      "rung": "anchor",
       "when": "the held-out set is declared at plan time, so the calibration that decides whether the search split is comparable is written then too, not on the day of the first declare"
     },
     {
@@ -824,6 +834,7 @@
       "from": "kaggle-competition-research",
       "to": "kdense-methods",
       "type": "needs",
+      "rung": "method",
       "when": "between wave 1 and wave 2, in the main thread, the index is refreshed and searched with the words wave 1 just produced; it is the same act as directing the general search, one step earlier"
     },
     {

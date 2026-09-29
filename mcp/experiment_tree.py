@@ -244,6 +244,27 @@ RESEARCH_REQUIRED = ("question", "targets", "verdict", "opens")
 # selection. They are required, not optional, because that is the mechanism, not a nicety.
 SEARCH_REQUIRED = ("operator", "family")
 
+# What a rung of the ladder demands as evidence. The three answer different questions and the
+# default matters: a rung that says nothing is a build rung, which is what every ladder
+# declared before this existed already is, so those trees keep working untouched.
+#   research  a node carrying that rung's name in its `stage` is on the tree
+#   anchor    the held-out set is actually declared
+#   build     nothing beyond having advanced to it - the curriculum gate covers that
+STAGE_KINDS = ("research", "anchor", "build")
+
+
+def _stage_kind(stage: Any) -> str:
+    """A rung's kind, normalised. Unknown values become "build" rather than raising.
+
+    set_stage refuses a bad kind on the way in; this is the load path for a tree that was
+    hand-edited or arrived from another agent, where the question asked is "can this tree still
+    be trusted" and not "was my own write well-formed".
+    """
+    if not isinstance(stage, dict):
+        return "build"
+    kind = str(stage.get("kind") or "build").strip().lower()
+    return kind if kind in STAGE_KINDS else "build"
+
 # ------------------------------------------------------------------ what are we trying to optimise
 # A tree with scores but no stated objective cannot answer "did this help?", only "did this
 # number go up?". Those are different questions and the second one is how a search ends up
@@ -869,9 +890,47 @@ def curriculum_of(tree: Any) -> list[dict[str, Any]]:
     for i, stage in enumerate(ladder):
         if isinstance(stage, dict) and stage.get("name"):
             out.append({"index": i, "name": str(stage["name"]),
+                        "kind": _stage_kind(stage),
                         "passesWhen": str(stage.get("passesWhen") or ""),
                         "at": str(stage.get("at") or "")})
     return out
+
+
+def _unsatisfied_rungs(tree: Any, ladder: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Which evidence rungs this ladder still wants, and why each one is not met.
+
+    Only research and anchor rungs ask for evidence. A build rung is satisfied by advancing
+    to it, which the curriculum gate already checks, so listing one here would be demanding a
+    node nobody needs - and a tree padded with a node per build step is exactly the ceremony
+    this ladder exists to prevent, because the refuted list stops being a signal when every
+    step leaves a mark.
+
+    A research rung is met by a node carrying that rung's name in its ``stage``; it does not
+    matter whether the verdict was conclusive, because a sweep that found nothing and said so
+    is a result, and a rung that could only be met by success could not be met honestly.
+    """
+    doc = tree if isinstance(tree, dict) else {}
+    nodes = _current(doc).get("nodes") or {}
+    landed = {str(n.get("stage") or "").strip() for n in nodes.values() if isinstance(n, dict)}
+    anchor = doc.get("anchor") if isinstance(doc.get("anchor"), dict) else {}
+    anchor_met = bool(anchor.get("declared")) and bool(anchor.get("heldOut"))
+    missing = []
+    for stage in ladder:
+        kind = stage.get("kind")
+        if kind not in ("research", "anchor"):
+            continue
+        if kind == "research":
+            met = stage["name"] in landed
+            why = (f"a node with stage={stage['name']!r} is on the tree" if met
+                   else f"no node carries stage={stage['name']!r}")
+        else:
+            met = anchor_met
+            why = ("the held-out set is declared" if met
+                   else 'action="anchor" has not declared a held-out set')
+        if not met:
+            missing.append({"name": stage["name"], "kind": kind,
+                            "passesWhen": stage.get("passesWhen") or "", "why": why})
+    return missing
 
 
 def _stage_index(ladder: list[dict[str, Any]], stage: Any) -> int:
@@ -1844,6 +1903,20 @@ def validate(tree: dict[str, Any]) -> list[str]:
             for field in RESEARCH_REQUIRED:
                 if field not in node:
                     problems.append(f"{where}: research node missing required field '{field}'")
+            # A rung name on a research node is how the ladder learns a step happened, so a name
+            # the ladder has never heard of would satisfy no rung while still reading as
+            # evidence - the worst of both, because the node looks like it did the work. Only
+            # checked when a curriculum exists: on a tree that declared none, `stage` has
+            # nothing to be checked against and stays free text.
+            node_stage = node.get("stage")
+            if node_stage is not None:
+                rung_names = [s["name"] for s in curriculum_of(doc)]
+                if rung_names and str(node_stage).strip() not in rung_names:
+                    problems.append(
+                        f"{where}: stage {str(node_stage).strip()!r} is not a rung of this "
+                        f"tree's curriculum ({', '.join(rung_names)}). A research node records a "
+                        f"rung by name; a name the ladder does not hold satisfies nothing."
+                    )
             targets = node.get("targets")
             if isinstance(targets, list):
                 if not targets:
@@ -2021,6 +2094,64 @@ def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]
 
     tree = load(competition)
     nodes = _current(tree).get("nodes") or {}
+    ladder = curriculum_of(tree)
+
+    # ---- the rung gate. Checked BEFORE the first-node gate below, and that ordering is the
+    # whole point of it: a tree that declared the research ladder knows which steps of the
+    # sweep are missing, and telling it "there is no research node at all" would be both true
+    # and useless. When no ladder was declared this returns nothing and the older gate below
+    # is the one that speaks - the two partition, and neither is unreachable.
+    if ladder and str(node.get("kind") or "experiment") == "experiment":
+        missing = _unsatisfied_rungs(tree, ladder)
+        if missing:
+            override = str(node.get("stageOverride") or "").strip()
+            if not override:
+                return {
+                    "ok": False, "code": "research_incomplete",
+                    "message": (
+                        f"{competition!r} declared a research ladder, and this experiment is not "
+                        f"supported by it yet. Missing: "
+                        f"{', '.join(m['name'] for m in missing)}. "
+                        f"The ladder is {' -> '.join(s['name'] for s in ladder)}; declare is "
+                        f"refused because a rung that was never run cannot inform a hypothesis."
+                    ),
+                    "askTheUserFirst": (
+                        "Do not declare the experiment and do not quietly start building. Ask "
+                        "the user which rung they want to run, using ask_user. The rung they "
+                        "skip has to be recorded rather than left out - a tree that shows the "
+                        "step was declined and why is worth more than one with a hole in it."
+                    ),
+                    "how": [
+                        "1. Run the missing rung. kaggle-competition-research walks this ladder: "
+                        "wave 1 as four subagents in a single response, then the published-method "
+                        "step, then wave 2 in this thread. Store every source as you read it - "
+                        "kaggle_sources action=\"add\", then action=\"extract\" with the sentence "
+                        "that carries the claim, and hang the results on the node with a "
+                        "\"sources\" array of {sourceId, relation, quote}. Each rung is satisfied "
+                        "by a node whose stage is that rung's name.",
+
+                        "2. Skip it knowingly, which is allowed. Record the rung as a research "
+                        "node that says so: question = what was not established, targets = what "
+                        "was therefore not asked, verdict = \"inconclusive\", reason = the user's "
+                        "own reason in their words, opens = what this decision makes possible "
+                        "anyway. A rung met by an inconclusive node IS met - a sweep that found "
+                        "nothing and recorded that is a result, and this gate is about the step "
+                        "having been considered, not about it having paid off.",
+
+                        "3. The research already happened, elsewhere or earlier. Record it now, "
+                        "with its sources and its rung's name in stage.",
+
+                        "Or set stageOverride with a reason that is about the experiment "
+                        "itself, the same escape the curriculum gate uses. What cannot be done "
+                        "is declaring past a rung that was neither run nor recorded, because "
+                        "then the tree says this competition was understood when it was not.",
+                    ],
+                    "missing": missing,
+                    "curriculum": ladder,
+                    "tree": read(competition),
+                }
+            node = dict(node)
+            node["stageOverrideReason"] = override
 
     # The first node on a competition has to be a research node, not an experiment.
     #
@@ -2095,8 +2226,8 @@ def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]
 
     # ---- the curriculum gate. Checked BEFORE the diagnosis gate, because "you are trying the
     # hard stage first" and "you did not say what you learned" are different mistakes, and
-    # reporting the wrong one first sends the agent to fix the wrong thing.
-    ladder = curriculum_of(tree)
+    # reporting the wrong one first sends the agent to fix the wrong thing. `ladder` was read
+    # once at the top of this function, by the rung gate.
     if ladder:
         unlocked = str(tree.get("stage") or ladder[0]["name"])
         want_stage = str(node.get("stage") or unlocked).strip()
@@ -2804,6 +2935,23 @@ def set_stage(competition: str, curriculum: Optional[list] = None, stage: str = 
         if len(set(names)) != len(names):
             return {"ok": False, "code": "duplicate_stage",
                     "message": f"stage names must be unique, got {names}"}
+        # The kind decides what a rung has to produce before declare lets a run spend quota on
+        # it, so a typo here is not cosmetic: a research rung misspelled as a build rung would
+        # silently ask for nothing at all, and the tree would report the competition as swept.
+        bad_kinds = sorted({
+            str(s.get("kind")).strip().lower()
+            for s in curriculum
+            if isinstance(s, dict) and s.get("kind") is not None
+            and str(s.get("kind")).strip().lower() not in STAGE_KINDS
+        })
+        if bad_kinds:
+            return {"ok": False, "code": "bad_stage_kind",
+                    "message": (
+                        f"stage kind must be one of {', '.join(STAGE_KINDS)}, got "
+                        f"{', '.join(repr(k) for k in bad_kinds)}. A research rung is met by a "
+                        f"node carrying that stage, an anchor rung by a declared held-out set, "
+                        f"and a build rung by having advanced to it."
+                    )}
         tree["curriculum"] = curriculum
         tree.setdefault("stage", names[0])
         tree["revision"] = int(tree["revision"]) + 1

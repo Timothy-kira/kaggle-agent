@@ -14,7 +14,7 @@ English · [中文](README.zh-CN.md)
 |---|---|
 | **Tools** | 29 — quotas, kernels, competitions, accounts, the RSI experiment tree, the evidence store, plotting, presence |
 | **Skills** | 18 — grouped as identity, research, experiment, collab |
-| **Subagents** | none — both halves of a research sweep run in the main thread |
+| **Subagents** | no persona is shipped. The research sweep dispatches four at the one rung whose members are independent, and every other rung runs in the main thread |
 | **Runtime dependencies** | none. The server is Python standard library only. `numpy` and `matplotlib` are needed for figures and nothing else, and the plotting skill checks before it draws and offers to install on your word. The Kaggle CLI itself is probed once at startup and, if absent, is offered through the same install path — never installed without you saying yes. |
 
 ---
@@ -151,7 +151,7 @@ Four moments trigger it, and which one you are in decides whether it reaches the
 
 | | When | Network |
 |---|---|---|
-| **Research** | between wave 1 and wave 2 | yes — scrape, search, fetch |
+| **Research** | at the `method` rung, between `survey` and `field` | yes — scrape, search, fetch |
 | **Every declaration** | before each `declare` | no — local index only |
 | **Stall** | after two or three flat rounds | no — local index only |
 | **New branch** | when a branch opens on different data | yes — scrape, search, fetch |

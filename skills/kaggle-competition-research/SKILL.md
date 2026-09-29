@@ -10,7 +10,7 @@ skill is organised around that: gather from every source that is *inside* Kaggle
 because that is where the rules, the data and the actual competitive code live, and only then
 go outside, using the vocabulary the first wave produced.
 
-## Preflight — is this already being worked on?
+## preflight — is this already being worked on?
 
 **Run this before wave 1. Every time. Research is the expensive path, and re-running it over work
 that already exists is the single most wasteful thing this skill can do** — four subagents, a
@@ -24,6 +24,45 @@ kaggle_experiment_tree action="read" competition="<slug>"   # the other place wo
 `handoff_status` makes no network call and costs nothing. It answers four things at once: whether
 a handoff document exists for this competition, where it would be written, what the current base
 node and experiment count are, and whether this machine can sync to a remote repo at all.
+
+**The slug and the account come next, and both are one call.** `kaggle_competitions_list` with
+`search` turns whatever the user said into a real slug, and `kaggle_competitions_leaderboard`
+tells you the field is real and who is in it. The rest of the sweep reads Kaggle through the
+`kaggle-cli` tools — `kaggle_competitions_forums`, `kaggle_kernels_list`, and everything the four
+subagents dispatch — so an account that cannot read the competition makes the whole wave fail at
+the first step rather than at the last. Check which account is signed in before the wave, not
+after: `kaggle_auth_status` reports the active account and where its credential came from, and a
+`403` halfway through wave 1 is a wave whose four subagents all came back empty.
+
+**Then put this sweep on the tree, so the tree can say where it got to.** One call:
+
+```
+kaggle_experiment_tree action="stage" competition="<slug>" read_revision=<revision> curriculum=[
+  {"name":"survey",    "kind":"research", "passesWhen":"wave 1 reported"},
+  {"name":"method",    "kind":"research", "passesWhen":"published method searched and stored"},
+  {"name":"field",     "kind":"research", "passesWhen":"the general search ran to completion"},
+  {"name":"forensics", "kind":"research", "passesWhen":"GitHub, Hugging Face and arXiv read"},
+  {"name":"converge",  "kind":"build",    "passesWhen":"something was produced"},
+  {"name":"anchor",    "kind":"anchor",   "passesWhen":"the held-out set is declared"},
+  {"name":"decide",    "kind":"build",    "passesWhen":"fork or write is settled"},
+  {"name":"smoke",     "kind":"build",    "passesWhen":"the smallest run completes"},
+  {"name":"scale",     "kind":"build",    "passesWhen":"the real run scores"}
+]
+```
+
+Declaring the ladder is what makes the rest of this file machine-readable. Once it is on the
+tree, `action="read"` renders which rungs are met, `set_stage` refuses to let a later rung
+pretend an earlier one was visited, and `declare` will not spend quota on an experiment the
+ladder cannot support. Without it this sweep is prose that only you can see, which is exactly
+the state the ladder exists to end.
+
+Two rules about entering it. **A competition that already has nodes does not restart** — declare
+the same nine rungs, then `set_stage` to the first one the tree has not already passed, so the
+existing base node and its refuted list are inputs rather than something to redo. And **a
+rung is met by being recorded, not by succeeding**: a fetch that failed, a sweep the user
+declined, a source that turned out not to exist — each is a research node with that rung's name
+and a reason, and `declare` accepts it. What it refuses is a rung that was neither run nor
+recorded.
 
 Then follow the branch you land in. **Existing work is an input to the research, not a reason to
 skip it and not a reason to throw it away** — the wave still runs, and it runs *better*, because
@@ -104,32 +143,52 @@ handoff existed, so an audit can see it.
 Never silently overwrite or re-derive a base node the tree already holds. If a handoff exists and
 you still want fresh research, say why you are re-running it before you spend the wave.
 
-## The shape: two waves, main agent decides the second
+## The ladder — nine rungs, one graph, one place it fans out
 
 ```
-Wave 1 (4 subagents, launched in ONE response — see "Launch a wave" below)
-  ├─ Kaggle Code       what competitors actually run
-  ├─ Discussion forum  what participants are told and asking
-  ├─ Overview + rules  the macro facts and the constraints
-  └─ Kaggle CPU nb    what the data actually is  (the data never leaves Kaggle)
+preflight   handoff_status + the tree. Enter at the first rung you are not already past.
+
+survey  ── THE ONE RUNG THAT FANS OUT. 4 subagents, ONE response, all run_in_background=true
+  ├─ survey.code   Kaggle Code       what competitors actually run
+  ├─ survey.forum  Discussion forum  what participants are told and asking
+  ├─ survey.rules  Overview + rules  the macro facts and the constraints
+  └─ survey.data   Kaggle CPU nb     what the data actually is  (the data never leaves Kaggle)
         │
         ▼   main agent synthesises the four reports into one picture
-    published method   kaggle_methods: refresh the index, search it with the words
-        │              wave 1 just produced, fetch what is worth reading. Main thread,
-        │              no subagent, and it does not change the wave 2 coverage floor.
-        ▼   then DIRECTS wave 2
-Wave 2 (ENTIRELY in the main thread — one thread, no subagent at all)
-  ├─ deep-research     the general browser search, run over multiple rounds here
-  │                    (in the main thread, where mcp_browser and web_search exist)
-  └─ source forensics  the same thread, opening the GitHub / Hugging Face / arXiv
-                       pages the search named, and landing each one on a node
-        │
+  method  kaggle_methods / kdense-methods: refresh the index, search it with the words
+        │  survey just produced, fetch what is worth reading. Main thread, no subagent.
+        │  BYPASSABLE BUT NOT OPTIONAL: a fetch that fails is recorded as a rung that was
+        │  considered, which satisfies it. It does not change the coverage floor below.
+        ▼  then DIRECTS field
+  field   deep-research, the general browser search, run over multiple rounds here
+        │  (in the main thread, where mcp_browser and web_search exist)
+        ▼  then DIRECTS forensics
+  forensics  the same thread, opening the GitHub / Hugging Face / arXiv pages the
+             search named, and landing each one on a node
         ▼
-  plan written ──▶ Gate A (the decisions) ──▶ Gate B (the whole plan) ──▶ handoff
+  converge  produce before you narrow
+        ▼
+  anchor   the held-out set, declared before anything is measured on it
+        ▼
+  decide   approach-decision (fork vs write) ──▶ Gate A ──▶ Gate B ──▶ handoff
+        ▼
+  smoke ──▶ scale
 ```
 
-**Wave 2 is one thread, and that is the design.** The general search and the forensics are not
-independent tasks — the forensics has nothing to read until the search says which sources matter,
+Everything below `survey` runs in the main thread, one rung at a time. That is not tidiness:
+each of those rungs consumes the vocabulary the rung before it produced, so a graph that let
+them run in parallel would be a graph in which the second one was briefed on a guess.
+
+**The first four rungs and `anchor` are evidence, and the last four are order.** A research
+rung is satisfied by a node whose `stage` is that rung's name; `anchor` is satisfied by the
+held-out set actually being declared; `converge`, `decide`, `smoke` and `scale` are satisfied
+by having advanced to them and ask for no node at all. A rung met by an inconclusive node IS
+met — the gate asks whether a step was considered, not whether it paid off. The build rungs
+ask for no node because a tree carrying a node per step is a tree whose refuted list has
+stopped being a signal.
+
+**`field` and `forensics` are one thread, and that is the design.** The general search and the
+forensics are not independent tasks — the forensics has nothing to read until the search says which sources matter,
 so dispatching them together would brief the second on guesses, which is exactly the
 generic-prior-art failure the two-wave split exists to avoid. `deep-research` therefore runs
 first and to completion, and the forensics follow in the same thread with the real URLs in hand.
@@ -144,19 +203,28 @@ method available at all. Note that `deep-research` itself prefers `web_search`/`
 avoids browser automation on its own, so the three required sites are read directly — see the
 coverage floor.
 
-**Wave 2's queries come from wave 1's results.** That is the whole reason for the split. The
+**`field`'s queries come from `survey`'s results, and `method`'s come from the synthesis.** That
+is the whole reason for the split. The
 main agent reads the four reports, notices that everyone's Duck harness forks are converging
 on one prompt format, and then the search goes looking for *that* — not for "that competition's
-repos" in general. A search dispatched before wave 1 finishes can only search the competition
+repos" in general. A search dispatched before survey finishes can only search the competition
 title, and returns the same generic prior art every time.
 
-**Never start wave 2 before wave 1 has finished.** You would be searching before you know what to
-search for, which is the most expensive way to be wrong.
+**Never start `method` or `field` before `survey` has finished.** You would be searching before
+you know what to search for, which is the most expensive way to be wrong.
 
 **Synthesis and the plan stay in the main thread.** Comparing four reports is the point, and
 it needs all of them at once. Do not delegate the plan.
 
-## Before the wave: ask what it is for
+## survey — wave 1: four Kaggle-native subagents, in one response
+
+**The one rung that fans out.** Everything else on this ladder runs in the main thread,
+one step at a time, because every other rung consumes the vocabulary the rung before it
+produced. `survey` is the only point where four things with no dependency on each other
+are worth spending four processes on, and they are worth it only because they are
+independent — a wave that quietly lost a member produces a report the same shape as a
+complete one, so a trimmed wave has to name what it dropped.
+### Before the wave: ask what it is for
 
 **This is a tier-3 decision, which means it is asked in either presence mode — including when the
 user is away.** The reason is specific rather than general: this wave spends four subagents and a
@@ -197,7 +265,7 @@ What is not legitimate is a wave that quietly lost a member. A trimmed wave and 
 produce the same shape of report, and the difference is invisible to whoever reads it next, so
 the omitted member has to be named as omitted — the same rule as every other gap in this skill.
 
-## Launch a wave — one response, all of them, `run_in_background=true`
+### Launch a wave — one response, all of them, `run_in_background=true`
 
 **This is the section that stops a wave from quietly becoming serial.** A wave described as
 "parallel" but dispatched one subagent at a time is the single most common way this skill gets
@@ -263,7 +331,7 @@ are between waves, never inside one.
 **Synthesis and the plan stay in the main thread.** Comparing four reports is the point, and
 it needs all of them at once. Do not delegate the plan.
 
-## Read sources in full, never just the title
+### Read sources in full, never just the title
 
 This is the rule most likely to be skipped, so state it plainly: **a title, a vote count and a
 one-line abstract are not research.**
@@ -286,7 +354,7 @@ built on it.
 Record for each source: **what it actually says, the quote or line that proves it, and how
 confident you are.** A claim without a quote is a rumour.
 
-## Every subagent returns the same four lines
+### Every subagent returns the same four lines
 
 A subagent that reports findings but not method produces a result nobody can re-run, and on this
 skill that is the difference between evidence and a rumour that happened to be true. So every
@@ -326,7 +394,7 @@ A subagent that returns early with nothing is a legitimate outcome, and the four
 says so: "Blocked at: the forums endpoint 403s on page 3; Coverage: pages 1–2 only". A subagent
 that returns nothing at all is an outage, not a negative result.
 
-## Wave 1 subagent 1 — Kaggle Code
+### survey.code — Kaggle Code
 
 Kaggle Code is the most competition-specific source and the one most often reduced to a
 notebook list. Treat a notebook list as a shortlist, then read the notebooks. The point of this
@@ -371,7 +439,7 @@ State the coverage limit explicitly: the leaderboard lists teams, the code list 
 notebooks, public notebooks are a fraction of what competitors actually ran, and votes measure
 attention rather than quality — official random-sample notebooks routinely top the vote list.
 
-### There is no score column, so "the best notebooks" needs a proxy you name out loud
+#### There is no score column, so "the best notebooks" needs a proxy you name out loud
 
 `kaggle kernels list` returns `ref / title / author / lastRunTime / totalVotes` and **no score at
 all**. So "read the high-scoring notebooks" is not an instruction anyone can execute until you say
@@ -389,7 +457,7 @@ required and is usually why this subagent does not finish. What is *not* optiona
 half of the discipline: **report which notebooks you did not read, and why.** A coverage claim
 that only names what was read reads as a claim that everything was read.
 
-### Cluster them: most "independent" notebooks are one codebase
+#### Cluster them: most "independent" notebooks are one codebase
 
 Reading notebooks one at a time produces a list of unrelated methods, and the list is wrong in a
 specific, common way — several of them are the same code. Diff the `source` arrays of the notebooks
@@ -403,7 +471,7 @@ as independent evidence will double-count it.
 Say which criterion you used to call two notebooks the same. "Same ancestor" is unfalsifiable
 without one.
 
-### Then classify by score band, and find where the movement is
+#### Then classify by score band, and find where the movement is
 
 Put each cluster's notebooks into score bands, and then answer one question that the list itself
 cannot: **does the score move inside a cluster, or between clusters?**
@@ -413,7 +481,7 @@ cannot: **does the score move inside a cluster, or between clusters?**
 - **Every cluster sitting in the same band** means the field has no increment to copy yet, and the
   plan needs to invent one. That is a finding, and it is more useful than a long list.
 
-### Attribute the gain: diff two adjacent notebooks from the same cluster
+#### Attribute the gain: diff two adjacent notebooks from the same cluster
 
 Take two notebooks **in the same cluster with adjacent scores** and diff them. The difference is a
 candidate change. Write it in the shape this plugin already uses, and reuse that vocabulary
@@ -438,7 +506,7 @@ that is the same declared run as any other (`declare` → `kaggle_kernel_launch`
 `kernels_output` → `settle`). **Never write a diff-derived attribution and a reproduced one in the
 same voice**, and say which is which in the report.
 
-### And separate method gains from scores the rules gave away
+#### And separate method gains from scores the rules gave away
 
 A number on a public notebook is not automatically a number you can go and get. Some of the
 highest-scoring notebooks from an earlier era earned that score on an evaluation that no longer
@@ -467,7 +535,7 @@ Check the forum and the competition's own update notes for a "we fixed the scori
 and carry anything you find into the plan's constraints: an unfixed rule is a live hazard for
 everyone else too.
 
-## Verified tool behaviour — read this before dispatching any subagent
+### Verified tool behaviour — read this before dispatching any subagent
 
 Tested against a real competition. Getting these wrong wastes an entire wave, so they are
 stated once here rather than rediscovered per subagent.
@@ -550,7 +618,7 @@ injects `KAGGLE_API_TOKEN` per call. A subagent that shells out to `kaggle` dire
 "Authentication required". Either use the plugin's MCP tools, or set `KAGGLE_API_TOKEN` in that
 subprocess's environment.
 
-## Wave 1 subagent 2 — the discussion forum
+### survey.forum — the discussion forum
 The forum is where the rules actually change, and it is the only place. A rule learned from a
 leaderboard or a README is a rumour until the host states it here.
 
@@ -566,7 +634,7 @@ Per topic record: title, date, votes, comment count, and **the one thing it chan
 quote that proves it. When a rule is stated twice and the versions differ, that discrepancy is
 itself a finding and belongs in the plan as an open question.
 
-## Wave 1 subagent 3 — overview and rules
+### survey.rules — overview and rules
 
 The macro facts and the constraints. Be precise about which parts you can actually reach.
 
@@ -603,7 +671,7 @@ hand.
 Where you do get a rule, **quote it** and name the page or topic it came from. A plan built on
 a misread limit is worthless.
 
-## Wave 1 subagent 4 — the data, analysed in a Kaggle CPU notebook
+### survey.data — the data, analysed in a Kaggle CPU notebook
 
 Read the data, do not infer it from the Data page description. This subagent writes a **CPU-only**
 notebook and runs it **on Kaggle**, because a data profile must not cost accelerator quota, and
@@ -664,7 +732,7 @@ ever be read.
 This is what lets the plan say "we must submit N files of format X" instead of guessing, and
 whether a CPU-only baseline is feasible at all.
 
-### When the account that may read the data is not the account that has the GPU
+#### When the account that may read the data is not the account that has the GPU
 
 The common shape: **account A has entered the competition, account B has not, and B is the one
 with GPU quota left.** A's notebooks can mount the competition input directory; B's cannot. There
@@ -715,7 +783,7 @@ notebook rather than by Kaggle, and it inherits whatever the competition's own t
 redistribution. If the competition forbids it, say so and stop — a pack you are not allowed to
 publish is worse than no pack, because the next run will fail at mount time instead of here.
 
-## After the first wave: ask what it changed, then search for that
+### After the first wave: ask what it changed, then search for that
 
 Read all four reports first, then ask — and **this question is built from the first answer plus
 what the wave actually found**, which is the whole reason for asking twice. A question written
@@ -736,19 +804,25 @@ narrows where wave 2 looks; it does not decide whether the coverage floor is met
 Hugging Face and arXiv are read either way, because that floor is what makes the research a
 research rather than a search.
 
-## Between the waves: published method, before the general search
+## method — published experimental method, before the general search
 
-This sits in the seam on purpose. Wave 1's reports have just been synthesised, which means the
+This sits where it sits on purpose. `survey`'s reports have just been synthesised, which means the
 main agent is holding this competition's vocabulary — that everyone's harness forks converge on
 one prompt format, that the split is contested, that the data has an odd shape. Using those
-words to look for published experimental method is the same act as using them to direct wave 2,
-and the skill already argues for that act twice above. Run before wave 2 rather than earlier
-because before wave 1 there is nothing to search with but the competition name, and a search on
+words to look for published experimental method is the same act as using them to direct `field`,
+and the skill already argues for that act twice above. Run after `survey` rather than earlier
+because before `survey` there is nothing to search with but the competition name, and a search on
 the competition name returns the same generic prior art every time.
 
-**In the main thread. No subagent.** Wave 2 is one thread because the forensics pass has nothing
+**In the main thread. No subagent.** `field` and `forensics` are one thread because the forensics
+pass has nothing
 to read until the search names its sources; this is the same shape one step earlier, and
 dispatching it would brief a subagent on guesses.
+
+Load the `kdense-methods` skill before step 1. It carries the four gates a download passes, and
+the reason each one exists — this rung is the only place in the sweep where anything is fetched
+from a third party and stored on this machine, which is exactly why its rules live in a skill
+with its own reasoning rather than in three lines here.
 
 Three steps, in order — `kaggle_methods` with `action="refresh"`, then `action="search"`, then
 `action="fetch"` per candidate worth reading:
@@ -768,9 +842,19 @@ Hand it to `presence-mode`: present, ask; away, record the decision to continue 
 mark it for the user's return. A deferred notice is not a skipped one, and a method that is
 silently missing reads as a method that does not exist.
 
-Then run wave 2, which is unchanged and still governed by the coverage floor.
+**Either outcome satisfies this rung, and both have to be written down.** What `declare`
+refuses is a rung that was neither run nor recorded. So when the fetch fails and the user is
+away, do not leave the rung empty: record a research node with `stage="method"`,
+`verdict="inconclusive"`, `reason` in the user's own words, and `opens` saying what the
+unverified method might still have answered. Store the methods you did read with
+`evidence-sources` — `kaggle_sources action="add"`, then `action="extract"` with the sentence
+that carries the claim, and `action="link"` onto this node with a `sources` array of
+`{sourceId, relation, quote}`. A rung that produced nothing stored and nothing recorded is the
+one case that reads as done without having been.
 
-## Wave 2, step 1 — the general search, in the browser, on an engine the user chose
+Then run `field`, which is unchanged and still governed by the coverage floor.
+
+## field — the general search, in the browser, on an engine the user chose
 
 After all four wave-1 reports are in, the main agent synthesises them into one research
 question, then searches for it **through the in-app browser on a real search engine**. A brief
@@ -916,7 +1000,7 @@ this floor exists to prevent.
 Record per source how it was actually read — `fetch`, `browser`, or `not reachable` — and carry
 those labels into the plan's coverage-limits section, where an admitted gap belongs.
 
-## Wave 2, step 2 — read the sources yourself, in this thread
+## forensics — read the sources yourself, in this thread
 
 The general search establishes *that* a repo, a model or a paper exists and roughly what it
 claims. This step is the part a general search is not supposed to produce: the specific,
@@ -998,7 +1082,7 @@ problem that made parallel writers dangerous does not apply here, and there is n
 batch them either.
 
 
-## After wave 2: generate before you converge
+## converge — generate before you converge
 
 The sweep has named the field. The next mistake is to take its first plausible answer as the
 answer, because by now every option on the table has been read about and the one that sounds best
@@ -1030,7 +1114,7 @@ sharing and turn-taking are a technique for a room of people, and none of them a
 at a keyboard. What transfers is the shape — independent generation, adversarial review, a
 recorded decision log — and the log is already a node on the tree.
 
-## Before any experiment: declare the held-out set
+## anchor — before any experiment, declare the held-out set
 
 This is the step that makes "it got better" mean something, and it has to happen **here**, at the
 end of research, before a single run exists.
@@ -1079,7 +1163,7 @@ the plan rather than shipping a number that looks like a measurement. `ruler-aud
 that derives it from repeats that already exist, and it refuses a floor computed from two
 readings.
 
-## Then: write the plan, and offer the handoff
+## decide — write the plan, and offer the handoff
 
 The main agent produces a plan, in this order:
 
@@ -1183,7 +1267,29 @@ suggests (a hypothesis about what changed) > what a **paper argues** (evaluated 
 They are not equally reliable and the plan should not treat them as such. The middle two are the
 ones that get conflated: a re-run is what turns either of them into a fact.
 
-## Honest limits
+## smoke — the smallest run that can fail about the idea
+
+`smoke` is the easy-to-hard rung the tree has always had: the smallest run whose failure would
+be about the idea rather than about the plumbing. The curriculum gate is what refuses a
+`scale` declaration while the tree is still at `smoke`, and `stageOverride` is the escape when
+a hard stage genuinely has to go first.
+
+## scale — the real one, and the gate that closes the ladder
+
+`scale` is the run whose number the goal is about, and it runs on the calibration the ruler
+wrote rather than on a number a re-roll would have produced too. Neither of these two rungs
+asks for a node of its own: a build rung is satisfied by having advanced to it.
+
+`declare` also asks the research rungs whether they landed. On a tree that declared this
+ladder, an experiment is refused with `research_incomplete` naming every rung that is
+missing, because the ladder knows what a bare “no research node at all” cannot. That is
+not a wall: run the rung, or record it as a research node with `verdict="inconclusive"`
+and the user's own reason, and either one satisfies it. A rung met by an inconclusive node
+IS met — the gate asks whether a step was considered, not whether it paid off. The build
+rungs ask for no node at all, because a tree with a node per step is a tree whose refuted
+list has stopped being a signal.
+
+### Honest limits
 
 State what you could not reach. These are the ones actually observed, not hypotheticals:
 

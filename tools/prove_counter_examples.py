@@ -1442,7 +1442,7 @@ def _drop_ask1(root):
     """Delete the first agenda question wholesale, heading and body."""
     p = root.joinpath(*_SKILL)
     text = p.read_text(encoding="utf-8")
-    i, j = text.find("## Before the wave: ask what it is for"), text.find("## Launch a wave")
+    i, j = text.find("## Before the wave: ask what it is for"), text.find("### Launch a wave")
     if i < 0 or j < 0 or j <= i:
         raise AssertionError("fixture cannot locate the first question's section")
     p.write_text(text[:i] + text[j:], encoding="utf-8", newline="")
@@ -1452,9 +1452,9 @@ def _move_ask2_before_the_wave(root):
     """The second question keeps its words but moves ahead of the wave it reports on."""
     p = root.joinpath(*_SKILL)
     text = p.read_text(encoding="utf-8")
-    a = text.find("## After the first wave: ask what it changed")
-    b = text.find("## Wave 2, step 1")
-    c = text.find("## Launch a wave")
+    a = text.find("### After the first wave: ask what it changed")
+    b = text.find("## field — the general search")
+    c = text.find("### Launch a wave")
     if min(a, b, c) < 0 or not (c < a < b):
         raise AssertionError("fixture cannot find the three sections in order")
     section = text[a:b]
@@ -1462,7 +1462,20 @@ def _move_ask2_before_the_wave(root):
     # put the moved block before the launch heading
     t2 = p.read_text(encoding="utf-8")
     t2 = t2.replace(section, "", 1)
-    t2 = t2.replace("## Launch a wave", section + "## Launch a wave", 1)
+    # The heading is written in full, hashes and all. A bare "## Launch a wave" also matches
+    # the last two hashes of "### Launch a wave", and that replace then rewrites the heading
+    # into "#" + the whole moved block + " Launch a wave" - the question lands somewhere, the
+    # heading it was supposed to be inserted before stops existing, and the case goes on to
+    # report a completely unrelated failure while still measuring nothing.
+    heading = "### Launch a wave"
+    if heading not in t2:
+        raise AssertionError("fixture cannot find the launch heading to insert before")
+    t2 = t2.replace(heading, section + heading, 1)
+    # ...and the move has to have actually happened, or this case is a no-op that passes by
+    # accident. Verified here rather than trusted, because every silent mutation in this file
+    # so far has looked exactly like a working one.
+    if t2.find(section) > t2.find(heading):
+        raise AssertionError("fixture did not actually move the question ahead of the wave")
     p.write_text(t2, encoding="utf-8", newline="")
 
 
@@ -1629,8 +1642,8 @@ def _drop_forensics_section(root):
     """Remove the whole forensics section - the discipline and its instructions together."""
     p = root.joinpath(*_SKILL)
     text = p.read_text(encoding="utf-8")
-    a = text.find("## Wave 2, step 2")
-    b = text.find("## Before any experiment: declare the held-out set")
+    a = text.find("## forensics — read the sources yourself")
+    b = text.find("## converge — generate before you converge")
     if a < 0 or b < 0 or b <= a:
         raise AssertionError("fixture cannot locate the forensics section")
     p.write_text(text[:a] + text[b:], encoding="utf-8", newline="")
@@ -1649,7 +1662,7 @@ def _reintroduce_a_forensics_dispatch(root):
     """Put a task() call back inside the wave-2 span - where the old dispatch used to be."""
     p = root.joinpath(*_SKILL)
     text = p.read_text(encoding="utf-8")
-    anchor = "## Wave 2, step 2"
+    anchor = "## forensics — read the sources yourself"
     if anchor not in text:
         raise AssertionError("fixture cannot find the forensics heading")
     p.write_text(text.replace(
@@ -2292,6 +2305,151 @@ def _(ks, js):
     return _catches("check_stdio_is_utf8", _inherit_the_windows_code_page,
                     "the server reconfigures its own stdio",
                     "and the tree file was written")
+
+
+# ---------------------------------------------- the research ladder, and the orphans it prevents
+def _neuter_the_rung_gate(root):
+    """Turn the rung gate off, so a competition with a declared ladder accepts any experiment.
+
+    The symptom this buys is the whole reason the gate exists: the ladder says four research
+    rungs have not run, and the experiment goes through anyway.
+    """
+    path = root / "mcp" / "experiment_tree.py"
+    text = path.read_text(encoding="utf-8")
+    old = '    if ladder and str(node.get("kind") or "experiment") == "experiment":'
+    if old not in text:
+        raise AssertionError("fixture is stale: the rung gate is no longer shaped this way")
+    path.write_text(text.replace(old, "    if False and ladder:", 1), encoding="utf-8", newline="")
+
+
+@case("checker: a declared ladder that does not gate is caught",
+      "a ladder the tree cannot enforce is a diagram, not a gate")
+def _(ks, js):
+    return _catches("check_the_research_ladder_is_a_graph", _neuter_the_rung_gate,
+                    "declaring an experiment on an unswept competition is refused",
+                    "and the refusal names every rung still missing")
+
+
+def _shadow_the_old_gate(root):
+    """Let the rung gate skip the empty tree, so the older first-node rule answers instead.
+
+    The subtle one. Both gates would then still be reachable, both would still be correct about
+    their own case, and the ladder's zero-node message - the one that says WHICH rungs are
+    missing - would become unreachable code. Nothing crashes and no assertion goes red on its
+    own; the tree just starts saying "run a sweep first" to someone holding a nine-rung plan.
+    """
+    path = root / "mcp" / "experiment_tree.py"
+    text = path.read_text(encoding="utf-8")
+    old = '    if ladder and str(node.get("kind") or "experiment") == "experiment":'
+    if old not in text:
+        raise AssertionError("fixture is stale: the rung gate is no longer shaped this way")
+    new = ('    if nodes and ladder and '
+           'str(node.get("kind") or "experiment") == "experiment":')
+    path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="")
+
+
+@case("checker: the older first-node rule shadowed by the new one is caught",
+      "a gate that can no longer be reached is code, not a safety net")
+def _(ks, js):
+    return _catches("check_the_research_ladder_is_a_graph", _shadow_the_old_gate,
+                    "a declared ladder does not fall through to the older first-node rule",
+                    "and the refusal names every rung still missing")
+
+
+def _accept_any_stage_kind(root):
+    """Drop the vocabulary check on a rung's kind, so a typo asks for nothing at all.
+
+    A research rung misspelled as a build rung satisfies itself by being advanced to, and the
+    tree reports a competition as swept that nobody swept.
+    """
+    path = root / "mcp" / "experiment_tree.py"
+    text = path.read_text(encoding="utf-8")
+    old = "        if bad_kinds:\n"
+    if old not in text:
+        raise AssertionError("fixture is stale: the stage-kind gate is no longer shaped this way")
+    path.write_text(text.replace(old, "        if False:\n", 1), encoding="utf-8", newline="")
+
+
+@case("checker: an unchecked stage kind is caught",
+      "a rung whose kind is a typo asks for no evidence and the tree cannot tell")
+def _(ks, js):
+    # One expectation, not two: accepting the bad kind does not corrupt curriculum_of, which
+    # normalises an unknown kind to "build" on the load path. The gate that fires is the one on
+    # the way in, so naming a second message here would be a case that cannot pass.
+    return _catches("check_the_research_ladder_is_a_graph", _accept_any_stage_kind,
+                    "a kind outside research/anchor/build is refused on the way in")
+
+
+def _orphan_an_edge(root):
+    """Take the rung off one dependency, leaving the edge declared and owned by nobody.
+
+    This is what a rename or a dropped section looks like from the graph's side: the edge
+    still exists, still points somewhere real, and now has no place in the flow that would
+    have run it.
+    """
+    path = root / "skills" / "relationships.json"
+    text = path.read_text(encoding="utf-8")
+    old = '      "to": "kdense-methods",\n      "type": "needs",\n      "rung": "method",\n'
+    if old not in text:
+        raise AssertionError("fixture is stale: the kdense edge is no longer shaped this way")
+    path.write_text(text.replace(old, '      "to": "kdense-methods",\n      "type": "needs",\n',
+                                 1),
+                    encoding="utf-8", newline="")
+
+
+@case("checker: a dependency with no rung is caught",
+      "an edge that names no rung is a dependency that runs nowhere")
+def _(ks, js):
+    return _catches("check_the_ladder_leaves_nothing_orphaned", _orphan_an_edge,
+                    "every out-edge names the rung that owns it")
+
+
+def _demote_a_rung_section(root):
+    """Turn the published-method rung back into an ordinary sub-section.
+
+    Nothing breaks and the prose is all still there; the rung simply stops being a rung, so the
+    tree's ladder and the file's structure disagree about where in the sweep this lives.
+    """
+    path = root / "skills" / "kaggle-competition-research" / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    old = "## method — published experimental method, before the general search"
+    if old not in text:
+        raise AssertionError("fixture is stale: the method rung heading moved")
+    path.write_text(text.replace(old, old.replace("## ", "### ", 1), 1),
+                    encoding="utf-8", newline="")
+
+
+@case("checker: a rung whose section stops being a rung is caught",
+      "a rung only exists if something in the file is it")
+def _(ks, js):
+    return _catches("check_the_ladder_leaves_nothing_orphaned", _demote_a_rung_section,
+                    "the ladder's method rung has a section of its own",
+                    "and the rungs that own a dependency are the ones the file presents in "
+                    "that order")
+
+
+def _let_another_rung_fan_out(root):
+    """Give a second rung its own fan-out, which is the one thing the split forbids.
+
+    field cannot branch: its queries come from what survey produced, and a subagent holding
+    only the competition name gets the same generic prior art every time.
+    """
+    path = root / "skills" / "kaggle-competition-research" / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    old = "  field   deep-research, the general browser search, run over multiple rounds here\n"
+    if old not in text:
+        raise AssertionError("fixture is stale: the field row in the graph moved")
+    new = old + "  ├─ extra  a second thing dispatched from the wrong rung\n"
+    path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="")
+
+
+@case("checker: a second fan-out is caught",
+      "exactly one rung may branch, and it is the one whose four members are independent")
+def _(ks, js):
+    # The count check still passes at five forks - it asks for at least four. What the extra
+    # fork breaks is the attribution, which is the guarantee actually under test here.
+    return _catches("check_the_ladder_leaves_nothing_orphaned", _let_another_rung_fan_out,
+                    "every fork hangs off survey, with nothing else allowed to fan out")
 
 
 if __name__ == "__main__":
