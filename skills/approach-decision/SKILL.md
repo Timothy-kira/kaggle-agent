@@ -1,6 +1,6 @@
 ---
 name: approach-decision
-description: Use when facing the choice of what to build and how - choosing between several candidate angles before the first node exists, and then the fork-vs-write choice between writing a solution from scratch and adapting the strongest public notebook, repository or paper for a competition or task. Covers naming a candidate's killer, costing it, how convergence counts against it, when adapting wins, when it loses, how to adapt safely, and how to keep both decisions auditable in the experiment tree.
+description: Use when facing the choice of what to build and how - choosing between several candidate angles before the first node exists, and then the fork-vs-write choice between writing a solution from scratch and adapting the strongest public notebook, repository or paper for a competition or task. Use it especially when the user already HAS an opinion about a named competition or task - a plan, an architecture, a set of tools, a way they expect to solve it. A stated opinion is a hypothesis to be tested against the field, not a premise to start from, and this is the skill that decides which of the two it is before anything is built. Covers naming a candidate's killer, costing it, how convergence counts against it, when adapting wins, when it loses, how to adapt safely, and how to keep both decisions auditable in the experiment tree.
 ---
 
 # Write it yourself, or start from the strongest public one

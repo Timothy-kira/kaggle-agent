@@ -1642,7 +1642,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.32.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.33.0"}
 
 
 def run_kaggle(args: list[str], account: str = "") -> tuple[int, str, str]:
@@ -3682,6 +3682,16 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 detail = ""
                 if res.get("problems"):
                     detail = "\n" + "\n".join(f"  - {p}" for p in res["problems"])
+                # A refusal that only says no is a dead end, and a refusal whose options live in a
+                # dict nobody prints is worse than no refusal at all: the caller sees the code and
+                # nothing to do with it. `how` is the part that makes the refusal actionable, and
+                # `askTheUserFirst` is the part that says this is a question for the user rather
+                # than for the agent to resolve on its own.
+                route = ""
+                if res.get("askTheUserFirst"):
+                    route += f"\n\n{res['askTheUserFirst']}"
+                for step in res.get("how") or []:
+                    route += f"\n\n{step}"
                 tree_part = ""
                 if res.get("tree"):
                     t = res["tree"]
@@ -3692,7 +3702,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     )
                 return text_response(
                     f"kaggle_experiment_tree record ({res.get('code')})", 3,
-                    "", f"{res.get('message')}{detail}{tree_part}",
+                    "", f"{res.get('message')}{detail}{route}{tree_part}",
                 )
             body = (
                 f"recorded {res['nodeId']} ({res['kind']})\n"
@@ -3984,9 +3994,16 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 detail = ""
                 if res.get("problems"):
                     detail = "\n" + "\n".join(f"  - {p}" for p in res["problems"])
+                # Same reasoning as the record handler: a refusal that only says no is a dead
+                # end, and options that live in a dict nobody prints are worse than no refusal.
+                route = ""
+                if res.get("askTheUserFirst"):
+                    route += f"\n\n{res['askTheUserFirst']}"
+                for step in res.get("how") or []:
+                    route += f"\n\n{step}"
                 return text_response(
                     f"kaggle_experiment_tree {action} ({res.get('code')})", 3,
-                    "", f"{res.get('message')}{detail}",
+                    "", f"{res.get('message')}{detail}{route}",
                 )
             verb = "declared" if action == "declare" else "settled"
             extra = ""

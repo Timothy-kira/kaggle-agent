@@ -2181,5 +2181,89 @@ def _(ks, js):
                     "covered by a .gitignore rule")
 
 
+# --------------------------------- the order of the tree, which is a different thing from its shape
+def _drop_the_first_node_gate(root):
+    """Put back the tree that checks only what a node looks like.
+
+    Every other check on this tree is about form - the reason has to be substantive, the change
+    has to touch one thing - and this one is about order. Deleting the condition leaves a tree
+    that is just as strict about everything it already checked, which is why the hole was easy to
+    miss: nothing about the remaining validation looks wrong.
+    """
+    path = root / "mcp" / "experiment_tree.py"
+    text = path.read_text(encoding="utf-8")
+    old = ('    if str(node.get("kind") or "experiment") == "experiment" and not any(\n'
+           '        isinstance(n, dict) and n.get("kind") == "research" for n in nodes.values()\n'
+           '    ):')
+    if old not in text:
+        raise AssertionError("fixture is stale: the first-declaration gate is no longer shaped "
+                             "this way")
+    path.write_text(text.replace(old, "    if False:", 1), encoding="utf-8", newline="")
+
+
+@case("checker: an experiment declared on an unexamined competition is caught",
+      "a competition is recorded as understood before anything was known about it")
+def _(ks, js):
+    return _catches("check_the_first_node_cannot_be_an_experiment", _drop_the_first_node_gate,
+                    "declaring an experiment on a competition with no research node is refused")
+
+
+def _gate_stops_printing_the_options(root):
+    """Keep the refusal, drop the three ways out of it.
+
+    The dict is still built; nothing reads it. This is the shape of a fix that looks complete in
+    the diff and leaves the caller holding a code it has no route through - and a caller holding
+    no route either records the experiment somewhere else or reports a dead end, which is the
+    behaviour the gate was added to prevent.
+
+    Every occurrence, not the first. record() and declare() each print the route and the text is
+    identical in both, so replacing one left the other intact: the case then broke a handler the
+    assertion does not read, and passed on a tree where the thing under test was untouched. The
+    same edit that stopped working when its target moved is the reason this one is replace-all.
+    """
+    path = root / "mcp" / "kaggle_server.py"
+    text = path.read_text(encoding="utf-8")
+    old = 'if res.get("askTheUserFirst"):'
+    if old not in text:
+        raise AssertionError("fixture is stale: the record handler no longer prints the route")
+    hits = text.count(old)
+    assert hits >= 2, f"expected the route in both handlers, found {hits}"
+    path.write_text(text.replace(old, 'if False and res.get("askTheUserFirst"):'),
+                    encoding="utf-8", newline="")
+
+
+@case("checker: a refusal that does not say how to proceed is caught",
+      "the three exits reach the caller instead of living in a dict nobody prints")
+def _(ks, js):
+    return _catches("check_the_first_node_cannot_be_an_experiment", _gate_stops_printing_the_options,
+                    "and it tells the caller to ask the user")
+
+
+def _refuse_a_declined_sweep(root):
+    """Turn the gate into a wall: no first node at all, research included.
+
+    This is the failure the design explicitly refuses. A user with a good reason to skip the
+    sweep is not wrong, and answering them by making the skip unrepresentable is how a gate gets
+    routed around rather than obeyed.
+    """
+    path = root / "mcp" / "experiment_tree.py"
+    text = path.read_text(encoding="utf-8")
+    old = ('    if str(node.get("kind") or "experiment") == "experiment" and not any(\n'
+           '        isinstance(n, dict) and n.get("kind") == "research" for n in nodes.values()\n'
+           '    ):')
+    if old not in text:
+        raise AssertionError("fixture is stale: the first-declaration gate is no longer shaped "
+                             "this way")
+    path.write_text(text.replace(old, "    if True:", 1), encoding="utf-8", newline="")
+
+
+@case("checker: refusing a deliberately declined sweep is caught",
+      "skipping the research is a decision the tree holds, not one the tree forbids")
+def _(ks, js):
+    return _catches("check_the_first_node_cannot_be_an_experiment", _refuse_a_declined_sweep,
+                    "the declaration is admissible once the question is answered",
+                    "a tree that already holds a research node is not re-gated")
+
+
 if __name__ == "__main__":
     sys.exit(main())

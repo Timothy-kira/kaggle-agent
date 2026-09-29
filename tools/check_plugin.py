@@ -92,8 +92,44 @@ def with_prediction(node: dict) -> dict:
 
 
 def _decl(et, comp, node: dict, **kw):
-    """declare() with the prediction gate satisfied, for suites that are not testing it."""
-    return et.declare(comp, with_prediction(node), **kw)
+    """declare() with the prediction gate satisfied, for suites that are not testing it.
+
+    The research seed moves the tree's revision, and callers compute read_revision at the call
+    site - before this function runs. Re-reading once on a stale_read is the difference between
+    every caller having to re-order its own lines and one place knowing that a seed just landed.
+    """
+    _researched(et, comp)
+    res = et.declare(comp, with_prediction(node), **kw)
+    if not res.get("ok") and res.get("code") == "stale_read":
+        res = et.declare(comp, with_prediction(node), read_revision=et.read(comp)["revision"])
+    return res
+
+
+def _researched(et, comp) -> bool:
+    """Put a research node on a tree that has none, so a declaration is admissible.
+
+    declare() refuses an experiment on a competition that has never held a research node: the
+    sweep, or a recorded decision to skip it. That is the point of the gate, and it means a
+    fixture that opens straight with a declaration is building a shape the tree now refuses.
+
+    The seed is written as a DELIBERATE skip rather than a fabricated finding, because a fixture
+    that invents a result it never got is the thing this suite exists to catch. It says what it
+    is: nothing was established, nothing was asked, and the runs below are about the mechanics
+    rather than about the competition.
+    """
+    doc = et.read(comp)
+    nodes = ((doc.get("tree") or {}).get("nodes") or {})
+    if any(isinstance(n, dict) and n.get("kind") == "research" for n in nodes.values()):
+        return True
+    return bool(et.record(comp, {
+        "id": "seed-research", "kind": "research", "parent": None,
+        "question": "what is known about this competition?",
+        "targets": ["rules", "leaderboard", "code"],
+        "verdict": "inconclusive",
+        "reason": "a test fixture: this tree exists to exercise the run mechanics, so no sweep "
+                  "was run and none of its findings are being claimed",
+        "opens": "the declarations below are about the mechanics, not about the competition",
+    }, read_revision=doc["revision"]).get("ok"))
 
 CATEGORIES = ["identity", "research", "experiment", "collab"]
 
@@ -1167,6 +1203,164 @@ def check_no_stale_names():
 
 
 # ---------------------------------------------------------------- the tree is enforced
+def check_the_first_node_cannot_be_an_experiment():
+    """Sequence, not form: a competition has to be researched before it is built on.
+
+    The tree already refused a node whose reason said nothing, or whose change touched two things
+    at once. Every one of those checks is about the FORM of a node, and none of them is about the
+    order, so a competition that was handed to an agent with a confident plan attached could open
+    with a base experiment, be accepted, and be built on - and the tree would then record that
+    competition as understood before anything was known about it. The refusal is the last signal
+    that arrives before the code exists, so it has to exist.
+
+    It is not a wall, and asserting that it is not is half of this check. A user may have a
+    perfectly good reason to skip the sweep, and the answer to that is not a block: it is a
+    research node saying the sweep was declined and why. So the three exits - sweep, skip
+    knowingly, already-researched - are all reachable, and the one thing none of them can do is
+    produce a tree that never mentions the question.
+    """
+    print("the first node cannot be an experiment")
+    import importlib.util as _iu
+    import os as _os
+    import shutil as _shutil
+
+    def check(cond, label):
+        if cond:
+            ok(label)
+        else:
+            bad(f"the first node cannot be an experiment: {label}")
+
+    home = _mkdtemp(prefix="ka-check-first-node-")
+    saved = _os.environ.get("KAGGLE_AGENT_HOME")
+    _os.environ["KAGGLE_AGENT_HOME"] = home
+    spec = _iu.spec_from_file_location("_ks_first", ROOT / "mcp" / "experiment_tree.py")
+    et = _iu.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(et)
+
+        def fresh(comp):
+            t = et.load(comp)
+            t["tree"] = {"base": None, "nodes": {}}
+            t["revision"] = 0
+            et.save(comp, t)
+
+        experiment = {
+            "id": "e1", "kind": "experiment", "parent": None,
+            "change": "build a frame-diff harness",
+            "hypothesis": "it reads better than one strong baseline",
+            "metric": {"name": "s", "parent": 0.0, "result": 0.31, "delta": 0.31,
+                       "rank": 1, "rankSource": "local", "direction": "higher"},
+            "verdict": "keep",
+            "reason": "beats the only published baseline by 3 points on the public split",
+            "operator": "draft", "family": "base", "evidence": "local-only",
+            "diagnosis": "none", "diagnosisReason": "first run of this harness",
+        }
+        declined = {
+            "id": "r1", "kind": "research", "parent": None,
+            "question": "what does the top of the field build, and is it forkable?",
+            "targets": ["leaderboard", "code", "forum"],
+            "verdict": "inconclusive",
+            "reason": "the user chose to skip the sweep because the harness is already theirs "
+                      "and the rules are known to them",
+            "opens": "the harness can be built now, unmeasured by the field",
+        }
+
+        # (1) the refusal, and its code. On declare(), not record(): recording is how a tree is
+        #     built and how a result is filed, and gating it refused ninety-seven assertions
+        #     across this suite's own fixtures. The declaration is the commitment - it is what
+        #     both launchers require - so it is the last point before quota is spent on a
+        #     competition nobody has looked at.
+        c = "zz-first-node-refused"
+        fresh(c)
+        blocked = et.declare(c, with_prediction(dict(experiment)), read_revision=0)
+        check(not blocked.get("ok"),
+              "declaring an experiment on a competition with no research node is refused")
+        check(blocked.get("code") == "no_research_yet",
+              f"and the refusal has its own code, not a generic one "
+              f"(got {blocked.get('code')!r})")
+        check((et.load(c)["tree"].get("nodes") or {}) == {},
+              "and nothing was left behind by the refusal")
+
+        # (2) the refusal hands back a question for the USER, not a decision for the agent
+        check(bool(blocked.get("askTheUserFirst")),
+              "the refusal says to ask the user rather than resolving it on the caller's own")
+        how = " ".join(blocked.get("how") or [])
+        check("ask_user" in (blocked.get("askTheUserFirst") or "") + how
+              or "Ask the user" in (blocked.get("askTheUserFirst") or ""),
+              "and it names asking as the next action")
+
+        # (3) the evidence store is named, because a research node with no sources is an
+        #     assertion that a sweep happened
+        check("kaggle_sources" in how and "extract" in how,
+              "the sweep path says to store each source with the sentence behind it")
+        check("sources" in how,
+              "and to hang those sources on the node itself")
+
+        # (4) skipping is allowed, and lands on the tree rather than nowhere
+        c2 = "zz-first-node-skipped"
+        fresh(c2)
+        ok_skip = et.record(c2, dict(declined), read_revision=0)
+        check(ok_skip.get("ok"),
+              f"a research node recording a DELIBERATE skip is accepted "
+              f"({ok_skip.get('message') or ok_skip.get('problems')})")
+
+        # (5) and after that, the declaration goes through - the gate is the sequence, not a
+        #     permanent state, and a research node recorded afterwards still opens the door
+        after = et.declare(c2, with_prediction(dict(experiment)),
+                           read_revision=et.load(c2)["revision"])
+        check(after.get("ok"),
+              f"the declaration is admissible once the question is answered "
+              f"({after.get('message') or after.get('problems')})")
+
+        # (6) no regression for a tree that already holds a research node
+        c3 = "zz-first-node-existing"
+        fresh(c3)
+        et.record(c3, dict(declined), read_revision=0)
+        direct = et.declare(c3, with_prediction(dict(experiment)),
+                            read_revision=et.load(c3)["revision"])
+        check(direct.get("ok"),
+              f"a tree that already holds a research node is not re-gated "
+              f"({direct.get('code')})")
+
+        # (7) the MCP layer has to actually DELIVER the options. Asserting that the key names
+        #     appear in the source measures the wrong thing: `if False and res.get(...)` leaves
+        #     every name in the file and prints nothing, so a string-presence check passes on a
+        #     refusal that has become a dead end. This calls the real dispatch instead.
+        spec_s = _iu.spec_from_file_location("_ks_first_srv", SERVER_PY)
+        ks = _iu.module_from_spec(spec_s)
+        sys.path.insert(0, str(ROOT / "mcp"))
+        try:
+            spec_s.loader.exec_module(ks)
+            c4 = "zz-first-node-mcp"
+            t4 = et.load(c4)
+            t4["tree"] = {"base": None, "nodes": {}}
+            t4["revision"] = 0
+            et.save(c4, t4)
+            said = json.dumps(ks.tool_call("kaggle_experiment_tree", {
+                "action": "declare", "competition": c4,
+                "node": json.dumps(experiment), "read_revision": 0,
+            }), ensure_ascii=False)
+            check("no_research_yet" in said,
+                  f"the refusal reaches the caller with its code ({said[:120]})")
+            check("ask_user" in said or "Ask the user" in said,
+                  "and it tells the caller to ask the user")
+            check("Skip it knowingly" in said or "skip it knowingly" in said,
+                  "and the decline-the-sweep exit is in the text the caller receives")
+            check("kaggle_sources" in said,
+                  "and so is the evidence-store step the sweep path depends on")
+        except Exception as exc:  # noqa: BLE001
+            bad(f"the first node cannot be an experiment: the dispatch does not run: {exc}")
+        finally:
+            if str(ROOT / "mcp") in sys.path:
+                sys.path.remove(str(ROOT / "mcp"))
+    finally:
+        if saved is None:
+            _os.environ.pop("KAGGLE_AGENT_HOME", None)
+        else:
+            _os.environ["KAGGLE_AGENT_HOME"] = saved
+
+
+# ---------------------------------------------------------------- the tree is enforced
 def check_tree_enforcement():
     """The RSI tree must be a validated tool, not a convention in a skill.
 
@@ -2055,6 +2249,7 @@ def check_ablation_arithmetic():
             "factors": ["a", "b"], "controls": dict(_CTL),
             "diagnosis": "none", "diagnosisReason": "ladder",
             "expect": {"direction": "up", "atLeast": 0.01}}
+    _researched(et, "abl2")
     check(et.declare("abl2", decl, read_revision=et.read("abl2")["readRevision"])["ok"],
           "a declaration carrying factors is accepted")
     landed = _ab("p1r", ["a", "b"], 0.62, parent="p1")
@@ -3412,6 +3607,7 @@ def check_launch_gate():
               "the refusal names the call that unlocks it")
 
         rev = et.read(comp)["revision"]
+        _researched(et, comp)
         d = _decl(et, comp, {"id": "e1", "change": "swap the sampler",
                               "hypothesis": "it is the bottleneck", "parent": None,
                               "operator": "draft", "family": "sampling",
@@ -3642,6 +3838,7 @@ def check_launch_attaches_monitoring():
         return lm.describe().get("targets") or []
 
     def _mk_decl(nid):
+        _researched(et, comp)
         return _decl(et, comp, {"id": nid, "change": f"try {nid}", "hypothesis": "h",
                                  "parent": None, "operator": "draft", "family": "sampling",
                                  "reason": "because",
@@ -3826,6 +4023,7 @@ def check_local_run_is_monitored():
         return lm.describe().get("targets") or []
 
     def _mk_decl(nid):
+        _researched(et, comp)
         return _decl(et, comp, {"id": nid, "change": f"try {nid}", "hypothesis": "h",
                                  "parent": None, "operator": "draft", "family": "sampling",
                                  "reason": "because",
@@ -5194,79 +5392,89 @@ def check_the_matcher_finds_the_right_body_and_says_when_it_finds_nothing():
 
 def main() -> int:
     check_manifest()
-    check_servers()
-    check_skill_frontmatter()
-    check_relationships()
-    check_browses_floor()
-    check_presence_reach()
-    check_graph_state()
-    check_tree_enforcement()
-    check_search_widening()
-    check_replay_semantics()
-    check_monotone_policy()
-    check_efc_accounting()
-    check_failure_layer_and_anchor()
-    check_undo_and_rounds()
-    check_migration_v2_to_v3()
-    check_ablation_arithmetic()
-    check_the_dataset_is_a_control_and_silence_is_not_a_disagreement()
-    check_the_thinking_steps_were_actually_added()
-    check_the_readme_counts_what_the_package_contains()
-    check_decision_coupling()
-    check_tree_ownership()
-    check_runtime_behaviour()
-    check_evidence_chain()
-    check_plotting_backend_is_real()
-    check_vendored_content_is_scanned()
-    check_the_audit_drives_and_does_not_acquit()
-    check_evidence_graph_binding()
-    check_skill_index()
-    check_widget_binding()
-    check_no_secrets()
-    check_no_uncalled_functions()
-    check_store_migration()
-    check_no_stale_names()
-    check_version_sync()
-    check_data_stays_on_kaggle()
-    check_wave_two_is_single_threaded()
-    check_the_plan_is_reviewed_before_it_is_handed_off()
-    check_the_bootstrap_survives_a_directory_it_cannot_read()
-    check_the_manifest_name_survives_the_marketplace()
-    check_the_package_survives_a_marketplace_install()
-    check_the_cli_is_offered_not_just_reported()
-    check_the_waves_ask_what_to_search()
-    check_reading_the_code_is_a_chain_not_a_vow()
-    check_the_code_sweep_states_its_proxy_and_its_gotchas()
-    check_the_method_note_has_a_home()
-    check_no_mojibake_in_english_sources()
-    check_the_scores_that_the_rules_gave_away_are_separated()
-    check_an_account_named_for_one_call_does_not_switch_the_session()
-    check_browser_is_search_only()
-    check_research_preflight()
-    check_launch_gate()
-    check_launch_attaches_monitoring()
-    check_local_run_is_monitored()
-    check_monitor_uses_the_builtin_cron()
-    check_diagnosis_loop()
-    check_node_survives_the_tool_boundary()
-    check_the_schema_advertises_what_exists()
-    check_no_reversed_assertions()
-    check_transport_resilience()
-    check_the_monitor_watches_content()
-    check_a_node_keeps_its_recipe()
-    check_predictions_are_judged()
-    check_quoted_upstream_is_verbatim()
-    check_the_curriculum_gates_declare()
-    check_a_line_can_be_abandoned()
-    check_consider_and_prune()
-    check_competition_isolation()
-    check_text_encoding()
-    check_publishable()
-    check_the_package_ships_no_built_artifact()
-    check_the_package_ships_no_runtime_state()
-    check_published_method_is_local_and_the_veto_respects_a_boundary()
-    check_the_vendored_bodies_are_whole_bound_and_cannot_pass_as_capabilities()
-    check_the_matcher_finds_the_right_body_and_says_when_it_finds_nothing()
+    # Each check is run inside a try, because one that raises used to abort the whole suite:
+    # a KeyError in the sixtieth check meant the sixty-first never ran, and the run reported one
+    # problem when the tree was carrying forty. A crash is still a failure - it is recorded as
+    # one and named - but it no longer hides everything after it.
+    for _check in (
+        check_servers,                                                               # servers
+        check_skill_frontmatter,                                                     # skill frontmatter
+        check_relationships,                                                         # relationships
+        check_browses_floor,                                                         # browses floor
+        check_presence_reach,                                                        # presence reach
+        check_graph_state,                                                           # graph state
+        check_tree_enforcement,                                                      # tree enforcement
+        check_the_first_node_cannot_be_an_experiment,                                # the first node cannot be an experiment
+        check_search_widening,                                                       # search widening
+        check_replay_semantics,                                                      # replay semantics
+        check_monotone_policy,                                                       # monotone policy
+        check_efc_accounting,                                                        # efc accounting
+        check_failure_layer_and_anchor,                                              # failure layer and anchor
+        check_undo_and_rounds,                                                       # undo and rounds
+        check_ablation_arithmetic,                                                   # ablation arithmetic
+        check_the_dataset_is_a_control_and_silence_is_not_a_disagreement,            # the dataset is a control and silence is not a disagreement
+        check_the_thinking_steps_were_actually_added,                                # the thinking steps were actually added
+        check_the_readme_counts_what_the_package_contains,                           # the readme counts what the package contains
+        check_decision_coupling,                                                     # decision coupling
+        check_tree_ownership,                                                        # tree ownership
+        check_runtime_behaviour,                                                     # runtime behaviour
+        check_evidence_chain,                                                        # evidence chain
+        check_plotting_backend_is_real,                                              # plotting backend is real
+        check_vendored_content_is_scanned,                                           # vendored content is scanned
+        check_the_audit_drives_and_does_not_acquit,                                  # the audit drives and does not acquit
+        check_evidence_graph_binding,                                                # evidence graph binding
+        check_skill_index,                                                           # skill index
+        check_widget_binding,                                                        # widget binding
+        check_no_secrets,                                                            # no secrets
+        check_no_uncalled_functions,                                                 # no uncalled functions
+        check_store_migration,                                                       # store migration
+        check_no_stale_names,                                                        # no stale names
+        check_version_sync,                                                          # version sync
+        check_data_stays_on_kaggle,                                                  # data stays on kaggle
+        check_wave_two_is_single_threaded,                                           # wave two is single threaded
+        check_the_plan_is_reviewed_before_it_is_handed_off,                          # the plan is reviewed before it is handed off
+        check_the_bootstrap_survives_a_directory_it_cannot_read,                     # the bootstrap survives a directory it cannot read
+        check_the_manifest_name_survives_the_marketplace,                            # the manifest name survives the marketplace
+        check_the_package_survives_a_marketplace_install,                            # the package survives a marketplace install
+        check_the_cli_is_offered_not_just_reported,                                  # the cli is offered not just reported
+        check_the_waves_ask_what_to_search,                                          # the waves ask what to search
+        check_reading_the_code_is_a_chain_not_a_vow,                                 # reading the code is a chain not a vow
+        check_the_code_sweep_states_its_proxy_and_its_gotchas,                       # the code sweep states its proxy and its gotchas
+        check_the_method_note_has_a_home,                                            # the method note has a home
+        check_no_mojibake_in_english_sources,                                        # no mojibake in english sources
+        check_the_scores_that_the_rules_gave_away_are_separated,                     # the scores that the rules gave away are separated
+        check_an_account_named_for_one_call_does_not_switch_the_session,             # an account named for one call does not switch the session
+        check_browser_is_search_only,                                                # browser is search only
+        check_research_preflight,                                                    # research preflight
+        check_launch_gate,                                                           # launch gate
+        check_launch_attaches_monitoring,                                            # launch attaches monitoring
+        check_local_run_is_monitored,                                                # local run is monitored
+        check_monitor_uses_the_builtin_cron,                                         # monitor uses the builtin cron
+        check_diagnosis_loop,                                                        # diagnosis loop
+        check_node_survives_the_tool_boundary,                                       # node survives the tool boundary
+        check_the_schema_advertises_what_exists,                                     # the schema advertises what exists
+        check_no_reversed_assertions,                                                # no reversed assertions
+        check_transport_resilience,                                                  # transport resilience
+        check_the_monitor_watches_content,                                           # the monitor watches content
+        check_a_node_keeps_its_recipe,                                               # a node keeps its recipe
+        check_predictions_are_judged,                                                # predictions are judged
+        check_quoted_upstream_is_verbatim,                                           # quoted upstream is verbatim
+        check_the_curriculum_gates_declare,                                          # the curriculum gates declare
+        check_a_line_can_be_abandoned,                                               # a line can be abandoned
+        check_consider_and_prune,                                                    # consider and prune
+        check_competition_isolation,                                                 # competition isolation
+        check_text_encoding,                                                         # text encoding
+        check_publishable,                                                           # publishable
+        check_the_package_ships_no_built_artifact,                                   # the package ships no built artifact
+        check_the_package_ships_no_runtime_state,                                    # the package ships no runtime state
+        check_published_method_is_local_and_the_veto_respects_a_boundary,            # published method is local and the veto respects a boundary
+        check_the_vendored_bodies_are_whole_bound_and_cannot_pass_as_capabilities,   # the vendored bodies are whole bound and cannot pass as capabilities
+        check_the_matcher_finds_the_right_body_and_says_when_it_finds_nothing,       # the matcher finds the right body and says when it finds nothing
+    ):
+        try:
+            _check()
+        except Exception as exc:  # noqa: BLE001
+            bad(f"{_check.__name__} raised {type(exc).__name__}: {exc}")
     print()
     if failures:
         print(f"{len(failures)} failure(s) out of {checks} checks:")
@@ -5275,7 +5483,6 @@ def main() -> int:
         return 1
     print(f"all {checks} checks passed")
     return 0
-
 
 # The RSI loop is only a loop if the next experiment is required to be based on
 # what the last one showed. Before this the tree held scores and never held what
@@ -5349,6 +5556,7 @@ def check_diagnosis_loop():
 
         print()
         print("=== 2. declaring without a diagnosis is refused ===")
+        _researched(et, COMP)
         d = _decl(et, COMP, {"id": "e0", "change": "x", "hypothesis": "h", "parent": None,
                               "operator": "draft", "family": "f", "reason": "r"},
                        read_revision=et.read(COMP)["revision"])
@@ -5368,6 +5576,7 @@ def check_diagnosis_loop():
         rec = et.record(COMP, node, read_revision=et.read(COMP)["revision"])
         check(rec.get("ok"), f"the diagnosis is recorded: {rec.get('message')}")
 
+        _researched(et, COMP)
         d = _decl(et, COMP, {"id": "e1", "change": "write both columns", "hypothesis": "it then passes",
                               "parent": None, "operator": "debug", "family": "submission",
                               "reason": "the diagnosis named it", "diagnosis": "d1"},
@@ -5376,6 +5585,7 @@ def check_diagnosis_loop():
 
         print()
         print("=== 4. the citation is checked, not trusted ===")
+        _researched(et, COMP)
         d2 = _decl(et, COMP, {"id": "e2", "change": "c", "hypothesis": "h", "parent": None,
                                "operator": "draft", "family": "f", "reason": "r",
                                "diagnosis": "no-such-node"},
@@ -5385,6 +5595,7 @@ def check_diagnosis_loop():
         et.record(COMP, {"id": "r9", "kind": "research", "question": "q", "targets": ["code"],
                          "verdict": "keep", "opens": "o", "parent": None, "reason": "r"},
                   read_revision=et.read(COMP)["revision"])
+        _researched(et, COMP)
         d3 = _decl(et, COMP, {"id": "e3", "change": "c", "hypothesis": "h", "parent": None,
                                "operator": "draft", "family": "f", "reason": "r",
                                "diagnosis": "r9"},
@@ -5395,12 +5606,14 @@ def check_diagnosis_loop():
         print()
         print("=== 5. the escape hatch still needs a reason ===")
         comp2 = "zz-loop-first"
+        _researched(et, comp2)
         d4 = _decl(et, comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
                                 "parent": None, "operator": "draft", "family": "f", "reason": "r",
                                 "diagnosis": "none"},
                          read_revision=et.read(comp2)["revision"])
         check(not d4.get("ok") and d4.get("code") == "diagnosis_reason_required",
               f"diagnosis=none without a reason is refused: {d4.get('code')}")
+        _researched(et, comp2)
         d5 = _decl(et, comp2, {"id": "e0", "change": "baseline", "hypothesis": "establish a number",
                                 "parent": None, "operator": "draft", "family": "f", "reason": "r",
                                 "diagnosis": "none",
@@ -6056,6 +6269,7 @@ def check_a_node_keeps_its_recipe():
         decl = {"id": "n2", "kind": "experiment", "parent": "n1", "change": "more",
                 "hypothesis": "better", "reason": "push it", "operator": "improve",
                 "family": "tuning", "diagnosis": "none", "diagnosisReason": "baseline only"}
+        _researched(et, comp)
         res = _decl(et, comp, decl, read_revision=rev)
         check(res.get("ok"), f"the child declaration is accepted ({res.get('message')})")
         n2 = (et.load(comp).get("tree") or {}).get("nodes", {}).get("n2") or {}
@@ -6212,6 +6426,8 @@ def check_predictions_are_judged():
         d = {"id": "n1", "kind": "experiment", "parent": "b1", "change": "c", "hypothesis": "h",
              "reason": "r", "operator": "improve", "family": "opt",
              "diagnosis": "none", "diagnosisReason": "base only"}
+        _researched(et, comp)
+        rev = et.read(comp)["revision"]
         miss = et.declare(comp, d, read_revision=rev)
         check(not miss.get("ok") and miss.get("code") == "expect_required",
               f"declare refuses a node with no prediction ({miss.get('code')})")
@@ -6300,6 +6516,7 @@ def check_the_curriculum_gates_declare():
                 d["stage"] = stage
             if override:
                 d["stageOverride"] = override
+            _researched(et, comp)
             return et.declare(comp, d, read_revision=et.read(comp)["revision"])
 
         locked = decl("scale")
@@ -6359,6 +6576,7 @@ def check_a_line_can_be_abandoned():
              "hypothesis": "h", "reason": "r", "operator": "improve", "family": "rad",
              "diagnosis": "none", "diagnosisReason": "base only", "branch": "bad",
              "expect": {"direction": "up", "atLeast": 0.1}}
+        _researched(et, comp)
         et.declare(comp, d, read_revision=et.read(comp)["revision"])
         res = {"id": "r1", "kind": "experiment", "parent": "n1", "change": "radical",
                "hypothesis": "h",

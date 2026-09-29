@@ -2021,6 +2021,72 @@ def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]
 
     tree = load(competition)
     nodes = _current(tree).get("nodes") or {}
+
+    # The first node on a competition has to be a research node, not an experiment.
+    #
+    # Everything validate() checks is the FORM of a node - is the reason substantive, does the
+    # change touch one thing - and none of it is the SEQUENCE. So an agent handed a competition
+    # and a confident opinion about it could build a base experiment on nothing, and the tree
+    # would record that competition as understood before anything was known about it.
+    #
+    # This is NOT a wall, and it is deliberately not one. The user may have a reason to skip the
+    # sweep, and a plugin that answers a considered opinion by refusing to let it be acted on is a
+    # plugin that gets routed around. What it does instead is make the skip itself a thing the
+    # tree holds: the competition then has a research node either way - one that says what was
+    # found, or one that says the sweep was declined and why. An opinion that survives is stronger
+    # for having been tested; an opinion taken unmeasured is at least on the ledger, and the next
+    # iteration reading the tree can see that no evidence ever touched it.
+    #
+    # It sits on the first DECLARATION and not on record(). Recording is how a tree is built and
+    # how a result is filed, and gating it refused ninety-seven assertions across this suite's own
+    # fixtures - every one of them a tree being constructed on purpose to test something else. The
+    # declaration is where the commitment is: it is what kaggle_kernel_launch and
+    # kaggle_local_launch both require, so it is the last point before quota is spent on a
+    # competition nobody has looked at.
+    if str(node.get("kind") or "experiment") == "experiment" and not any(
+        isinstance(n, dict) and n.get("kind") == "research" for n in nodes.values()
+    ):
+        return {
+            "ok": False, "code": "no_research_yet",
+            "message": (
+                f"{competition!r} has nothing recorded yet, so its first node cannot be an "
+                "experiment. Nothing in this tree checks the order, so without this the "
+                "competition would simply be marked as understood before anything was known "
+                "about it."
+            ),
+            "askTheUserFirst": (
+                "Do not record the experiment and do not quietly start building. Ask the user "
+                "which of the three they want - use ask_user, and put the middle option first "
+                "when they are away rather than assuming they want the work blocked."
+            ),
+            "how": [
+                "1. Run the sweep. kaggle-competition-research for this competition: wave 1 as "
+                "four subagents in a single response, then wave 2 in this thread. Settle the "
+                "fork-vs-write question with approach-decision inside it. Store every source you "
+                "read as you read it - kaggle_sources action=\"add\", then action=\"extract\" with "
+                "the sentence that carries the claim, and hang the results on the node itself "
+                "with a \"sources\" array of {sourceId, relation, quote}. A research node with no "
+                "sources is an assertion that a sweep happened, and the one thing this plugin "
+                "exists to catch.",
+
+                "2. Skip it knowingly, which is allowed. Record a research node that says so "
+                "rather than nothing at all: question = what was not established about this "
+                "competition, targets = what was therefore not asked, verdict = \"inconclusive\", "
+                "reason = the user's own reason in their words, opens = what this decision makes "
+                "possible anyway. That node is the difference between a tree that records a "
+                "deliberate choice and a tree with a hole in it, and the next iteration reading it "
+                "will know the approach was never tested against the field.",
+
+                "3. The research already happened, elsewhere or earlier. Record it as the "
+                "research node now, with its sources. It costs one call and it is the difference "
+                "between a tree that says what was known and one that says only what was tried.",
+
+                "A user's stated plan is a hypothesis to be tested against the leaderboard, the "
+                "rules and the open code - not a premise to build on. That is the whole reason "
+                "this node exists, and it holds whichever of the three the user picks.",
+            ],
+            "tree": read(competition),
+        }
     diagnosis = node.get("diagnosis")
     settled = [
         nid for nid, n in nodes.items()
