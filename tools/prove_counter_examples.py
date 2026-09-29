@@ -1647,7 +1647,7 @@ def _drop_forensics_section(root):
     p = root.joinpath(*_SKILL)
     text = p.read_text(encoding="utf-8")
     a = text.find("## forensics — read the sources yourself")
-    b = text.find("## converge — generate before you converge")
+    b = text.find("## converge ")
     if a < 0 or b < 0 or b <= a:
         raise AssertionError("fixture cannot locate the forensics section")
     p.write_text(text[:a] + text[b:], encoding="utf-8", newline="")
@@ -2554,6 +2554,90 @@ def _(ks, js):
     return _catches("check_a_wave_subagent_can_reach_kaggle", _break_the_driver,
                     "the driver exits 0 on --list",
                     "and it reaches the whole tool surface, not a subset")
+
+
+# ------------------------------------ the scale is fixed before the candidates exist
+def _grade_after_generating(root):
+    """Move the scale-fixing step below the generation round.
+
+    This is the anchoring failure in the exact place it is written to prevent, and it is a pure
+    reordering: every sentence is still there, still true, and now the criteria get written after
+    the candidates they are supposed to judge.
+    """
+    path = root / "skills" / "kaggle-competition-research" / "SKILL.md"
+    lines = path.read_text(encoding="utf-8").split("\n")
+    try:
+        start = next(i for i, l in enumerate(lines) if l.startswith("### First, fix the scale"))
+        stop = next(i for i, l in enumerate(lines)
+                    if l.startswith("### Then the three moves"))
+    except StopIteration:
+        raise AssertionError("fixture is stale: the scale step or the generation step moved")
+    block = lines[start:stop]
+    gen = next(i for i, l in enumerate(lines)
+               if l.startswith("**Generate first, evaluate later"))
+    tail_start = next(i for i, l in enumerate(lines)
+                      if l.startswith("**Not carried:"))
+    lines[start:stop] = []
+    del lines[gen - (stop - start):]
+    lines[tail_start - (stop - start):tail_start - (stop - start)] = block
+    path.write_text("\n".join(lines), encoding="utf-8", newline="")
+
+
+@case("checker: a scale fixed after the candidates is caught",
+      "criteria written once the candidates exist are anchored to them, whatever the wording")
+def _(ks, js):
+    return _catches("check_the_ladder_leaves_nothing_orphaned", _grade_after_generating,
+                    "converge fetches the grading instrument before it generates any candidate")
+
+
+def _unreview_the_claims(root):
+    """Leave the candidate list with its review and the claim list without one.
+
+    The whole paragraph goes, not its bold opening line. A check that asks for "claims are
+    candidates" and "verifier" in one paragraph is still satisfied by a paragraph whose first
+    sentence was rewritten, because the second line still names the verifier - a break that
+    reads like a break and lands on nothing.
+    """
+    path = root / "skills" / "kaggle-competition-research" / "SKILL.md"
+    lines = path.read_text(encoding="utf-8").split("\n")
+    try:
+        i = next(k for k, l in enumerate(lines)
+                 if l.startswith("**Then have something that did not write them attack them.**"))
+    except StopIteration:
+        raise AssertionError("fixture is stale: the claim-review paragraph moved")
+    j = i
+    while j < len(lines) and lines[j].strip() != "":
+        j += 1
+    del lines[i:j]
+    path.write_text("\n".join(lines), encoding="utf-8", newline="")
+
+
+@case("checker: a claim list with no review is caught",
+      "a claim is a candidate, and the candidate list has one")
+def _(ks, js):
+    # One expectation. This break touches decide and leaves converge alone, so the candidate
+    # list still has its review and that check is supposed to stay green.
+    return _catches("check_the_ladder_leaves_nothing_orphaned", _unreview_the_claims,
+                    "decide dispatches a verifier against the claim list")
+
+
+def _unlink_the_two_halves(root):
+    """Leave both readings of the vendored method, and the pointer from one to the other."""
+    path = root / "skills" / "kaggle-competition-research" / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    old = ("**This is step 7 of the vendored method, and `converge` is the round step 8 asks for "
+           "after the\nevidence is in.**")
+    if old not in text:
+        raise AssertionError("fixture is stale: the step-7 pointer moved")
+    path.write_text(text.replace(old, "**This runs before the rest of the sweep.**", 1),
+                    encoding="utf-8", newline="")
+
+
+@case("checker: the two halves of one method, unlinked, is caught",
+      "read separately they look like two unrelated readings of the same file")
+def _(ks, js):
+    return _catches("check_the_ladder_leaves_nothing_orphaned", _unlink_the_two_halves,
+                    "challenge names itself as step 7 and points forward to converge")
 
 
 if __name__ == "__main__":

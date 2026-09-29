@@ -5825,6 +5825,52 @@ def check_the_ladder_leaves_nothing_orphaned():
             check(all(str(r.get("passesWhen") or "").strip() for r in shown),
                   "and every rung says what passing it looks like")
 
+    # 18. the scale is fixed before the candidates exist. This is an ordering claim, so it is
+    #     checked as one: the two steps have to appear in this order in the file, and a section
+    #     that kept the rules but reordered them would be the anchoring failure in the exact
+    #     place it is supposed to prevent.
+    converge = body[body.find("## converge "):body.find("## anchor ")]
+    scale_at = converge.find("scientific-critical-thinking")
+    generate_at = converge.find("**Generate first, evaluate later")
+    check(scale_at > 0 and generate_at > 0 and scale_at < generate_at,
+          "converge fetches the grading instrument before it generates any candidate")
+    for level in ("holds", "partial", "fails", "untested"):
+        check(f"`{level}`" in converge,
+              f"and the scale it fixes names the level {level} before the generation round")
+    check("before generating" in converge.lower() or "before a single candidate" in converge.lower(),
+          "and it says why the order is the point, not just what the order is")
+    check("kaggle_methods" in converge,
+          "and the instrument arrives through the same sanctioned fetch `method` uses")
+    check("scientific-critical-thinking" not in body[
+              body.find("## method "):body.find("## field ")],
+          "and `method` still aims wave 2 rather than the claims - one pass per question")
+
+    # 19. the two halves of the vendored method say so. Read separately they look like two
+    #     unrelated readings of the same file, and the second one is the one that gets skipped.
+    challenge = body[body.find("## challenge "):body.find("## method ")]
+    check("step 7" in challenge.lower() and "converge" in challenge,
+          "challenge names itself as step 7 and points forward to converge")
+    check("step 8" in converge.lower() and "challenge" in converge,
+          "and converge names itself as the round step 8 asks for, pointing back at challenge")
+
+    # 20. the claim list gets a review, because a claim is a candidate and the candidates do
+    decide = body[body.find("## decide "):]
+    # Not "does the word appear": it appears in decide several times over, so deleting the
+    # review itself would change nothing measurable. The property is the construction - a claim
+    # is called a candidate AND a verifier is put on it - so both have to be in the same
+    # paragraph, or the claim list has quietly lost its review again.
+    claim_review = [p for p in decide.split("\n\n")
+                    if "claims are candidates" in p and "verifier" in p]
+    check(bool(claim_review),
+          "decide dispatches a verifier against the claim list, as converge does the candidates")
+    check("verifier" in converge.lower(),
+          "and the candidate list has one too, so the two are visibly the same discipline")
+    # the boundary the instrument draws for itself: it judges claims, peer-review writes reports
+    check("peer-review" in decide.lower() or "peer-review" in converge.lower(),
+          "the line between judging a claim and writing a review is written down")
+    check("technical-report" in converge.lower() or "technical-report" in decide.lower(),
+          "and the report side is left to the skill that owns it")
+
 
 # ------------------------------------------------ what a wave subagent can actually reach
 # A subagent is not given this plugin's MCP tools, and that was measured rather than inferred: a

@@ -172,12 +172,13 @@ survey  ── THE ONE RUNG THAT FANS OUT. 4 subagents, ONE response, all run_in
   forensics  the same thread, opening the GitHub / Hugging Face / arXiv pages the
              search named, and landing each one on a node
         ▼
-  converge  produce before you narrow
+  converge  the grading scale is fixed FIRST, from a second kaggle_methods pass aimed at the
+            claims the sweep left open. Then generate candidates, and a verifier attacks them.
         ▼
   anchor   the held-out set, declared before anything is measured on it
         ▼
-  decide   each CLAIM of the user's proposal weighed against the evidence above, one by
-           one, and recorded. Not a single fork/write verdict on the whole plan.
+  decide   each CLAIM of the user's proposal weighed on that scale, one by one, recorded,
+           and attacked by a verifier. Not a single fork/write verdict on the whole plan.
         ▼
   smoke ──▶ scale
 ```
@@ -1046,6 +1047,11 @@ Record it as a research node with `stage: "challenge"`, and let its `opens` say 
 licensed. That node is what the next two rungs were aimed by, and the next iteration reading
 the tree can see whether the aim was justified or merely asserted.
 
+**This is step 7 of the vendored method, and `converge` is the round step 8 asks for after the
+evidence is in.** Two readings of one method, at the two points it prescribes — so the four
+reports get argued with before they are allowed to aim anything, and the candidates get a fresh
+generation round afterwards rather than being scored in the same breath they were written in.
+
 ## method — published experimental method, before the general search
 
 This sits where it sits on purpose. `survey`'s reports have just been synthesised, which means the
@@ -1324,13 +1330,54 @@ problem that made parallel writers dangerous does not apply here, and there is n
 batch them either.
 
 
-## converge — generate before you converge
+## converge — fix the grading scale, then generate before you converge
 
 The sweep has named the field. The next mistake is to take its first plausible answer as the
 answer, because by now every option on the table has been read about and the one that sounds best
 is the one the last twenty minutes made sound best.
+
 `references/kdense/scientific-brainstorming/` is vendored whole for this step, and three of its
-moves are about a single agent rather than a room of them.
+moves are about a single agent rather than a room of them. **`challenge` was step 7 of the same
+method, run on the four reports; this is the round step 8 asks for once the evidence is in** —
+independent generation after the check rather than before it. They are one method at the two
+points it prescribes, and reading them as two unrelated readings is how the second one gets
+skipped.
+
+### First, fix the scale — before a single candidate exists
+
+**A second kaggle_methods pass, and the query is not the one `method` used.** `method` asks what
+published method bears on this *shape* of problem, which is all there was to ask before wave 2.
+By now the sweep has named things: specific methods, papers, repositories, and — the part that
+matters — the claims the user's plan rests on that nothing has touched. Ask about those.
+
+```
+kaggle_methods action="search" change="<the specific proposition, and what would support or refute it>" hypothesis="<what this tree would do next if the proposition is wrong>"
+kaggle_methods action="fetch"   name="scientific-critical-thinking" commit=<the pin the index reports>
+```
+
+`scientific-critical-thinking` is the instrument and it is worth the fetch: its own vocabulary is
+evidence grading, bias and confounders, which is exactly what turns a claim into a graded
+judgement rather than an opinion about an opinion. It also draws its own boundary — *"for formal
+peer review writing use peer-review"* — and that is where the line is. It judges whether a claim
+survives; `peer-review` is `technical-report`'s, and neither belongs in the other.
+
+**Then write the scale down, in the tree, before generating anything.** Four levels, and what
+each one obliges you to say:
+
+| Level | Means | Must also carry |
+|---|---|---|
+| `holds` | the evidence bears on it and does not cut against it | which evidence, specifically |
+| `partial` | some of it stands and some of it does not | which part, and what is unresolved |
+| `fails` | the evidence cuts against it | what would have to be true for it to survive |
+| `untested` | nothing gathered speaks to it | why the sweep could not have settled it |
+
+Fixing this now, before the candidates exist, is the whole point. **A scale written after the
+candidates has already been anchored to them** — and an anchored scale is the one that marks the
+candidate you liked as `holds` and the other as `fails`, which is the outcome you would have
+written by hand. These four are the same four `decide` records on its node, so the scale is not
+an extra artefact; it is the shape of the record you are about to have to fill in.
+
+### Then the three moves that are about one agent
 
 **Generate first, evaluate later, and do not interleave.** Upstream's rule is that ideas are
 produced without being shown to anything that can rank them, and the reason is anchoring: a
@@ -1344,7 +1391,8 @@ adversarial review for exactly the reason that self-review finds nothing. The ne
 here is a `verifier` subagent handed the candidate list and the question "what would make this
 wrong", with no tree, no history and no stake in it. This is the same dispatch
 `technical-report` uses for the finished report, and it is the only mechanism in the package that
-can acquit anything.
+can acquit anything. `decide` runs the same dispatch against the claim list, for the same reason:
+a claim is a candidate, and it had none.
 
 **Do not let the scores pick the winner.** Upstream is explicit that its matrix is a traceable
 decision aid and the judgement stays with a person. The fit is exact: the two gates below already
@@ -1455,6 +1503,21 @@ Three things the shape enforces, all of them refusals rather than requirements:
   the most important line in the node, and it is the one a plan that had been quietly validated
   would never write down. The next iteration reading the tree can then see which parts of the
   plan were never tested at all.
+
+**The scale was fixed at `converge`, before any candidate existed, and these are its four
+levels.** Do not re-derive it here and do not soften it to fit a claim you like — that is the
+anchoring `converge` exists to prevent, and a scale rewritten after the candidates is not a
+scale. A claim that lands on a level the sweep cannot actually support is `untested`, and
+`untested` is an allowed answer rather than a failure to answer.
+
+**Then have something that did not write them attack them.** The claims are candidates, and
+`converge` dispatches a `verifier` against the candidate list precisely because self-review finds
+nothing; a claim gets the same treatment for the same reason. Hand a `verifier` subagent the
+claim list with no tree, no history and no stake in it, and ask the two questions that matter:
+which claim is weakest, and which one would survive if the sweep's central reading turned out to
+be the alternative explanation rather than the cause. **Take its answer seriously enough to
+demote a claim.** A claim that survives a review nobody could have authored is the strongest
+thing in this tree, and a claim that the verifier breaks and you keep is the one you will regret.
 
 Then, and only then, the main agent produces a plan, in this order:
 
