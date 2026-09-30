@@ -1,6 +1,6 @@
 {
   "name": "kaggle-agent",
-  "version": "1.36.0",
+  "version": "1.37.0",
   "description": "Kaggle competition research as local tools and skills: accounts and quota, notebooks and kernels, competitions and forums, the RSI experiment tree, the evidence store, log monitoring, plots and handoff. Claude Code build of the MiniMax Code plugin; the host mapping is in claude/HOST.md.",
   "author": {
     "name": "Akira",
