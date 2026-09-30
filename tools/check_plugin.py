@@ -2732,7 +2732,7 @@ def check_runtime_behaviour():
                 rev = int(line.split()[1])
         nd = _v3_node("n1", None, 0.4, 0.0, "draft", "base")
         nd["new_base"] = "n1"
-        txt, err = tree("record", read_revision=rev, node=nd)
+        txt, err = tree("record", read_revision=rev, node=nd, recorder="check_plugin")
         check(not err, "a node records over the wire")
         txt, err = tree("select", weights={"workers": 2})
         check("batch (|C| <= workers" in txt, "select returns a batch over the wire")
