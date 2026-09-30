@@ -1302,7 +1302,19 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "integer",
                     "description": (
                         "The readRevision from action='read'. Required by action='record', and "
-                        "refused if the tree changed since that read - read again and re-plan."
+                        "refused if the tree changed since that read - read again and re-plan. "
+                        "One exception, so agents can write in parallel: when the only changes "
+                        "since are nodes other agents appended (no moved base, no other action), "
+                        "the write lands on top of them and the reply names them."
+                    ),
+                },
+                "recorder": {
+                    "type": "string",
+                    "description": (
+                        "Which model is writing, e.g. 'claude-opus-5-5' or 'MiniMax-M2'. Required "
+                        "by record, declare and settle (or put recordedBy={model} in the node). "
+                        "The server adds the host harness from the MCP client and the revision, "
+                        "and stores them on the node as recordedBy."
                     ),
                 },
                 "node": {
@@ -1650,7 +1662,29 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.36.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.37.0"}
+
+# The MCP client's clientInfo from initialize: which harness is calling (Claude Code, MiniMax
+# Code, ...). Recorded on every tree node as its host, next to the model the caller names.
+CLIENT_INFO: dict[str, Any] = {}
+
+
+def host_label() -> str:
+    """Which harness is writing: the client's own name first, then what the environment shows."""
+    name = str(CLIENT_INFO.get("name") or "").strip()
+    if name:
+        version = str(CLIENT_INFO.get("version") or "").strip()
+        return f"{name} {version}".strip()
+    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_ENTRYPOINT"):
+        return "claude-code"
+    if ".minimax" in os.environ.get("PLUGIN_ROOT", "") or os.environ.get("MINIMAX_HOME"):
+        return "minimax-code"
+    return "unknown host"
+
+
+# Tree actions that only read. Everything else runs under the tree's write lock, so agents in
+# separate processes can work one competition at once without losing each other's writes.
+TREE_READ_ONLY = frozenset({"read", "plan", "status", "board", "consider", "select", "ablate"})
 
 
 def run_kaggle(args: list[str], account: str = "") -> tuple[int, str, str]:
@@ -1868,6 +1902,35 @@ def _verify_accelerator(ref: str, expected: str) -> dict[str, Any]:
 
 
 def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    if name == "kaggle_experiment_tree":
+        action = str(args.get("action") or "read")
+        comp = str(args.get("competition") or "").strip()
+        experiment_tree.set_writer(host_label(), str(args.get("recorder") or ""))
+        if comp and action not in TREE_READ_ONLY:
+            try:
+                with experiment_tree.tree_lock(comp):
+                    return _tool_call(name, args)
+            except TimeoutError as exc:
+                return text_response(f"kaggle_experiment_tree {action}", 3, "", str(exc))
+    return _tool_call(name, args)
+
+
+def _unattributed(action: str, node: dict[str, Any], args: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """A node says which model wrote it; the host is filled in here. Refused when it does not."""
+    given = node.get("recordedBy") if isinstance(node.get("recordedBy"), dict) else {}
+    model = str(given.get("model") or args.get("recorder") or "").strip()
+    if model:
+        node["recordedBy"] = {"model": model}
+        return None
+    return text_response(
+        f"kaggle_experiment_tree {action}", 2, "",
+        "say which model is writing this node: pass recorder='<model id>' (for example "
+        "claude-opus-5-5 or MiniMax-M2), or put \"recordedBy\": {\"model\": \"...\"} in the node. "
+        f"The host is recorded by the server ({host_label()}). A tree read by several agents "
+        "has to show who concluded what.")
+
+
+def _tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Map a tool name plus arguments to a Kaggle CLI invocation."""
     if name == "kaggle_quota":
         return text_response("kaggle quota", *run_kaggle(["quota"], _acct(args)))
@@ -3680,6 +3743,9 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     "action='record' needs node: the node as a JSON object in one string. "
                     + NODE_JSON_EXAMPLE,
                 )
+            refused = _unattributed(action, node, args)
+            if refused:
+                return refused
             rev = args.get("read_revision")
             res = experiment_tree.record(
                 comp, node,
@@ -3983,6 +4049,9 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     f"action={action!r} needs node: the node as a JSON object in one string. "
                     + NODE_JSON_EXAMPLE,
                 )
+            refused = _unattributed(action, node, args)
+            if refused:
+                return refused
             rev = args.get("read_revision")
             if action == "declare":
                 res = experiment_tree.declare(
@@ -4586,6 +4655,8 @@ def main() -> int:
         params = req.get("params") or {}
 
         if method == "initialize":
+            if isinstance(params.get("clientInfo"), dict):
+                CLIENT_INFO.update(params["clientInfo"])
             respond(
                 req_id,
                 {

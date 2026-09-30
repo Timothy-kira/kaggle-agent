@@ -1339,7 +1339,7 @@ def check_the_first_node_cannot_be_an_experiment():
             et.save(c4, t4)
             said = json.dumps(ks.tool_call("kaggle_experiment_tree", {
                 "action": "declare", "competition": c4,
-                "node": json.dumps(experiment), "read_revision": 0,
+                "node": json.dumps(experiment), "read_revision": 0, "recorder": "check_plugin",
             }), ensure_ascii=False)
             check("no_research_yet" in said,
                   f"the refusal reaches the caller with its code ({said[:120]})")
@@ -1359,6 +1359,104 @@ def check_the_first_node_cannot_be_an_experiment():
             _os.environ.pop("KAGGLE_AGENT_HOME", None)
         else:
             _os.environ["KAGGLE_AGENT_HOME"] = saved
+
+
+def check_parallel_writers_and_attribution():
+    """Agents in separate processes write one tree at once, and every node says who wrote it.
+
+    A research sweep fans out: several agents, each with its own server process, record nodes into
+    the same competition. Before 1.37.0 a write was an unlocked load -> validate -> save, so two
+    interleaved writers lost one node without either being told, and a strict readRevision meant
+    every agent but one was refused after each write. This starts six real processes that record
+    from the same read at the same instant, and checks that all six land, each at its own revision,
+    each stamped with the model it named and the host the server saw.
+    """
+    print("parallel writers and attribution")
+    import subprocess as _sub
+    import time as _time
+
+    def check(cond, label):
+        if cond:
+            ok(label)
+        else:
+            bad(f"parallel writers: {label}")
+        return bool(cond)
+
+    home = _mkdtemp(prefix="ka-check-parallel-")
+    env = dict(os.environ, KAGGLE_AGENT_HOME=home, PYTHONIOENCODING="utf-8")
+    comp = "zz-parallel-writers"
+    driver = (
+        "import json,sys,time\n"
+        f"sys.path.insert(0, {str(ROOT / 'mcp')!r})\n"
+        "import kaggle_server as ks\n"
+        "ks.CLIENT_INFO.update({'name': 'check-harness', 'version': '1'})\n"
+        "args = json.loads(sys.argv[1]); start = float(sys.argv[2])\n"
+        "while time.time() < start: time.sleep(0.001)\n"
+        "res = ks.tool_call('kaggle_experiment_tree', args)\n"
+        "print(json.dumps(res))\n"
+    )
+
+    def run(args, start=0.0):
+        p = _sub.run([sys.executable, "-B", "-c", driver, json.dumps(args), str(start)],
+                     env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
+        return p.stdout + p.stderr
+
+    base = {"id": "n1", "kind": "experiment", "parent": None, "change": "baseline",
+            "hypothesis": "the reference every later node is measured against",
+            "metric": {"name": "score", "parent": None, "result": 1.0, "delta": None,
+                       "rank": None, "rankSource": "check"},
+            "operator": "draft", "family": "base", "verdict": "keep",
+            "reason": "reference reading for the concurrency check", "artifacts": ["none"],
+            "evidence": "local-only"}
+    out = run({"action": "record", "competition": comp, "read_revision": 0,
+               "node": json.dumps(base), "new_base": "n1"})
+    check("say which model is writing" in out, "a node that names no model is refused")
+    out = run({"action": "record", "competition": comp, "read_revision": 0,
+               "node": json.dumps(base), "new_base": "n1", "recorder": "setup-model"})
+    check("recorded n1" in out, f"the base is recorded once a model is named ({out[-120:]!r})")
+
+    start = _time.time() + 3.0
+    procs = []
+    for i in range(2, 8):
+        node = {"id": f"r{i}-par", "kind": "research", "parent": "n1",
+                "question": f"parallel question {i}", "targets": ["web"],
+                "verdict": "inconclusive", "reason": f"parallel writer {i}",
+                "opens": "nothing; a concurrency check"}
+        args = {"action": "record", "competition": comp, "read_revision": 1,
+                "node": json.dumps(node), "recorder": f"model-{i}"}
+        procs.append(_sub.Popen([sys.executable, "-B", "-c", driver, json.dumps(args), str(start)],
+                                env=env, stdout=_sub.PIPE, stderr=_sub.PIPE, text=True,
+                                encoding="utf-8"))
+    outs = [p.communicate(timeout=120)[0] for p in procs]
+    landed = sum(1 for o in outs if "recorded r" in o)
+    check(landed == 6, f"six writers from the same read all land ({landed}/6)")
+    check(sum(1 for o in outs if "on top of" in o) >= 1,
+          "a writer that lands on other agents' new nodes is told which ones")
+
+    tree = json.loads((Path(home) / "handoff" / comp / "tree.json").read_text(encoding="utf-8"))
+    nodes = tree["tree"]["nodes"]
+    check(len(nodes) == 7 and tree["revision"] == 7,
+          f"no write was lost: 7 nodes at revision 7 ({len(nodes)} at {tree['revision']})")
+    stamps = [n.get("recordedBy") or {} for n in nodes.values()]
+    check(sorted(s.get("revision") for s in stamps) == list(range(1, 8)),
+          "each node carries the revision it was written at, one revision per write")
+    check(all(s.get("host") == "check-harness 1" for s in stamps),
+          "the host comes from the MCP client's own initialize")
+    check({s.get("model") for s in stamps} == {"setup-model"} | {f"model-{i}" for i in range(2, 8)},
+          "the model is the one each writer named")
+
+    out = run({"action": "record", "competition": comp, "read_revision": 7,
+               "node": json.dumps({**base, "id": "r3-par"}), "recorder": "late"})
+    check("duplicate_id" in out and "r2-survey" in out,
+          "a duplicate id is refused, and parallel writers are told to use their own ids")
+    run({"action": "anchor", "competition": comp, "held_out": "a held-out set"})
+    late = {"id": "r9-late", "kind": "research", "parent": "n1", "question": "late",
+            "targets": ["web"], "verdict": "inconclusive", "reason": "stale after an anchor",
+            "opens": "nothing"}
+    out = run({"action": "record", "competition": comp, "read_revision": 7,
+               "node": json.dumps(late), "recorder": "late"})
+    check("stale_read" in out,
+          "a change other than an appended node (an anchor) still requires a fresh read")
 
 
 def check_stdio_is_utf8():
@@ -1430,7 +1528,8 @@ def check_stdio_is_utf8():
         comp = "zz-stdio-cjk"
         call(1, "kaggle_experiment_tree",
              {"action": "record", "competition": comp,
-              "node": json.dumps(node, ensure_ascii=False), "read_revision": 0},
+              "node": json.dumps(node, ensure_ascii=False), "read_revision": 0,
+              "recorder": "check_plugin"},
              "a research node written in Chinese")
 
         path = Path(home) / "handoff" / comp / "tree.json"
@@ -2633,7 +2732,7 @@ def check_runtime_behaviour():
                 rev = int(line.split()[1])
         nd = _v3_node("n1", None, 0.4, 0.0, "draft", "base")
         nd["new_base"] = "n1"
-        txt, err = tree("record", read_revision=rev, node=nd)
+        txt, err = tree("record", read_revision=rev, node=nd, recorder="check_plugin")
         check(not err, "a node records over the wire")
         txt, err = tree("select", weights={"workers": 2})
         check("batch (|C| <= workers" in txt, "select returns a batch over the wire")
@@ -6113,6 +6212,7 @@ def main() -> int:
         check_a_wave_subagent_can_reach_kaggle,
         check_a_claim_is_judged_against_something,
         check_stdio_is_utf8,                                # the first node cannot be an experiment
+        check_parallel_writers_and_attribution,                                      # parallel writers and attribution
         check_search_widening,                                                       # search widening
         check_replay_semantics,                                                      # replay semantics
         check_monotone_policy,                                                       # monotone policy
