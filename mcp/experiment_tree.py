@@ -37,10 +37,12 @@ from, because a handoff that cannot see the tree is a handoff built on a fiction
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -619,12 +621,108 @@ def load(competition: str) -> dict[str, Any]:
     return data
 
 
+# --- concurrent writers ------------------------------------------------------------------------
+#
+# Several agents may work one competition at once (a research sweep fans out), each through its own
+# server process. A write is load -> validate -> save, so two processes interleaving it lose one
+# write without either being told. The lock makes the whole cycle atomic across processes; it is a
+# file created with O_EXCL beside tree.json, so it works on every platform and needs no dependency.
+
+LOCK_WAIT_SECONDS = 30.0
+LOCK_STALE_SECONDS = 120.0  # a writer that died holding the lock does not block the tree forever
+_held_locks: dict[str, int] = {}
+
+
+@contextlib.contextmanager
+def tree_lock(competition: str):
+    """Hold the competition's write lock. Re-entrant within one process."""
+    path = tree_path_resolved(competition) + ".lock"
+    if _held_locks.get(path):
+        _held_locks[path] += 1
+        try:
+            yield
+        finally:
+            _held_locks[path] -= 1
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    deadline = time.time() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{os.getpid()} {time.time():.3f}".encode("ascii"))
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                age = time.time() - os.path.getmtime(path)
+            except OSError:
+                continue  # released between the two calls: try again at once
+            if age > LOCK_STALE_SECONDS:
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+                continue
+            if time.time() > deadline:
+                raise TimeoutError(f"the tree is being written by another agent and its lock "
+                                   f"was not released in {LOCK_WAIT_SECONDS:.0f}s: {path}")
+            time.sleep(0.05)
+    _held_locks[path] = 1
+    try:
+        yield
+    finally:
+        _held_locks.pop(path, None)
+        with contextlib.suppress(OSError):
+            os.remove(path)
+
+
+# Who is writing: set by the server for each call. The host comes from the MCP client's own
+# initialize message (or the environment), the model from the caller, because only the caller
+# knows which model it is.
+WRITER: dict[str, str] = {"host": "", "model": ""}
+
+
+def set_writer(host: str = "", model: str = "") -> None:
+    WRITER["host"], WRITER["model"] = str(host or "")[:120], str(model or "")[:120]
+
+
+def _concurrent_appends(tree: dict[str, Any], read_revision: int) -> tuple[Optional[list[str]], str]:
+    """The nodes written since ``read_revision``, when every change since then was one of them.
+
+    A stale read is refused because a plan made on an old tree can branch off a base that moved or
+    repeat a node that was refuted meanwhile. Nodes another agent merely appended do neither, so
+    parallel writers may land on top of each other; anything else (a moved base, an anchor, a
+    prune, a node written before attribution existed) still needs a fresh read. Returns
+    (ids, "") when the write may proceed, or (None, why) when it may not.
+    """
+    current, read_at = int(tree["revision"]), int(read_revision)
+    if read_at == current:
+        return [], ""
+    if read_at > current:
+        return None, f"revision {read_at} was never this tree's"
+    added = []
+    for nid, n in (_current(tree).get("nodes") or {}).items():
+        stamp = n.get("recordedBy") if isinstance(n, dict) else None
+        if isinstance(stamp, dict) and isinstance(stamp.get("revision"), int) and \
+                read_at < stamp["revision"] <= current:
+            added.append((stamp["revision"], nid, stamp))
+    if len({r for r, _, _ in added}) != current - read_at:
+        return None, "something other than appended nodes changed since then"
+    moved = [nid for _, nid, s in added if s.get("movedBase")]
+    if moved:
+        return None, f"a concurrent write moved the base ({', '.join(moved)})"
+    return [nid for _, nid, _ in sorted(added)], ""
+
+
 def save(competition: str, data: dict[str, Any]) -> str:
     """Persist the document. The only writer of tree.json in this package.
 
     Public because handoff.py delegates its tree writes here instead of keeping a second,
     unvalidated writer. tools/check_plugin.py asserts it is the only one.
     """
+    with tree_lock(competition):
+        return _save_locked(competition, data)
+
+
+def _save_locked(competition: str, data: dict[str, Any]) -> str:
     path = tree_path_resolved(competition)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = {k: v for k, v in data.items() if not k.startswith("_")}
@@ -2140,11 +2238,12 @@ def declare(competition: str, node: dict[str, Any], read_revision: Optional[int]
                 "message": f"read the tree before declaring. Call kaggle_experiment_tree "
                            f"action=\"read\" for {competition!r}, look at the base, the kept chain "
                            f"and the refuted list, then pass its readRevision back."}
-    if int(read_revision) != int(load(competition)["revision"]):
+    concurrent, why = _concurrent_appends(load(competition), int(read_revision))
+    if concurrent is None:
         return {"ok": False, "code": "stale_read",
                 "message": f"the tree has changed since you read it (you read revision "
-                           f"{read_revision}). Read it again and re-plan from the current base "
-                           f"before declaring."}
+                           f"{read_revision}; {why}). Read it again and re-plan from the current "
+                           f"base before declaring."}
 
     tree = load(competition)
     nodes = _current(tree).get("nodes") or {}
@@ -3095,14 +3194,15 @@ def record(competition: str, node: dict[str, Any], read_revision: Optional[int],
             "tree": read(competition),
         }
 
-    if int(read_revision) != int(tree["revision"]):
+    concurrent, why = _concurrent_appends(tree, int(read_revision))
+    if concurrent is None:
         return {
             "ok": False,
             "code": "stale_read",
             "message": (
                 f"the tree has changed since you read it (you read revision {read_revision}, "
-                f"it is now {tree['revision']}). Read it again and re-plan from the current "
-                "base before recording."
+                f"it is now {tree['revision']}; {why}). Read it again and re-plan from the "
+                "current base before recording."
             ),
             "tree": read(competition),
         }
@@ -3121,7 +3221,10 @@ def record(competition: str, node: dict[str, Any], read_revision: Optional[int],
     if nid in nodes:
         return {
             "ok": False, "code": "duplicate_id",
-            "message": f"node {nid!r} already exists; ids are never reused or rewritten",
+            "message": f"node {nid!r} already exists; ids are never reused or rewritten. The "
+                       f"next free numbered id is {_suggest_id(tree)!r}; agents writing in "
+                       f"parallel should each use their own ids (for example r2-survey, "
+                       f"r3-field) rather than the suggested one, which they would all share",
         }
 
     # Validate the candidate document before committing, so a rejected node leaves nothing
@@ -3147,11 +3250,22 @@ def record(competition: str, node: dict[str, Any], read_revision: Optional[int],
             "node": node,
         }
 
+    tree["revision"] = int(tree["revision"]) + 1
+    tree["updatedAt"] = _now()
+    # who wrote it and at which revision: the attribution a reviewer reads, and what lets a later
+    # writer tell a plain concurrent append from a change it has to re-read for
+    given = node.get("recordedBy") if isinstance(node.get("recordedBy"), dict) else {}
+    node["recordedBy"] = {
+        "model": str(given.get("model") or WRITER["model"] or "unstated")[:120],
+        "host": str(WRITER["host"] or given.get("host") or "internal")[:120],
+        "at": tree["updatedAt"],
+        "revision": tree["revision"],
+        **({"movedBase": True} if new_base else {}),
+    }
+    inner_candidate["nodes"][nid] = node
     _current(tree)["nodes"] = inner_candidate["nodes"]
     if new_base:
         _current(tree)["base"] = inner_candidate["base"]
-    tree["revision"] = int(tree["revision"]) + 1
-    tree["updatedAt"] = _now()
     path = _write(competition, tree)
 
     return {
@@ -3162,9 +3276,14 @@ def record(competition: str, node: dict[str, Any], read_revision: Optional[int],
         "updatedAt": tree["updatedAt"],
         "path": path,
         "base": _current(tree)["base"].get("id"),
+        "recordedBy": node["recordedBy"],
+        "concurrent": concurrent,
         "note": (
-            "the tree changed, so the next node requires a fresh read "
-            "(action=\"read\") before it can be recorded."
+            (f"written on top of {len(concurrent)} node(s) other agents added since your read "
+             f"({', '.join(concurrent)}); nothing else had changed, so no re-read was needed. "
+             if concurrent else "")
+            + "The tree changed, so plan the next node from a fresh read (action=\"read\"); a "
+            "write that only lands on top of other agents' new nodes is still accepted."
         ),
     }
 
@@ -3211,7 +3330,9 @@ def plan_prompt(competition: str) -> str:
         "",
         "Choose the next node, then record it with:",
         f'  kaggle_experiment_tree action="record" read_revision={tree["revision"]} node={{...}}',
-        f"  suggested id: {tree['nextNodeId']}",
+        f"  suggested id: {tree['nextNodeId']}  (agents writing in parallel: give each its own ids,"
+        f" e.g. r2-survey; a duplicate id is refused, never overwritten)",
+        "  say who writes it: recorder=<model id>; the host is filled in by the server",
         "",
         "An experiment node changes ONE thing and measures it.",
         "A research node goes back to a source (forum / code / web / paper / model / dataset /",
