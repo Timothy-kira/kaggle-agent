@@ -1,0 +1,12 @@
+{
+  "description": "Tell the model how this plugin's MiniMax-host wording maps onto Claude Code.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python -B \"${CLAUDE_PLUGIN_ROOT}/claude/host_context.py\"", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
