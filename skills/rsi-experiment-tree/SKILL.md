@@ -54,6 +54,23 @@ kaggle_experiment_tree action="read" competition="<competition>"
 This returns the base, the kept chain, the refuted list, the research nodes, and a
 `readRevision`. **`record` refuses a missing or stale `readRevision`.**
 
+## Several agents may write one tree at once
+
+A research sweep fans out, and each agent has its own server process. Every write runs under the
+tree's lock, so no interleaving can lose a node. A stale `readRevision` is accepted in exactly one
+case: when everything written since your read was **nodes other agents appended** - no moved base,
+no anchor, no prune. The write then lands on top of them and the reply names them; read again
+before you plan the *next* node. Anything else still says `stale_read`.
+
+- **Ids are yours to fix in advance.** `read` suggests the next free number (`n2`), and every
+  parallel agent would be handed the same one. Give each agent its own ids up front
+  (`r2-survey`, `r3-field`, ...). A duplicate is refused, never overwritten, and the refusal
+  names the next free id.
+- **Every node says who wrote it.** `record`, `declare` and `settle` need `recorder=<model id>`
+  (or `"recordedBy": {"model": "..."}` in the node). The server adds the host harness from the MCP
+  client - Claude Code, MiniMax Code, ... - plus the time and the revision, and stores it on the
+  node as `recordedBy`. A tree read by several agents has to show who concluded what.
+
 ## How to send a node: one JSON string
 
 `node` is published as a **string**, and you pass the whole node as one JSON value in it:
