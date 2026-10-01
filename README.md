@@ -96,6 +96,12 @@ mkdir -p ~/.local/bin && ln -sf "$(command -v python3)" ~/.local/bin/python
 Edit the installed manifest instead and the next update overwrites it. If the server still does not
 come up, `python3 -B mcp/agent_server.py` starts it by hand and shows the error.
 
+**A local copy that vanished from the plugin panel.** MiniMax Code 3.1.0 refuses a local plugin
+directory that contains any hardlink, `.git` included, and logs nothing when it does. `git clone`
+from a local path hardlinks `.git/objects` by default, so clone a working copy into
+`~/.minimax/plugins` with `--no-hardlinks`, or from the GitHub URL.
+`python tools/check_plugin.py` reports any hardlink it finds.
+
 Both entry points under `bin/` are Python files with a shebang and no executable bit, invoked
 through the interpreter — `python3 bin/kaggle-cli.sh`, `python3 bin/run-mcp.sh` — so one command
 works on every platform and a packaged file mode never has to survive a checkout.

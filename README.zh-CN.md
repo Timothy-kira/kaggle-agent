@@ -92,6 +92,11 @@ mkdir -p ~/.local/bin && ln -sf "$(command -v python3)" ~/.local/bin/python
 去改已安装的 manifest 没用，下次更新会被覆盖。如果服务器还是起不来，
 `python3 -B mcp/agent_server.py` 可以手动启动它并把错误打出来。
 
+**本地副本从插件面板里消失了。** MiniMax Code 3.1.0 会拒绝任何含硬链接的本地插件目录（`.git`
+也算），而且不写日志。从本地路径 `git clone` 默认会把 `.git/objects` 做成硬链接，所以往
+`~/.minimax/plugins` 里克隆工作副本时要加 `--no-hardlinks`，或者直接从 GitHub URL 克隆。
+`python tools/check_plugin.py` 会报出它找到的硬链接。
+
 `bin/` 下的两个入口都是带 shebang、没有执行位的 Python 文件，通过解释器调用 ——
 `python3 bin/kaggle-cli.sh`、`python3 bin/run-mcp.sh` —— 所以同一条命令在所有平台都能用，
 打包后的文件模式位也不需要在检出后幸存。
