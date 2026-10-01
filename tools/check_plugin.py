@@ -514,6 +514,16 @@ def check_manifest():
                    for p in ROOT.rglob("*")
                    if p.is_symlink() and ".git" not in p.relative_to(ROOT).parts)
     check(not links, f"no symlink is shipped in the package ({links or 'none'})")
+    # MiniMax Code 3.1.0 digests a local plugin directory with hardlinks rejected, .git included,
+    # and drops the whole plugin with HARDLINK_NOT_ALLOWED and nothing in the log. A `git clone`
+    # from a local path hardlinks .git/objects by default, so a working copy made that way
+    # installs cleanly and then simply is not there. .git is deliberately not excluded here.
+    hardlinks = sorted(p.relative_to(ROOT).as_posix()
+                       for p in ROOT.rglob("*")
+                       if p.is_file() and not p.is_symlink() and p.lstat().st_nlink > 1)
+    check(not hardlinks,
+          f"no file in the plugin directory is a hardlink, .git included "
+          f"({len(hardlinks)} found, first {hardlinks[:3] or 'none'}; re-clone with --no-hardlinks)")
     # §2: 不接受...包安装生命周期脚本,指 package.json 中的 preinstall、install、postinstall 等
     lifecycle = []
     for pkg in ROOT.rglob("package.json"):
