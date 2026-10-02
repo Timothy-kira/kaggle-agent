@@ -4848,6 +4848,69 @@ def check_the_bootstrap_survives_a_directory_it_cannot_read():
           "and it reports a case this machine cannot exercise, instead of passing it quietly")
 
 
+def check_the_irreversible_calls_are_gated_in_code():
+    """A delete, an install and a push each wait for a confirm the call has to carry.
+
+    "Ask the user first" used to live only in descriptions and skills, so nothing stopped a call
+    that skipped the asking - and kaggle_kernel_retire defaulted to deleting. Each gate has to sit
+    before the action it guards; a check placed after it would report on a delete already made.
+    """
+    src = (ROOT / "mcp" / "kaggle_server.py").read_text(encoding="utf-8")
+
+    def branch(start: str, end: str) -> str:
+        i = src.find(start)
+        return src[i:src.find(end, i)] if i >= 0 else ""
+
+    retire = branch('if name == "kaggle_kernel_retire":', '["kernels", "delete"')
+    check('args.get("confirm")' in retire and "!= ref" in retire,
+          "kaggle_kernel_retire deletes only when confirm repeats the ref, checked before the delete")
+    sync = branch('if name == "handoff_sync":', "github_sync.ensure_repo(")
+    check('args.get("confirm")' in sync and "github_sync.push_file(" not in sync,
+          "handoff_sync checks confirm before it creates a repo or pushes a file")
+    install = branch('if action == "install":', "deps.install(")
+    check('args.get("confirm")' in install,
+          "kaggle_sources install checks confirm before pip runs")
+
+    # The install gate over the wire, where it does not depend on the network or on Kaggle.
+    env = dict(os.environ, KAGGLE_AGENT_HOME=_mkdtemp())
+    proc = subprocess.Popen([sys.executable, "-B", str(ROOT / "mcp" / "agent_server.py")],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, encoding="utf-8", env=env)
+    try:
+        for msg in ({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                     "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                                "clientInfo": {"name": "t", "version": "1"}}},
+                    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                     "params": {"name": "kaggle_sources",
+                                "arguments": {"action": "install", "packages": '["numpy"]'}}}):
+            proc.stdin.write(json.dumps(msg) + "\n")
+            proc.stdin.flush()
+        replies = {}
+        while 1 not in replies:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            try:
+                reply = json.loads(line)
+            except ValueError:
+                continue
+            replies[reply.get("id")] = reply
+        result = (replies.get(1) or {}).get("result") or {}
+        text = (result.get("content") or [{}])[0].get("text", "")
+        check(result.get("isError") and "nothing installed" in text,
+              f"an install without confirm installs nothing and says what it would run ({text[:90]!r})")
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=30)
+
+    for skill, needle in (("experiment-launch", "confirm=<owner/slug>"),
+                          ("scientific-plotting", "confirm=true"),
+                          ("handoff", "`confirm: true`")):
+        body = (ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+        check(needle in body, f"the {skill} skill shows the call with its confirm ({needle})")
+
+
 def check_the_manifest_name_survives_the_marketplace():
     """The submission form has one field that is easy to fill with the wrong string.
 
@@ -4918,6 +4981,15 @@ def check_the_package_survives_a_marketplace_install():
           "the package is identified by its manifest name, not by a directory name")
     check("exec(compile(" in code and "'__name__':'__main__'" in code,
           "the bootstrap runs the entry with __name__ set, so its main block actually fires")
+    # MiniMax Code resolves an argument starting with ./ against the plugin root. That path is
+    # this exact install, so it is tried before any search, and the search is the fallback for a
+    # host that leaves it alone. Both go through the manifest's name.
+    check(args[-1] == "./mcp/agent_server.py" and "sys.argv[1]" in code,
+          "the bootstrap runs the host-resolved ./mcp/agent_server.py before searching")
+    check("'kaggle-agent'" in code and "'plugin.json'" in code,
+          "and it accepts a file only when the package manifest names kaggle-agent")
+    check(entry.find("if is_package(parent)") < entry.find("def search()"),
+          "the entry module keeps its own package ahead of any copy the search would find")
 
     # bin/kaggle-cli.sh is a Python file with a shebang and carries no executable bit, so a
     # documented `./bin/kaggle-cli.sh` fails with permission denied on the machine that installs.
@@ -6252,6 +6324,7 @@ def main() -> int:
         check_wave_two_is_single_threaded,                                           # wave two is single threaded
         check_the_plan_is_reviewed_before_it_is_handed_off,                          # the plan is reviewed before it is handed off
         check_the_bootstrap_survives_a_directory_it_cannot_read,                     # the bootstrap survives a directory it cannot read
+        check_the_irreversible_calls_are_gated_in_code,                              # the irreversible calls are gated in code
         check_the_manifest_name_survives_the_marketplace,                            # the manifest name survives the marketplace
         check_the_package_survives_a_marketplace_install,                            # the package survives a marketplace install
         check_the_cli_is_offered_not_just_reported,                                  # the cli is offered not just reported

@@ -554,7 +554,9 @@ TOOLS: list[dict[str, Any]] = [
             "Safely take a notebook off the accelerator: back up its source and output to a local "
             "folder, delete it, then confirm the deletion actually took effect. Confirmation matters "
             "because a kernel that fails to delete keeps consuming quota. Pass dry_run=true to see "
-            "what would be deleted first. The backup is written before the delete, never after."
+            "what would be deleted first. The backup is written before the delete, never after. "
+            "Deleting needs confirm set to the same ref, after the user agreed to delete it; "
+            "without that the call is a dry run."
         ),
         "inputSchema": {
             "type": "object",
@@ -565,6 +567,11 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Local folder for the backup. Source, output and a manifest land here.",
                 },
                 "dry_run": {"type": "boolean", "default": False, "description": "Report only, delete nothing."},
+                "confirm": {
+                    "type": "string",
+                    "description": "The ref again, set only once the user agreed to this delete. "
+                                   "Anything else makes the call a dry run.",
+                },
                 "skip_backup": {
                     "type": "boolean",
                     "default": False,
@@ -871,6 +878,11 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Create the repo if missing. Only with the user's explicit request.",
                 },
                 "private": {"type": "boolean", "description": "Create it private. Defaults to true."},
+                "confirm": {
+                    "type": "boolean",
+                    "description": "true only once the user agreed to push to this repo. Without it "
+                                   "the call reports what would be pushed and pushes nothing.",
+                },
             },
             "required": ["competition"],
         },
@@ -1603,6 +1615,9 @@ TOOLS: list[dict[str, Any]] = [
                                     "appears. Send it as text: the host's tool layer empties a "
                                     "real array argument before it reaches this server."),
                 },
+                "confirm": {"type": "boolean",
+                            "description": "For action='install': true only once the user agreed. "
+                                           "Without it nothing is installed."},
             },
             "required": [],
         },
@@ -1662,7 +1677,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.37.0"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.37.1"}
 
 # The MCP client's clientInfo from initialize: which harness is calling (Claude Code, MiniMax
 # Code, ...). Recorded on every tree node as its host, next to the model the caller names.
@@ -2112,6 +2127,12 @@ def _tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         if args.get("dry_run"):
             info += "\n\nDRY RUN - nothing deleted. Re-run with dry_run=false to back up and delete."
             return text_response(f"retire {ref} (dry run)", 0, info, "")
+        # A delete cannot be undone, so the code holds this gate rather than the prompt: the call
+        # deletes only when it repeats the ref it was told to delete.
+        if str(args.get("confirm") or "").strip() != ref:
+            info += (f"\n\nNOT DELETED - confirm={ref!r} is required, and only after the user "
+                     f"agreed to delete this notebook. This call was treated as a dry run.")
+            return text_response(f"retire {ref} (unconfirmed)", 2, "", info)
         if args.get("skip_backup"):
             info += "\nbackup: SKIPPED"
         else:
@@ -2546,6 +2567,16 @@ def _tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             return text_response(
                 f"handoff sync {comp}", 2, "",
                 "no repo configured. Pass repo=owner/name, or run github_auth action=configure.",
+            )
+        if str(args.get("confirm")).strip().lower() != "true":
+            folder = str(args.get("path") or f"handoffs/{handoff.slugify(comp)}")
+            return text_response(
+                f"handoff sync {comp}", 2, "",
+                f"nothing pushed: would write HANDOFF.md, tree.json and state.json to "
+                f"{repo}:{folder}"
+                + (" after creating the repo" if args.get("create_repo") else "")
+                + ". Pushing publishes the work outside this machine, so ask the user, then call "
+                "again with confirm=true.",
             )
         if args.get("create_repo"):
             # Outward action: only ever reached because the caller asked for it.
@@ -4379,6 +4410,13 @@ def _tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     '["kaggle"] to make the tools work at all, or ["matplotlib","numpy"] '
                     'for figures. Do not call this to "just try it" - '
                     "ask the user first; it changes their Python environment.",
+                )
+            if str(args.get("confirm")).strip().lower() != "true":
+                return text_response(
+                    "kaggle_sources install", 2, "",
+                    f"nothing installed: would run pip install {' '.join(str(x) for x in pkgs)}. "
+                    "It changes the user's Python environment, so ask them, then call again "
+                    "with confirm=true.",
                 )
             res = deps.install([str(x) for x in pkgs])
             if not res.get("ok"):

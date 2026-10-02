@@ -47,7 +47,7 @@ MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*"]
 DASHES = [(None, None), (5, 2), (1.5, 1.5), (6, 2, 1.5, 2), (3, 1.5), (8, 3)]
 
 INSTALL_HINT = (
-    'kaggle_sources action="install" packages=\'["matplotlib", "numpy"]\'  '
+    'kaggle_sources action="install" packages=\'["matplotlib", "numpy"]\' confirm=true  '
     "(pip install matplotlib numpy does the same thing)"
 )
 

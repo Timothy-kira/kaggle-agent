@@ -145,9 +145,10 @@ That last case is not a failure. A same-machine agent still reads the file. Neve
 an unsynced handoff as synced, and never let a sync failure imply the document is gone -
 it is on disk either way.
 
-`handoff_sync` creates a repo only when `create_repo: true`, which is an outward action
-that needs the user to have asked. Everything else is a push into a repo that already
-exists.
+`handoff_sync` pushes only with `confirm: true`, set once the user agreed to publish to that
+repo; without it the tool names the repo and files it would write and pushes nothing. It
+creates a repo only when `create_repo: true` as well, which is an outward action that needs
+the user to have asked. Everything else is a push into a repo that already exists.
 
 ## Sync at milestones, not per run
 

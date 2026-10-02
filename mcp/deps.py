@@ -35,7 +35,7 @@ from typing import Any, Optional
 BACKEND = ("matplotlib", "numpy")
 
 INSTALL_HINT = (
-    'kaggle_sources action="install" packages=\'["matplotlib", "numpy"]\'  '
+    'kaggle_sources action="install" packages=\'["matplotlib", "numpy"]\' confirm=true  '
     "(pip install matplotlib numpy does the same thing)"
 )
 
@@ -89,7 +89,7 @@ INSTALLABLE.update(OPTIONAL)
 # cosmetic.
 CLI_PACKAGES = ("kaggle",)
 CLI_HINT = (
-    'kaggle_sources action="install" packages=\'["kaggle"]\'  '
+    'kaggle_sources action="install" packages=\'["kaggle"]\' confirm=true  '
     "(pip install kaggle does the same thing)"
 )
 INSTALLABLE.update({

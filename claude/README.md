@@ -7,7 +7,7 @@ merges `main` without conflicts and the MiniMax Code install is never touched.
 | File | What it does |
 |---|---|
 | `.claude-plugin/plugin.json` | the Claude Code manifest; skills are found in `skills/` as they are. The MCP server is declared inline here, not in a `.mcp.json`, because upstream's `tools/check_plugin.py` requires every `*.mcp.json` to be in the MiniMax manifest |
-| `.claude-plugin/plugin.json` → `mcpServers` | starts `mcp/kaggle_server.py` of *this* copy directly (the self-locating `agent_server.py` searches `~/.minimax/plugins` first and would run the MiniMax copy) |
+| `.claude-plugin/plugin.json` → `mcpServers` | starts `mcp/kaggle_server.py` of *this* copy directly (since 1.37.1 `agent_server.py` also prefers its own package, but going straight to the server keeps this copy independent of the MiniMax search entirely) |
 | `hooks/hooks.json` + `claude/host_context.py` | SessionStart: puts `claude/HOST.md` in the session, the mapping from the skills' MiniMax wording (`ask_user`, `task`, genui widgets, the `kaggle` alias) to Claude Code |
 | `claude/call_tool.py` | `mcp/call_tool.py` pinned to this copy, for subagents that do not get the MCP tools |
 

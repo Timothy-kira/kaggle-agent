@@ -26,11 +26,12 @@ Read the answer before drawing anything:
   produced, and saying so is the honest answer. Do not fall back to drawing something by hand.
 
 ```
-kaggle_sources action="install" packages='["matplotlib", "numpy"]'
+kaggle_sources action="install" packages='["matplotlib", "numpy"]' confirm=true
 ```
 
 `packages` is a JSON array in one string — the host's tool layer empties a real array argument
-before the plugin sees it.
+before the plugin sees it. `confirm=true` goes in only after the user said yes; without it the
+tool installs nothing and says what it would have run.
 
 Draw only after `doctor` reports ready. A chart call made before that returns
 `backend_missing` with the same command in it; that is the designed failure, not a bug to work

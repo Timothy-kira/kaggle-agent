@@ -10,7 +10,7 @@ the reader to the wrong place entirely.
 
 Two things are checked, and neither substitutes for the other:
 
-* :func:`agent_server.locate` finds the package, and refuses a directory that merely holds a
+* :func:`agent_server.search` finds the package, and refuses a directory that merely holds a
   file of the same name. This is where identity lives: the manifest is parsed and its ``name``
   compared, so a directory cannot claim to be this plugin by having the right filenames.
 * The bootstrap in ``servers.mcp.json`` - which has to exist because the manifest cannot carry
@@ -125,42 +125,37 @@ def test_locate_layouts(tmp: Path) -> None:
     roots = roots_under(tmp)
 
     local_pkg = make_package(roots["local"] / "kaggle-agent")
-    found = with_roots(roots, agent_server.locate)
+    found = with_roots(roots, agent_server.search)
     check(found == str(local_pkg / "mcp"), f"local install found ({found})")
+
+    # locate() is asked before any search: the package this file belongs to is the one the host
+    # launched, and a copy elsewhere under the roots must not outrank it.
+    found = with_roots(roots, agent_server.locate)
+    check(found == str(ROOT / "mcp"),
+          f"locate() keeps its own package over another copy under the roots ({found})")
 
     shutil.rmtree(roots["local"])
     market_pkg = make_package(roots["market"] / "official" / ("sha256-tree-v1-" + "ab" * 32))
-    found = with_roots(roots, agent_server.locate)
+    found = with_roots(roots, agent_server.search)
     check(found == str(market_pkg / "mcp"), f"marketplace cache found ({found})")
 
     shutil.rmtree(roots["market"])
-    # locate() falls back to the running package, which is real; the point is that it does not
-    # return anything that was left in a fixture directory, and that nothing raises.
-    found = with_roots(roots, agent_server.locate)
-    check(
-        found is None or str(tmp) not in found,
-        f"empty roots -> nothing invented from a fixture ({found})",
-    )
+    found = with_roots(roots, agent_server.search)
+    check(found is None, f"empty roots -> nothing invented from a fixture ({found})")
 
 
 def test_locate_rejects_foreign_manifest(tmp: Path) -> None:
     print("locate(): a directory is not ours because of its file names")
     roots = roots_under(tmp)
     make_package(roots["local"] / "kaggle-agent", manifest=FOREIGN_MANIFEST)
-    found = with_roots(roots, agent_server.locate)
-    check(
-        found is None or str(tmp) not in found,
-        "same filenames, different plugin name -> refused",
-    )
+    found = with_roots(roots, agent_server.search)
+    check(found is None, f"same filenames, different plugin name -> refused ({found})")
 
     # And a manifest that is not readable JSON is declined rather than raised.
     broken = roots["local"] / "kaggle-agent"
     (broken / ".minimax-plugin" / "plugin.json").write_text("{ not json", encoding="utf-8")
-    found = with_roots(roots, agent_server.locate)
-    check(
-        found is None or str(tmp) not in found,
-        "unparseable manifest -> declined, search continues",
-    )
+    found = with_roots(roots, agent_server.search)
+    check(found is None, f"unparseable manifest -> declined, search continues ({found})")
 
 
 # ------------------------------------------------------------------ the bootstrap, end to end
@@ -171,7 +166,8 @@ def bootstrap_source() -> str:
 
 
 def ask_the_server(home: Path | None, cwd: Path, method: str,
-                   source: str | None = None) -> tuple[dict | None, str]:
+                   source: str | None = None,
+                   path_arg: str | None = None) -> tuple[dict | None, str]:
     """Start the server through servers.mcp.json and send one JSON-RPC call to it.
 
     ``home`` of None means "do not touch HOME at all" - used by the real-home case, which is
@@ -184,7 +180,8 @@ def ask_the_server(home: Path | None, cwd: Path, method: str,
         env["USERPROFILE"] = str(home)  # os.path.expanduser reads USERPROFILE on Windows
     env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.Popen(
-        [sys.executable, "-B", "-c", source or bootstrap_source()],
+        [sys.executable, "-B", "-c", source or bootstrap_source()]
+        + ([path_arg] if path_arg is not None else []),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", env=env, cwd=str(cwd),
     )
@@ -274,6 +271,58 @@ def test_bootstrap_end_to_end(tmp: Path) -> None:
           "bootstrap candidate roots include the marketplace cache")
     check("**" in source and "recursive=True" in source,
           "bootstrap descends to the marketplace depth (glob '**', recursive)")
+
+
+def test_bootstrap_takes_the_resolved_path(tmp: Path) -> None:
+    print("servers.mcp.json bootstrap: the path argument the host resolved comes first")
+    elsewhere = tmp / "elsewhere"
+    elsewhere.mkdir(parents=True, exist_ok=True)
+    cfg = json.loads((ROOT / "servers.mcp.json").read_text(encoding="utf-8"))
+    args = cfg["mcpServers"]["kaggle"]["args"]
+    check(args[-1] == "./mcp/agent_server.py",
+          f"the manifest passes ./mcp/agent_server.py, which MiniMax Code resolves against the "
+          f"plugin root ({args[-1]!r})")
+
+    # A copy under the roots and the copy the host resolved. Only the second may answer: the
+    # first is what a local working copy or a stale cache entry looks like.
+    home = tmp / "home-boot-resolved"
+    make_package(home / ".minimax" / "plugins" / "kaggle-agent")
+    resolved = make_package(tmp / "resolved-root")
+    server = resolved / "mcp" / "kaggle_server.py"
+    server.write_text(server.read_text(encoding="utf-8").replace('"fixture"', '"resolved"'),
+                      encoding="utf-8")
+    entry = str(resolved / "mcp" / "agent_server.py")
+    reply, err = ask_the_server(home, elsewhere, "initialize", path_arg=entry)
+    info = ((reply or {}).get("result") or {}).get("serverInfo") or {}
+    check(info.get("name") == "resolved",
+          f"resolved path -> that package serves, not the copy under the roots "
+          f"({info or (err or '')[:140]!r})")
+
+    # A host that leaves the argument relative still gets a server, from the search.
+    reply, err = ask_the_server(home, elsewhere, "initialize", path_arg="./mcp/agent_server.py")
+    info = ((reply or {}).get("result") or {}).get("serverInfo") or {}
+    check(info.get("name") == "fixture",
+          f"unresolved relative argument -> falls back to the search ({info or (err or '')[:140]!r})")
+
+    # A path to something with the right file names and another plugin's manifest is not run.
+    decoy = make_package(tmp / "decoy-root", manifest=FOREIGN_MANIFEST)
+    empty = tmp / "home-boot-empty"
+    empty.mkdir(parents=True, exist_ok=True)
+    reply, err = ask_the_server(empty, elsewhere, "initialize",
+                                path_arg=str(decoy / "mcp" / "agent_server.py"))
+    check(reply is None and "cannot locate" in err,
+          f"a path to a foreign package is refused, not executed ({(err or '')[:120]!r})")
+
+    # The fallback search applies the same test, so a same-shaped directory without this
+    # plugin's manifest is skipped there too.
+    foreign_home = tmp / "home-boot-shape-only"
+    shape = foreign_home / ".minimax" / "plugins" / "lookalike"
+    (shape / "mcp").mkdir(parents=True, exist_ok=True)
+    (shape / "mcp" / "kaggle_server.py").write_text(FIXTURE_SERVER, encoding="utf-8")
+    shutil.copyfile(ROOT / "mcp" / "agent_server.py", shape / "mcp" / "agent_server.py")
+    reply, err = ask_the_server(foreign_home, elsewhere, "initialize")
+    check(reply is None and "cannot locate" in err,
+          f"same file layout without the manifest -> not run by the search ({(err or '')[:120]!r})")
 
 
 # The bootstrap as it stood before this was fixed: it walks directories by hand, unguarded, and
@@ -402,6 +451,7 @@ def main() -> int:
         test_locate_layouts(tmp)
         test_locate_rejects_foreign_manifest(tmp)
         test_bootstrap_end_to_end(tmp)
+        test_bootstrap_takes_the_resolved_path(tmp)
         test_bootstrap_is_platform_neutral()
         test_missing_roots_exit_cleanly(tmp)
         test_real_home_launch()

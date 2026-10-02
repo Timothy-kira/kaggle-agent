@@ -1,9 +1,10 @@
 """Self-locating entry point for the Kaggle Agent MCP server.
 
 The Desktop host launches an MCP server with its own working directory and does not expand
-``${PLUGIN_ROOT}`` in ``servers.mcp.json`` args, so the manifest cannot carry a reliable path
-to this file. Instead the manifest runs a one-line bootstrap that locates the package and
-calls :func:`serve`.
+``${PLUGIN_ROOT}`` in ``servers.mcp.json`` args. It does resolve an argument that starts with
+``./`` against the plugin root (MiniMax Code 3.1.0, ``resolveRuntimeString``), so the manifest
+passes ``./mcp/agent_server.py`` after its bootstrap and the bootstrap runs exactly that file
+when it is this plugin. A host that leaves the argument alone gets the search below instead.
 
 Local install and Marketplace install do not have the same shape. A local plugin sits one level
 down (``<root>/kaggle-agent``). A Marketplace plugin is cached in a directory named after the
@@ -17,9 +18,11 @@ impossible (it is a hash) and unsafe (any sibling directory could claim the name
 counts as ours only when its ``.minimax-plugin/plugin.json`` names this plugin and its server
 module is actually there.
 
-This module owns that decision, and it is the only place that makes it. The manifest also
-carries a one-line bootstrap, because the manifest cannot reference a path, and that line has
-to find a file to hand over to before any of this runs. It used to search the working directory
+This module owns that decision. The manifest's bootstrap has to find a file to hand over to
+before any of this runs, so it applies the same test - manifest name, then server module -
+to the resolved argument and to every file its fallback search finds. It used to accept any
+``agent_server.py`` with a ``kaggle_server.py`` beside it, which let a stale cache entry or an
+unrelated directory with that shape be executed. It used to search the working directory
 too, which the Desktop host sets to the user's profile - and a profile holds legacy junctions
 whose ``os.listdir`` raises. It now searches the roots above, walks them with ``glob`` because
 that swallows ``OSError`` where a hand-rolled walk does not, and leaves identity to
@@ -104,15 +107,27 @@ def candidates(base: str) -> Iterator[str]:
 
 
 def locate() -> Optional[str]:
-    """Absolute path of the package's ``mcp`` directory, found by manifest, or None."""
+    """Absolute path of the package's ``mcp`` directory, found by manifest, or None.
+
+    This file's own package comes first. It is the copy the host resolved and launched, and a
+    search that runs ahead of it picks by root order and then alphabetically - a local working
+    copy outranks the Marketplace install, and one cached hash outranks another regardless of
+    which is newer. The search is only for a file reached some other way.
+    """
+    parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if is_package(parent):
+        return os.path.join(parent, "mcp")
+    return search()
+
+
+def search() -> Optional[str]:
+    """The first package under :data:`PLUGIN_ROOTS`, in root order, or None."""
     for root in PLUGIN_ROOTS:
         base = os.path.expanduser(root)
         for directory in candidates(base):
             if is_package(directory):
                 return os.path.join(directory, "mcp")
-    # Last resort: this file's own package, when reached by a direct path rather than a search.
-    parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(parent, "mcp") if is_package(parent) else None
+    return None
 
 
 def serve() -> int:
