@@ -202,6 +202,15 @@ and which is a rate limit are three different questions, and it declines to gues
 **Collaboration and judgement** — `handoff_read` · `handoff_write` · `handoff_status` ·
 `handoff_sync` · `github_auth` · `kaggle_presence` · `kaggle_search_engine`
 
+**What the code refuses, and what it leaves to the host.** Three calls act outside this machine
+or change it, and each one does nothing unless the call says the user agreed:
+`kaggle_kernel_retire` deletes only with `confirm` equal to `ref`, `kaggle_sources action="install"`
+installs only with `confirm=true`, and `handoff_sync` pushes only with `confirm=true`. Without it
+each reports what it would have done. `kaggle_local_launch` starts a local command once an
+experiment node has been declared for it, and that declaration is something the agent can make
+itself, so it is not a safety boundary: whether a local command may run is the host's tool
+approval, and that is where it should be decided.
+
 ---
 
 ## Validation

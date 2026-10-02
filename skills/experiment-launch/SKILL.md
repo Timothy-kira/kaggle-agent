@@ -150,8 +150,12 @@ A kernel that errors keeps existing, and an existing kernel keeps consuming quot
 deleting anything, take the backup; after deleting, confirm the deletion took effect.
 
 ```
-kaggle_kernel_retire  ref=<owner/slug>, backup_dir=<local folder>
+kaggle_kernel_retire  ref=<owner/slug>, backup_dir=<local folder>, confirm=<owner/slug>
 ```
+
+A delete cannot be undone, so the tool deletes only when `confirm` repeats `ref`, and that goes
+in only after the user agreed to delete this notebook. Without it the call reports what it
+would do and deletes nothing.
 
 The tool, in order:
 

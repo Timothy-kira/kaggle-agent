@@ -152,6 +152,13 @@ mkdir -p ~/.local/bin && ln -sf "$(command -v python3)" ~/.local/bin/python
 **协作与判断** —— `handoff_read` · `handoff_write` · `handoff_status` ·
 `handoff_sync` · `github_auth` · `kaggle_presence` · `kaggle_search_engine`
 
+**代码拦住什么，又把什么交给宿主。** 有三个调用会作用到本机以外或改动本机，每个都要在调用里
+表明用户已同意才会执行：`kaggle_kernel_retire` 只有 `confirm` 等于 `ref` 时才删除，
+`kaggle_sources action="install"` 只有 `confirm=true` 时才安装，`handoff_sync` 只有
+`confirm=true` 时才推送。缺少确认时，它们只报告将要做什么。`kaggle_local_launch` 在声明了实验
+节点之后会启动一条本地命令，而这个声明 agent 自己就能做，所以它不是安全边界：本地命令能不能跑，
+由宿主的工具审批决定，也应该在那里决定。
+
 ---
 
 ## 验证
