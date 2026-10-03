@@ -4021,9 +4021,11 @@ def replay(tree: dict[str, Any], params: Optional[dict[str, Any]] = None) -> dic
 
     while rounds < max_rounds:
         rounds += 1
-        # eligible = root plus the current leaves of the observed tree
-        eligible = [ROOT_ID] + [n for n in observed
-                                if n != ROOT_ID and not (set(_children_in_order(inner, n)) - observed)]
+        # Expand only observed parents with unseen children (including the virtual root).
+        # Recorded order also gives tied utilities a deterministic tie-break.
+        eligible = [n for n in [ROOT_ID, *nodes]
+                    if (n == ROOT_ID or n in observed)
+                    and (set(_children_in_order(inner, n)) - observed)]
         if not eligible:
             break
 
@@ -4150,15 +4152,15 @@ def _rank_candidates(inner: dict[str, Any], eligible: list[str], p: dict[str, An
     nodes = _current(inner).get("nodes") or {}
     pseudo = {
         "base": {"id": ROOT_ID, "label": "root", "parent": None},
-        "nodes": {ROOT_ID: {"id": ROOT_ID, "kind": "experiment", "parent": None,
-                            "metric": None, "family": "", "operator": None,
-                            "verdict": None}},
+        "nodes": {},
     }
     for nid in eligible:
         if nid == ROOT_ID:
-            continue
-        node = nodes.get(nid) or {}
-        pseudo["nodes"][nid] = node
+            pseudo["nodes"][nid] = {"id": ROOT_ID, "kind": "experiment", "parent": None,
+                                    "metric": None, "family": "", "operator": None,
+                                    "verdict": None}
+        else:
+            pseudo["nodes"][nid] = nodes.get(nid) or {}
     # novelty must be judged against what the replay has already seen, not the whole tree
     seen: set[str] = set()
     for nid in sorted(observed):
