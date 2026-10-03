@@ -2133,8 +2133,43 @@ def check_replay_semantics():
     # a batch can reveal several children at once, which the paper's chain-shaped tree cannot
     wide = et.replay(tree, {"weights": {"score": 1.0, "progress": 0.0, "novelty": 0.0},
                            "workers": 4, "maxRounds": 8})
-    check(any(len(r) > 1 for r in wide["revealed"]) or wide["N"] >= 1,
+    check(any(len(r) > 1 for r in wide["revealed"]),
           "a batch may reveal several children - our tree is a DAG, the paper's is chains")
+    check(wide["N"] == len(known) and wide["quality"] == 0.72,
+          "replay reaches descendants and includes their scores in the result")
+
+    # One worker must also get past an exhausted root and terminal leaves. Zero weights
+    # deliberately tie all candidates, so a stale root cannot win every selection round.
+    chain = et.empty_tree()
+    chain["tree"]["nodes"] = {
+        nd["id"]: nd for nd in (
+            _v3_node("a", None, 0.4, 0.0, "draft", "base", cost={"quotaHours": 1}),
+            _v3_node("b", "a", 0.8, 0.4, "improve", "next", cost={"quotaHours": 2}),
+            _v3_node("c", "b", 0.9, 0.1, "improve", "last", cost={"quotaHours": 3}),
+        )
+    }
+    zero_weights = {"score": 0.0, "progress": 0.0, "novelty": 0.0}
+    walked = et.replay(chain, {"weights": zero_weights, "workers": 1, "maxRounds": 8})
+    check(walked["revealed"] == [["a"], ["b"], ["c"]]
+          and walked["N"] == 3 and walked["quality"] == 0.9,
+          "one-worker replay follows a complete recorded chain, even when utilities tie")
+    check(walked["effectiveCost"] == 6,
+          "each revealed descendant contributes its cost exactly once")
+    short = et.replay(chain, {"weights": zero_weights, "workers": 1, "maxRounds": 2})
+    check(short["revealed"] == [["a"], ["b"]] and short["effectiveCost"] == 3,
+          "the round budget stops the walk before later outcomes are revealed")
+
+    # A high-scoring terminal branch must not crowd out another branch's unseen child.
+    chain["tree"]["nodes"]["d"] = _v3_node("d", None, 0.1, 0.0, "draft", "other")
+    chain["tree"]["nodes"]["e"] = _v3_node("e", "d", 0.2, 0.1, "improve", "other")
+    for workers in (1, 2, 4):
+        branched = et.replay(chain, {"workers": workers, "maxRounds": 12})
+        ids = [nid for batch in branched["revealed"] for nid in batch]
+        check(set(ids) == set(chain["tree"]["nodes"]) and len(ids) == len(set(ids)),
+              f"{workers}-worker replay explores remaining branches without repeating nodes")
+    empty = et.replay(et.empty_tree())
+    check(empty["N"] == 0 and empty["revealed"] == [],
+          "an empty tree has no outcomes to reveal")
     # nothing on disk changes
     path = et.tree_path("probe")
     before = open(path, "rb").read() if os.path.isfile(path) else None
