@@ -1677,7 +1677,7 @@ def _replay_worlds(doc: dict[str, Any], rounds: Any = None) -> list[dict[str, An
     return pool
 
 
-SERVER_INFO = {"name": "kaggle-agent", "version": "1.37.1"}
+SERVER_INFO = {"name": "kaggle-agent", "version": "1.37.2"}
 
 # The MCP client's clientInfo from initialize: which harness is calling (Claude Code, MiniMax
 # Code, ...). Recorded on every tree node as its host, next to the model the caller names.
